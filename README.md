@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="assets/screenshot.png" alt="VL-CAPTIONER Studio Pro" width="900"/>
+  <img src="assets/VL_GGUF_Captioner GUI Screenshot 2.png" alt="VL-CAPTIONER Studio Pro" width="900"/>
 </p>
 
-<h1 align="center">VL-CAPTIONER Studio Pro</h1>
+<h1 align="center"> Uncensored QWEN 3 VL-CAPTIONER Studio Pro</h1>
 <h3 align="center">GPU-Accelerated Image Captioning with Qwen3-VL — Desktop GUI</h3>
 
 <p align="center">
@@ -44,6 +44,8 @@ Designed for AI artists, dataset curators, and Stable Diffusion / Flux trainers 
 
 <p align="center">
   <img src="assets/screenshot.png" alt="Main Interface" width="800"/>
+  <img src="assets/VL_GGUF_Captioner GUI Screenshot 2.png" alt="Main Interface" width="800"/>
+  <img src="assets/VL_GGUF_Captioner GUI Screenshot 4.png" alt="Main Interface" width="800"/> 
   <br/>
   <em>Main workspace: file browser, image viewer, caption editor, and model settings</em>
 </p>
