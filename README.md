@@ -85,7 +85,7 @@ You need two files — the main model and the vision encoder. Place them in the 
 
 | File | Size | Link |
 |------|------|------|
-| `Qwen3-VL-8B-Instruct-abliterated-v1.Q6_K.gguf` | ~6.3 GB | [HuggingFace](https://huggingface.co/bartowski/Qwen3-VL-8B-Instruct-abliterated-v1-GGUF) |
+| `Qwen3-VL-8B-Instruct-abliterated-v1.Q6_K.gguf` | ~6.3 GB | [HuggingFace](https://huggingface.co/prithivMLmods/Qwen3-VL-8B-Instruct-abliterated-v1-GGUF) |
 | `Qwen3-VL-8B-Instruct-abliterated-v1.mmproj-f16.gguf` | ~1.1 GB | Same repo |
 
 > **Tip:** You can also download models from within the app using the built-in downloader (⬇ button next to the model selector).
@@ -252,7 +252,7 @@ This is the standard sidecar format expected by most training tools (Kohya, Ever
 - **[Qwen3-VL](https://huggingface.co/Qwen)** — Vision-language model by Alibaba DAMO Academy
 - **[llama-cpp-python](https://github.com/abetlen/llama-cpp-python)** — Python bindings for llama.cpp
 - **[JamePeng's fork](https://github.com/JamePeng/llama-cpp-python)** — Added Qwen3-VL chat handler support
-- **[bartowski's GGUF quants](https://huggingface.co/bartowski)** — High-quality GGUF model quantizations
+- **[prithi's GGUF quants](https://huggingface.co/prithivMLmods/Qwen3-VL-8B-Instruct-abliterated-v1-GGUF)** — High-quality GGUF model quantizations
 - **[PyQt6](https://www.riverbankcomputing.com/software/pyqt/)** — Cross-platform GUI framework
 
 ---
