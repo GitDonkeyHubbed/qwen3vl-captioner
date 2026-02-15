@@ -1,0 +1,52 @@
+# ─── Python ───────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ─── Virtual environments ─────────────────────────────────
+.venv/
+venv/
+env/
+
+# ─── Model files (large, downloaded by user) ──────────────
+*.gguf
+
+# ─── IDE / Editor ─────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ─── Development artifacts ────────────────────────────────
+*.log
+nul
+0.3.0
+1.26
+llama-cpp-python-build/
+ENGINEERING_NOTES.md
+FIX_SUMMARY.md
+TROUBLESHOOTING.md
+diagnose_cuda.py
+test_*.py
+model_load_test*.log
+model_verbose*.log
+gui/VL_GGUF_Captioner*
+
+# ─── OS files ─────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ─── Antigravity / Gemini agent ───────────────────────────
+.gemini/
+.agent/
+.claude/
+.cache/
+
+# ─── User config (created at runtime) ────────────────────
+# ~/.vlcaptioner/ is already outside the repo

@@ -1,0 +1,19 @@
+[project]
+name = "qwen3vl-captioner"
+version = "1.0.0"
+description = "Portable Qwen3-VL image captioning GUI with GGUF inference"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "llama-cpp-python>=0.3.0",
+    "PyQt6>=6.7",
+    "Pillow>=10.0",
+    "huggingface-hub>=0.25",
+    "numpy>=1.26",
+]
+
+[project.scripts]
+qwen3vl-captioner = "app:main"
+
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"

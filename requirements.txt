@@ -1,0 +1,9 @@
+# pip requirements (alternative to setup.bat for manual installs)
+# For llama-cpp-python with CUDA, see README.md for special instructions.
+
+PyQt6>=6.7
+Pillow>=10.0
+huggingface-hub>=0.25
+numpy>=1.26
+pynvml>=11.0
+psutil>=5.9
