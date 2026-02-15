@@ -639,7 +639,7 @@ class SettingsPanel(QFrame):
         layout.addLayout(tok_row)
 
         self.max_tokens_slider = QSlider(Qt.Orientation.Horizontal)
-        self.max_tokens_slider.setRange(16, 512)
+        self.max_tokens_slider.setRange(16, 1024)
         self.max_tokens_slider.setValue(256)
         self.max_tokens_slider.setSingleStep(16)
         self.max_tokens_slider.setPageStep(64)

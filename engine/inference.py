@@ -223,7 +223,7 @@ class Qwen3VLEngine:
         system_prompt: str = "You are a helpful assistant that describes images accurately and in detail.",
         temperature: float = 0.6,
         top_p: float = 0.9,
-        max_tokens: int = 512,
+        max_tokens: int = 1024,
         prefix: str = "",
         suffix: str = "",
         stream_callback: Optional[Callable[[str], None]] = None,
