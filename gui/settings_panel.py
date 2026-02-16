@@ -514,11 +514,7 @@ class SettingsPanel(QFrame):
         model_row.setSpacing(6)
 
         self.model_combo = QComboBox()
-        self.model_combo.addItems([
-            "QWEN 3 VL 8B_Q8",
-            "QWEN 3 VL 8B_Q6",
-        ])
-        self.model_combo.setCurrentIndex(1)  # Q6 default
+        # Populated dynamically by MainWindow._refresh_model_combo()
         model_row.addWidget(self.model_combo, 1)
 
         self._download_btn = QPushButton()
@@ -560,6 +556,94 @@ class SettingsPanel(QFrame):
             preset_grid.addWidget(btn, row, col)
             self._preset_buttons[preset["id"]] = btn
         layout.addLayout(preset_grid)
+
+        layout.addWidget(self._separator())
+
+        # ─── TRAINING MODE ────────────────────────────────
+        layout.addWidget(self._section_header("TRAINING MODE"))
+
+        training_desc = QLabel(
+            "Select what you're training. General captions everything. "
+            "Other modes let you exclude elements the model should learn implicitly."
+        )
+        training_desc.setWordWrap(True)
+        training_desc.setStyleSheet(
+            f"color: {COLORS['text_dim']}; font-size: 10px; margin-bottom: 4px;"
+        )
+        layout.addWidget(training_desc)
+
+        # Mode buttons row
+        self._training_mode = "general"  # general | style | character | concept
+        self._training_mode_buttons: Dict[str, QPushButton] = {}
+
+        training_grid = QGridLayout()
+        training_grid.setSpacing(4)
+        _TRAINING_MODES = [
+            ("general", "📝 General"),
+            ("style", "🎨 Style"),
+            ("character", "👤 Character"),
+            ("concept", "💡 Concept"),
+        ]
+        for i, (mode_id, mode_label) in enumerate(_TRAINING_MODES):
+            btn = QPushButton(mode_label)
+            btn.setFixedHeight(32)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            if mode_id == "general":
+                btn.setProperty("class", "preset-button-active")
+            else:
+                btn.setProperty("class", "preset-button")
+            btn.clicked.connect(lambda checked, m=mode_id: self._set_training_mode(m))
+            row, col = divmod(i, 2)
+            training_grid.addWidget(btn, row, col)
+            self._training_mode_buttons[mode_id] = btn
+        layout.addLayout(training_grid)
+
+        # Trigger word
+        self._trigger_word_label = QLabel("Trigger Word")
+        self._trigger_word_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 11px; margin-top: 4px;")
+        self._trigger_word_label.setToolTip("Prepended to every caption (e.g. ohwx_style, sks_person)")
+        layout.addWidget(self._trigger_word_label)
+
+        self.trigger_word_input = QLineEdit()
+        self.trigger_word_input.setPlaceholderText("e.g. ohwx_style")
+        self.trigger_word_input.setFixedHeight(30)
+        self.trigger_word_input.setStyleSheet(
+            f"background-color: {COLORS['bg_input']}; color: {COLORS['text_primary']}; "
+            f"border: 1px solid {COLORS['border_light']}; border-radius: 4px; "
+            f"padding: 4px 8px; font-size: 12px;"
+        )
+        self.trigger_word_input.textChanged.connect(lambda: self.settings_changed.emit())
+        layout.addWidget(self.trigger_word_input)
+
+        # Exclusion text area (hidden for General mode)
+        self._exclusion_label = QLabel("Elements to Exclude from Captions")
+        self._exclusion_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 11px; margin-top: 4px;")
+        layout.addWidget(self._exclusion_label)
+
+        self._exclusion_hint = QLabel("")
+        self._exclusion_hint.setWordWrap(True)
+        self._exclusion_hint.setStyleSheet(
+            f"color: {COLORS['text_dim']}; font-size: 10px;"
+        )
+        layout.addWidget(self._exclusion_hint)
+
+        self.exclusion_text = QTextEdit()
+        self.exclusion_text.setPlaceholderText(
+            "Describe elements to leave out of captions...\n"
+            "e.g. abstract symmetrical block shapes, eroded edges, rough geometric textures"
+        )
+        self.exclusion_text.setMaximumHeight(80)
+        self.exclusion_text.setAcceptRichText(False)
+        self.exclusion_text.setStyleSheet(
+            f"background-color: {COLORS['bg_input']}; color: {COLORS['text_primary']}; "
+            f"border: 1px solid {COLORS['border_light']}; border-radius: 4px; "
+            f"padding: 4px 8px; font-size: 11px;"
+        )
+        self.exclusion_text.textChanged.connect(lambda: self._refresh_prompt_preview())
+        layout.addWidget(self.exclusion_text)
+
+        # Initial visibility (General hides exclusion controls)
+        self._update_training_mode_ui()
 
         layout.addWidget(self._separator())
 
@@ -748,6 +832,25 @@ class SettingsPanel(QFrame):
         )
         layout.addWidget(batch_desc)
 
+        # Batch options
+        self.auto_save_cb = QCheckBox("Auto-save .txt sidecar for each image")
+        self.auto_save_cb.setChecked(True)
+        self.auto_save_cb.setStyleSheet(
+            f"color: {COLORS['text_secondary']}; font-size: 11px; padding: 2px 0;"
+        )
+        self.auto_save_cb.setToolTip("Automatically write a .txt caption file next to each image during batch")
+        layout.addWidget(self.auto_save_cb)
+
+        self.skip_existing_cb = QCheckBox("Skip images with existing .txt")
+        self.skip_existing_cb.setChecked(True)
+        self.skip_existing_cb.setStyleSheet(
+            f"color: {COLORS['text_secondary']}; font-size: 11px; padding: 2px 0;"
+        )
+        self.skip_existing_cb.setToolTip("Skip images that already have a .txt caption sidecar file")
+        layout.addWidget(self.skip_existing_cb)
+
+        layout.addSpacing(4)
+
         self.batch_btn = QPushButton("Batch Caption All")
         self.batch_btn.setProperty("class", "accent-button")
         self.batch_btn.setFixedHeight(40)
@@ -918,6 +1021,73 @@ class SettingsPanel(QFrame):
         self._refresh_prompt_preview()
         self.settings_changed.emit()
 
+    def _set_training_mode(self, mode: str):
+        """Switch training mode and update UI."""
+        self._training_mode = mode
+
+        # Update button styles
+        for mid, btn in self._training_mode_buttons.items():
+            if mid == mode:
+                btn.setProperty("class", "preset-button-active")
+            else:
+                btn.setProperty("class", "preset-button")
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+
+        self._update_training_mode_ui()
+        self._refresh_prompt_preview()
+        self.settings_changed.emit()
+
+    def _update_training_mode_ui(self):
+        """Show/hide training-mode-specific widgets based on current mode."""
+        is_training = self._training_mode != "general"
+        self._exclusion_label.setVisible(is_training)
+        self._exclusion_hint.setVisible(is_training)
+        self.exclusion_text.setVisible(is_training)
+
+        hints = {
+            "style": "Describe the visual style elements the model should learn "
+                     "(e.g. texture, artistic treatment, medium). These will NOT appear in captions.",
+            "character": "Describe the character's fixed physical traits "
+                         "(e.g. face shape, eye color, body type). These will NOT appear in captions.",
+            "concept": "Describe the concept or visual motif being trained "
+                        "(e.g. a composition technique, effect). These will NOT appear in captions.",
+        }
+        self._exclusion_hint.setText(hints.get(self._training_mode, ""))
+
+    def _build_exclusion_block(self) -> str:
+        """Build the exclusion instruction string for the current training mode."""
+        if self._training_mode == "general":
+            return ""
+
+        exclusion_text = self.exclusion_text.toPlainText().strip()
+        if not exclusion_text:
+            return ""
+
+        mode_context = {
+            "style": (
+                "The user is training a STYLE LoRA. The following visual style elements "
+                "are what the model should learn implicitly — do NOT describe or mention "
+                "them in your caption. Focus on describing everything ELSE in the image "
+                "(subject, scene, composition, colors, lighting setup, mood)."
+            ),
+            "character": (
+                "The user is training a CHARACTER LoRA. The following physical traits "
+                "belong to the character being trained — do NOT describe or mention "
+                "them in your caption. Focus on describing everything ELSE "
+                "(pose, action, clothing, expression, setting, background, lighting)."
+            ),
+            "concept": (
+                "The user is training a CONCEPT LoRA. The following concept-specific "
+                "elements are what the model should learn implicitly — do NOT describe "
+                "or mention them in your caption. Focus on describing everything ELSE "
+                "in the image."
+            ),
+        }
+
+        context = mode_context.get(self._training_mode, "")
+        return f" {context} Elements to EXCLUDE: {exclusion_text}."
+
     def _toggle_extra_options(self, visible: bool):
         """Toggle extra options visibility."""
         self._show_extra_options = visible
@@ -1034,7 +1204,9 @@ class SettingsPanel(QFrame):
         """
         # Custom edit mode — user typed their own prompt, return it as-is
         if self._custom_edit_mode:
-            return self.prompt_text.toPlainText().strip()
+            prompt = self.prompt_text.toPlainText().strip()
+            prompt += self._build_exclusion_block()
+            return prompt
 
         length_key = self.caption_length_combo.currentText()
         length_instruction = CAPTION_LENGTHS.get(length_key, "")
@@ -1048,24 +1220,45 @@ class SettingsPanel(QFrame):
             # Look for a name input field — fallback to "the subject"
             name_value = getattr(self, "_name_input_value", "") or "the subject"
 
-        # Find active preset and its builder
+        # Build the base prompt from the active preset's builder
+        prompt = ""
         if self._active_preset_id:
             for preset in TARGET_PRESETS:
                 if preset["id"] == self._active_preset_id:
                     builder = preset.get("prompt_builder")
                     if builder:
-                        return builder(length_instruction, extra_opts, name_value)
+                        prompt = builder(length_instruction, extra_opts, name_value)
                     break
 
         # No preset selected or no builder — use generic fallback
-        base_prompt = self.prompt_text.toPlainText().strip()
-        return _build_prompt_generic(length_instruction, extra_opts, name_value, base_prompt)
+        if not prompt:
+            base_prompt = self.prompt_text.toPlainText().strip()
+            prompt = _build_prompt_generic(length_instruction, extra_opts, name_value, base_prompt)
+
+        # Append training-mode exclusion instructions
+        prompt += self._build_exclusion_block()
+        return prompt
 
     def get_prefix(self) -> str:
-        return self.prefix_input.text().strip()
+        """Return the effective prefix, including trigger word if set."""
+        trigger = self.trigger_word_input.text().strip()
+        prefix = self.prefix_input.text().strip()
+        if trigger and prefix:
+            return f"{trigger}, {prefix}"
+        elif trigger:
+            return f"{trigger},"
+        return prefix
 
     def get_suffix(self) -> str:
         return self.suffix_input.text().strip()
+
+    def get_training_mode(self) -> str:
+        """Return the active training mode: general, style, character, or concept."""
+        return self._training_mode
+
+    def get_exclusion_text(self) -> str:
+        """Return the raw exclusion text entered by the user."""
+        return self.exclusion_text.toPlainText().strip()
 
     def get_temperature(self) -> float:
         return self.temp_slider.value() / 10.0

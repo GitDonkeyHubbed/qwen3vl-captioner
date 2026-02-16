@@ -194,6 +194,9 @@ class MainWindow(QMainWindow):
         self._build_status_bar()
         self._connect_signals()
 
+        # Populate model pick-list from available GGUF files on disk
+        self._refresh_model_combo()
+
         # Kick off GPU monitoring immediately (don't wait for model load)
         self._update_gpu_info()
         self._gpu_timer.start()
@@ -717,6 +720,7 @@ class MainWindow(QMainWindow):
         from gui.app_settings_dialog import AppSettingsDialog
         dlg = AppSettingsDialog(self)
         dlg.theme_changed.connect(self._on_theme_changed)
+        dlg.paths_changed.connect(self._refresh_model_combo)
         dlg.exec()
 
     def _on_theme_changed(self, mode: str):
@@ -807,6 +811,8 @@ class MainWindow(QMainWindow):
         filename = Path(local_path).name
         self._queue_label.setText(f"Downloaded: {filename}")
         self._notify(f"Download complete: {filename}", "success")
+        # Refresh the model pick-list so the new file appears
+        self._refresh_model_combo()
 
     def _on_download_error(self, error: str):
         """Handle download failure."""
@@ -842,26 +848,72 @@ class MainWindow(QMainWindow):
         else:
             self._bell_badge.setVisible(False)
 
-    def _find_model_file(self) -> Optional[Path]:
-        """Search for the GGUF model file."""
-        search_dirs = []
+    # --- Model file scanning helpers ---
 
+    def _get_search_dirs(self) -> List[Path]:
+        """Return the list of directories to scan for GGUF files."""
+        from gui.config import get_model_search_paths
+        dirs: List[Path] = []
         if self._model_dir:
-            search_dirs.append(self._model_dir)
-
-        # Check parent directory (where the model likely is)
+            dirs.append(self._model_dir)
         app_dir = Path(__file__).resolve().parent
-        search_dirs.append(app_dir.parent)
-        search_dirs.append(app_dir)
+        dirs.append(app_dir.parent)
+        dirs.append(app_dir)
+        # Append user-configured extra search paths
+        for p in get_model_search_paths():
+            d = Path(p)
+            if d not in dirs:
+                dirs.append(d)
+        return dirs
 
-        for dir_path in search_dirs:
+    def _scan_model_files(self) -> List[Path]:
+        """Return all non-mmproj GGUF files found in the search directories."""
+        seen: set = set()
+        results: List[Path] = []
+        for dir_path in self._get_search_dirs():
             if not dir_path.is_dir():
                 continue
-            for f in dir_path.iterdir():
-                if f.is_file() and f.suffix == ".gguf" and "mmproj" not in f.name.lower():
-                    return f
+            for f in sorted(dir_path.iterdir()):
+                if (
+                    f.is_file()
+                    and f.suffix.lower() == ".gguf"
+                    and "mmproj" not in f.name.lower()
+                    and f.name not in seen
+                ):
+                    seen.add(f.name)
+                    results.append(f)
+        return results
 
-        return None
+    def _refresh_model_combo(self):
+        """Populate the settings panel model combo with discovered GGUF files."""
+        models = self._scan_model_files()
+        combo = self._settings_panel.model_combo
+        prev = combo.currentText()
+        combo.blockSignals(True)
+        combo.clear()
+        if models:
+            for m in models:
+                # Display filename, store full path as item data
+                combo.addItem(m.stem, str(m))
+            # Try to restore the previous selection
+            idx = combo.findText(prev)
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
+        else:
+            combo.addItem("(no models found)")
+        combo.blockSignals(False)
+
+    def _find_model_file(self) -> Optional[Path]:
+        """Return the model Path currently selected in the combo box."""
+        combo = self._settings_panel.model_combo
+        path_str = combo.currentData()
+        if path_str:
+            p = Path(path_str)
+            if p.is_file():
+                return p
+        # Fallback: first available GGUF
+        models = self._scan_model_files()
+        return models[0] if models else None
 
     # --- Caption Generation ---
 
@@ -920,6 +972,14 @@ class MainWindow(QMainWindow):
             self._captions[str(self._current_image)] = caption
             self._file_browser.set_item_caption(self._current_image, caption)
             self._file_browser.set_item_status(self._current_image, "done")
+
+            # Auto-save .txt sidecar during batch (or always if checkbox is on)
+            if self._settings_panel.auto_save_cb.isChecked():
+                txt_path = self._current_image.with_suffix(".txt")
+                try:
+                    txt_path.write_text(caption, encoding="utf-8")
+                except Exception as e:
+                    self._notify(f"Auto-save failed for {txt_path.name}: {e}", "error")
 
         # Update inference time
         inf_time = self._engine.last_inference_time
@@ -992,6 +1052,21 @@ class MainWindow(QMainWindow):
         if not all_paths:
             QMessageBox.warning(self, "No Images", "Please import images first.")
             return
+
+        # Optionally skip images that already have a .txt sidecar
+        skip_existing = self._settings_panel.skip_existing_cb.isChecked()
+        if skip_existing:
+            filtered = [p for p in all_paths if not p.with_suffix(".txt").exists()]
+            skipped = len(all_paths) - len(filtered)
+            if not filtered:
+                QMessageBox.information(
+                    self, "Nothing to Do",
+                    f"All {len(all_paths)} images already have .txt captions."
+                )
+                return
+            if skipped:
+                self._notify(f"Skipping {skipped} images with existing captions", "info")
+            all_paths = filtered
 
         self._batch_queue = list(all_paths)
         self._batch_index = 0

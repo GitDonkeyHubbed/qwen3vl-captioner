@@ -14,7 +14,20 @@ _CONFIG_FILE = _CONFIG_DIR / "config.json"
 _DEFAULTS: Dict[str, Any] = {
     "theme": "dark",
     "hf_token": "",
+    "model_search_paths": [],
 }
+
+
+def get_model_search_paths() -> list:
+    """Return the list of extra directories to scan for GGUF models."""
+    return load_config().get("model_search_paths", [])
+
+
+def set_model_search_paths(paths: list):
+    """Persist the list of extra model search directories."""
+    cfg = load_config()
+    cfg["model_search_paths"] = [str(p) for p in paths]
+    save_config(cfg)
 
 
 def _ensure_dir():

@@ -10,7 +10,8 @@ Provides:
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QLineEdit, QCheckBox, QFrame, QWidget,
+    QLineEdit, QCheckBox, QFrame, QWidget, QListWidget, QListWidgetItem,
+    QFileDialog,
 )
 
 from gui.config import load_config, save_config
@@ -21,11 +22,12 @@ class AppSettingsDialog(QDialog):
     """Modal settings dialog opened by the gear icon."""
 
     theme_changed = pyqtSignal(str)   # "dark" or "light"
+    paths_changed = pyqtSignal()        # model search paths were modified
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Settings")
-        self.setFixedSize(450, 340)
+        self.setFixedSize(500, 560)
         self.setStyleSheet(
             f"QDialog {{ background-color: {COLORS['bg_darkest']}; "
             f"border: 1px solid {COLORS['border_light']}; border-radius: 10px; }}"
@@ -136,6 +138,69 @@ class AppSettingsDialog(QDialog):
         token_row.addWidget(self._show_token_btn)
 
         root.addLayout(token_row)
+        root.addSpacing(16)
+
+        # --- Separator ---
+        sep2 = QFrame()
+        sep2.setFixedHeight(1)
+        sep2.setStyleSheet(f"background: {COLORS['border']};")
+        root.addWidget(sep2)
+        root.addSpacing(16)
+
+        # --- Model Search Paths Section ---
+        root.addWidget(self._section_header("MODEL SEARCH PATHS"))
+        root.addSpacing(6)
+
+        paths_desc = QLabel("Additional directories to scan for .gguf model files")
+        paths_desc.setStyleSheet(
+            f"color: {COLORS['text_dim']}; font-size: 11px; background: transparent;"
+        )
+        root.addWidget(paths_desc)
+        root.addSpacing(6)
+
+        self._paths_list = QListWidget()
+        self._paths_list.setStyleSheet(
+            f"QListWidget {{"
+            f"  background-color: {COLORS['bg_dark']};"
+            f"  color: {COLORS['text_primary']};"
+            f"  border: 1px solid {COLORS['border']};"
+            f"  border-radius: 6px; padding: 4px;"
+            f"  font-family: 'Consolas', monospace; font-size: 11px;"
+            f"}}"
+            f"QListWidget::item {{ padding: 3px 4px; }}"
+            f"QListWidget::item:selected {{ background: {COLORS['accent']}; }}"
+        )
+        self._paths_list.setMinimumHeight(80)
+        # Load existing paths
+        for p in self._cfg.get("model_search_paths", []):
+            self._paths_list.addItem(p)
+        root.addWidget(self._paths_list)
+
+        paths_btn_row = QHBoxLayout()
+        paths_btn_row.setSpacing(6)
+
+        add_path_btn = QPushButton("+ Add Folder")
+        add_path_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        add_path_btn.setStyleSheet(
+            f"QPushButton {{ background: {COLORS['bg_hover']}; color: {COLORS['text_primary']}; "
+            f"border: 1px solid {COLORS['border']}; border-radius: 6px; padding: 6px 12px; font-size: 11px; }}"
+            f"QPushButton:hover {{ background: {COLORS['accent']}; border-color: {COLORS['accent']}; }}"
+        )
+        add_path_btn.clicked.connect(self._add_search_path)
+        paths_btn_row.addWidget(add_path_btn)
+
+        remove_path_btn = QPushButton("− Remove")
+        remove_path_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        remove_path_btn.setStyleSheet(
+            f"QPushButton {{ background: {COLORS['bg_hover']}; color: {COLORS['text_primary']}; "
+            f"border: 1px solid {COLORS['border']}; border-radius: 6px; padding: 6px 12px; font-size: 11px; }}"
+            f"QPushButton:hover {{ background: {COLORS['error']}; border-color: {COLORS['error']}; }}"
+        )
+        remove_path_btn.clicked.connect(self._remove_search_path)
+        paths_btn_row.addWidget(remove_path_btn)
+
+        paths_btn_row.addStretch()
+        root.addLayout(paths_btn_row)
 
         root.addStretch()
 
@@ -184,8 +249,36 @@ class AppSettingsDialog(QDialog):
         self._cfg["theme"] = mode
         self.theme_changed.emit(mode)
 
+    def _add_search_path(self):
+        """Open a folder picker to add a model search directory."""
+        folder = QFileDialog.getExistingDirectory(
+            self, "Select Model Directory", "",
+            QFileDialog.Option.ShowDirsOnly,
+        )
+        if folder:
+            # Avoid duplicates
+            existing = [self._paths_list.item(i).text() for i in range(self._paths_list.count())]
+            if folder not in existing:
+                self._paths_list.addItem(folder)
+
+    def _remove_search_path(self):
+        """Remove the currently selected search path."""
+        row = self._paths_list.currentRow()
+        if row >= 0:
+            self._paths_list.takeItem(row)
+
     def _save_and_close(self):
         self._cfg["theme"] = "dark" if self._dark_mode_cb.isChecked() else "light"
         self._cfg["hf_token"] = self._token_input.text().strip()
+
+        # Collect search paths from list widget
+        old_paths = self._cfg.get("model_search_paths", [])
+        new_paths = [self._paths_list.item(i).text() for i in range(self._paths_list.count())]
+        self._cfg["model_search_paths"] = new_paths
+
         save_config(self._cfg)
+
+        if new_paths != old_paths:
+            self.paths_changed.emit()
+
         self.accept()
