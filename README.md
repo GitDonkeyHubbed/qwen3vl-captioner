@@ -41,6 +41,11 @@ When enabled, this injects explicit instructions to describe **all** content (in
 - **Smart Model Handling**: Native GGUF support with auto-downloading.
 - **Hardware Monitoring**: Real-time GPU VRAM usage display.
 - **Safety Controls**: Toggle between "PG" and fully "Uncensored" modes.
+-   Drag & Drop Enabled
+
+## 📦 Portable Release
+
+-  This version is fully portable. Models are now detected in the application folder, making it easier to share and install.
 
 ---
 
