@@ -32,6 +32,9 @@ When enabled, this injects explicit instructions to describe **all** content (in
 
 ## ✨ Key Features
 
+- **Clinical Precision**: Using anatomically accurate, objective language instead of "creative writing" style. Designed for training, not storytelling.
+- **Universal "Edit" Mode**: Full control via the Edit button to handle any prompt format (JSON, XML, Booru) without needing complex hardcoded "modes".
+- **Lean Architecture**: Focused on speed and simplicity. No bloat, just tools that work.
 - **Multi-Model Presets**: Pre-configured formats for **Flux 1 & 2**, **Stable Diffusion**, **Pony (SDXL)**, **Z-Image**, and more.
 - **Drag & Drop**: Drop images or entire folders directly into the app.
 - **Batch Processing**: Caption thousands of images automatically.
