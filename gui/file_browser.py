@@ -9,13 +9,14 @@ snippets. Matches the Figma "VL-CAPTIONER Studio Pro" sidebar design:
   - Emerald CheckCircle overlay on completed items
   - Status text: blue for processing, zinc-500 for pending
   - Import button at bottom
+  - Drag & Drop support for images and folders
 """
 
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QTimer
-from PyQt6.QtGui import QPixmap, QIcon, QFont, QPainter, QColor, QPen, QBrush
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QTimer, QMimeData
+from PyQt6.QtGui import QPixmap, QIcon, QFont, QPainter, QColor, QPen, QBrush, QDragEnterEvent, QDropEvent
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QScrollArea, QFrame, QFileDialog, QSizePolicy,
@@ -180,10 +181,34 @@ class ThumbnailItem(QFrame):
         super().mousePressEvent(event)
 
 
+class _DropOverlay(QFrame):
+    """Semi-transparent overlay shown when dragging files over the panel."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet(
+            f"background: rgba(59, 130, 246, 0.12); "
+            f"border: 2px dashed {COLORS['accent']}; "
+            f"border-radius: 8px;"
+        )
+        self.setVisible(False)
+        self._label = QLabel("📂  Drop images here", self)
+        self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._label.setStyleSheet(
+            f"color: {COLORS['accent_text']}; font-size: 14px; font-weight: 600; "
+            f"background: transparent; border: none;"
+        )
+
+    def resizeEvent(self, event):
+        self._label.setGeometry(0, 0, self.width(), self.height())
+        super().resizeEvent(event)
+
+
 class FileBrowserPanel(QFrame):
     """
     Left sidebar panel with project file browser.
     Shows imported images as searchable thumbnail list.
+    Supports drag & drop of image files and folders.
     """
 
     image_selected = pyqtSignal(Path)
@@ -195,6 +220,9 @@ class FileBrowserPanel(QFrame):
         self.setProperty("class", "sidebar-panel")
         self.setMinimumWidth(220)
         self.setMaximumWidth(320)
+
+        # Enable drag & drop
+        self.setAcceptDrops(True)
 
         self._items: Dict[str, ThumbnailItem] = {}  # str(path) -> ThumbnailItem
         self._current_selection: Optional[Path] = None
@@ -312,7 +340,74 @@ class FileBrowserPanel(QFrame):
         add_row.addWidget(self.clear_btn)
 
         btn_layout.addLayout(add_row)
+
+        # Drag & drop hint label
+        drop_hint = QLabel("💡 Tip: drag & drop images or folders here")
+        drop_hint.setStyleSheet(
+            f"color: {COLORS['text_dim']}; font-size: 9px; font-style: italic; padding-top: 2px;"
+        )
+        drop_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        btn_layout.addWidget(drop_hint)
+
         layout.addWidget(btn_frame)
+
+        # ── Drop overlay (shown during drag) ──
+        self._drop_overlay = _DropOverlay(self)
+
+    # ─── Drag & Drop ──────────────────────────────────────────
+
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        """Accept drag if it contains file URLs."""
+        if event.mimeData() and event.mimeData().hasUrls():
+            # Check if any URL is an image or directory
+            has_valid = False
+            for url in event.mimeData().urls():
+                path = Path(url.toLocalFile())
+                if path.is_dir() or (path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS):
+                    has_valid = True
+                    break
+            if has_valid:
+                event.acceptProposedAction()
+                self._drop_overlay.setGeometry(0, 0, self.width(), self.height())
+                self._drop_overlay.setVisible(True)
+                return
+        event.ignore()
+
+    def dragLeaveEvent(self, event):
+        """Hide drop overlay when drag leaves."""
+        self._drop_overlay.setVisible(False)
+
+    def dropEvent(self, event: QDropEvent):
+        """Handle dropped files and folders."""
+        self._drop_overlay.setVisible(False)
+        if not event.mimeData() or not event.mimeData().hasUrls():
+            event.ignore()
+            return
+
+        image_paths: List[Path] = []
+        for url in event.mimeData().urls():
+            path = Path(url.toLocalFile())
+            if path.is_dir():
+                # Import all images from the dropped directory
+                for f in sorted(path.iterdir()):
+                    if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS:
+                        image_paths.append(f)
+            elif path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS:
+                image_paths.append(path)
+
+        if image_paths:
+            self.add_images(image_paths)
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def resizeEvent(self, event):
+        """Keep the drop overlay sized to the panel."""
+        super().resizeEvent(event)
+        if hasattr(self, "_drop_overlay"):
+            self._drop_overlay.setGeometry(0, 0, self.width(), self.height())
+
+    # ─── Public API ───────────────────────────────────────────
 
     def add_images(self, paths: List[Path]):
         """Add images to the file browser."""

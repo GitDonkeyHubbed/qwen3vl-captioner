@@ -1,42 +1,43 @@
 <p align="center">
-  <img src="assets/VL_GGUF_Captioner GUI Screenshot 2.png" alt="VL-CAPTIONER Studio Pro" width="900"/>
+  <img src="assets/VL_GGUF_Captioner GUI Screenshot 2.png" alt="QWEN 3 VL ABL Captioner" width="900"/>
 </p>
 
-<h1 align="center"> Uncensored QWEN 3 VL-CAPTIONER Studio Pro</h1>
-<h3 align="center">GPU-Accelerated Image Captioning with Qwen3-VL — Desktop GUI</h3>
+<h1 align="center">QWEN 3 VL ABL Captioner V1.2.0 — GGUF Engine</h1>
+<h3 align="center">Professional GPU-Accelerated Image Captioning for Datasets</h3>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/python-3.11%E2%80%933.12-blue?logo=python" alt="Python"/>
-  <img src="https://img.shields.io/badge/engine-llama.cpp-orange?logo=llama" alt="Engine"/>
+  <img src="https://img.shields.io/badge/version-1.2.0-blue" alt="Version"/>
+  <img src="https://img.shields.io/badge/python-3.12-blue?logo=python" alt="Python"/>
   <img src="https://img.shields.io/badge/GPU-CUDA%2012.x-green?logo=nvidia" alt="CUDA"/>
-  <img src="https://img.shields.io/badge/license-MIT-purple" alt="License"/>
   <img src="https://img.shields.io/badge/platform-Windows-lightgrey?logo=windows" alt="Platform"/>
 </p>
 
 ---
 
-A fully offline, portable desktop application for generating high-quality image captions using the **Qwen3-VL 8B** vision-language model. Built with a professional PyQt6 dark-themed GUI, GGUF quantized model inference via **llama-cpp-python**, and full CUDA GPU acceleration.
+## 🚀 What's New in V1.2.0
 
-Designed for AI artists, dataset curators, and Stable Diffusion / Flux trainers who need accurate, customizable captions for their image datasets.
+This release brings a major overhaul to how captions are generated, focusing on **accuracy, anatomy, and detail** over "storytelling" fluff.
+
+### 🏥 Clinical Precision Mode
+We've completely rewritten the prompts for all models (Flux, Stable Diffusion, Pony, etc.). Instead of "cinematic" or "moody" descriptions, the engine now focuses on:
+- **Physical Reality**: Exact shapes, textures, and spatial relations.
+- **Accurate Anatomy**: Detailed descriptions of bodies and poses without euphemisms.
+- **Objective Detail**: "Horses through" the image content, listing exactly what is there.
+
+### 🔞 Uncensored / Adult Detail Option
+A new **"Uncensored / Adult Detail"** checkbox in the settings.
+When enabled, this injects explicit instructions to describe **all** content (including nudity and adult themes) with full anatomical accuracy, bypassing standard safety refusals. Essential for high-quality dataset training.
 
 ---
 
 ## ✨ Key Features
 
-| Feature | Description |
-|---------|-------------|
-| **🖼️ One-click folder import** | Load an entire dataset directory at once — all images appear in a searchable sidebar |
-| **⚡ Batch captioning** | Caption all imported images sequentially with a single click and progress tracking |
-| **🎯 7 target presets** | Optimized prompts for Stable Diffusion, Flux 1, Flux 2, Z-Image, Chroma, Pony (SDXL), and Qwen Image |
-| **📐 Adjustable quality** | Control caption length (short/medium/long/very long), max tokens, and temperature |
-| **✏️ Custom prompts** | Write your own captioning prompt or edit the preset templates |
-| **🏷️ Prefix & Suffix** | Automatically prepend/append fixed text to every caption (e.g., `sks style,`, `masterpiece`) |
-| **💾 Export to .txt** | Save all captions as sidecar `.txt` files alongside the original images |
-| **📊 Dataset view** | Table view of all images with dimensions, file size, and caption status |
-| **🎮 Real-time GPU monitoring** | Live VRAM usage percentage and RAM stats in the nav bar |
-| **📥 Built-in model downloader** | Download GGUF models directly from HuggingFace within the app |
-| **🔔 Notification system** | Activity log with bell icon badge for model loads, batch completion, etc. |
-| **🎨 Premium dark theme** | Zinc-based color palette with blue accent, smooth transitions, and modern aesthetics |
+- **Multi-Model Presets**: Pre-configured formats for **Flux 1 & 2**, **Stable Diffusion**, **Pony (SDXL)**, **Z-Image**, and more.
+- **Drag & Drop**: Drop images or entire folders directly into the app.
+- **Batch Processing**: Caption thousands of images automatically.
+- **Smart Model Handling**: Native GGUF support with auto-downloading.
+- **Hardware Monitoring**: Real-time GPU VRAM usage display.
+- **Safety Controls**: Toggle between "PG" and fully "Uncensored" modes.
 
 ---
 
@@ -44,56 +45,23 @@ Designed for AI artists, dataset curators, and Stable Diffusion / Flux trainers 
 
 <p align="center">
   <img src="assets/screenshot.png" alt="Main Interface" width="800"/>
-  <img src="assets/VL_GGUF_Captioner GUI Screenshot 2.png" alt="Main Interface" width="800"/>
-  <img src="assets/VL_GGUF_Captioner GUI Screenshot 4.png" alt="Main Interface" width="800"/> 
   <br/>
   <em>Main workspace: file browser, image viewer, caption editor, and model settings</em>
 </p>
 
 ---
 
-## 🚀 Quick Start (Windows)
+## ⚡ Quick Start
 
-### Prerequisites
-- **Windows 10/11** (64-bit)
-- **NVIDIA GPU** with 8+ GB VRAM (recommended for 8B model)
-- **CUDA 12.x drivers** installed ([Download from NVIDIA](https://developer.nvidia.com/cuda-downloads))
+### 1. Run Setup
+Double-click `setup.bat` to automatically install Python and all necessary dependencies.
 
-### Installation
+### 2. Get Models
+You can download models directly inside the app, or place your `.gguf` files in this same folder.
+**Recommended:** `Qwen3-VL-8B-Instruct-abliterated-v1.Q6_K.gguf`
 
-**1. Clone or download this repository:**
-```bash
-git clone https://github.com/GitDonkeyHubbed/qwen3vl-captioner.git
-cd qwen3vl-captioner
-```
-
-**2. Run the automated setup:**
-```batch
-setup.bat
-```
-
-This will:
-- Install [uv](https://astral.sh/uv) (fast Python package manager) if not present
-- Install Python 3.12 via uv
-- Create a virtual environment (`.venv/`)
-- Install all dependencies (PyQt6, Pillow, huggingface-hub, etc.)
-- Install [JamePeng's llama-cpp-python fork](https://github.com/JamePeng/llama-cpp-python) with Qwen3-VL + CUDA 12.4 support
-
-**3. Download the GGUF model files:**
-
-You need two files — the main model and the vision encoder. Place them in the **parent directory** of this app (one level above `qwen3vl-captioner/`):
-
-| File | Size | Link |
-|------|------|------|
-| `Qwen3-VL-8B-Instruct-abliterated-v1.Q6_K.gguf` | ~6.3 GB | [HuggingFace](https://huggingface.co/prithivMLmods/Qwen3-VL-8B-Instruct-abliterated-v1-GGUF) |
-| `Qwen3-VL-8B-Instruct-abliterated-v1.mmproj-f16.gguf` | ~1.1 GB | Same repo |
-
-> **Tip:** You can also download models from within the app using the built-in downloader (⬇ button next to the model selector).
-
-**4. Launch the app:**
-```batch
-run.bat
-```
+### 3. Launch
+Double-click `run.bat` to start the captioner.
 
 ---
 

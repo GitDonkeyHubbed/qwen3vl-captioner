@@ -34,6 +34,7 @@ _TAG_HINTS = {
     "includeDOF": "depth of field",
     "includeLightSource": "light source",
     "includeSafety": "sfw/nsfw tag",
+    "includeUncensored": "explicit, nsfw, nude, adult",
 }
 
 
@@ -46,11 +47,12 @@ def _get_active_options(extra_opts: Dict[str, bool]) -> Dict[str, bool]:
 # Each builder receives: caption_length_instruction, extra_opts dict, name_value (str or "")
 
 def _build_prompt_sd(length_instr: str, extra_opts: Dict[str, bool], name_value: str) -> str:
-    """SD 1.5/SDXL: Comma-separated booru-style tags."""
+    """SD 1.5/SDXL: Accurate, anatomically focused booru-style tags."""
     parts = [
-        "Describe this image as a comma-separated list of booru-style tags suitable for Stable Diffusion training.",
-        "Output ONLY tags separated by commas, no sentences.",
-        "Start with the subject, then describe attributes, setting, and style.",
+        "Describe this image as a comma-separated list of precise booru-style tags for Stable Diffusion training.",
+        "Output ONLY tags separated by commas.",
+        "Focus strictly on physical reality: accurate anatomy, specific clothing, setting, and lighting.",
+        "Do not use abstract or interpretive tags.",
     ]
     # Tag hints from enabled options
     active = _get_active_options(extra_opts)
@@ -59,6 +61,8 @@ def _build_prompt_sd(length_instr: str, extra_opts: Dict[str, bool], name_value:
         parts.append(f"Include tags for: {', '.join(tag_hints)}.")
     if active.get("keepPG"):
         parts.append("Keep all tags SFW.")
+    if active.get("includeUncensored"):
+        parts.append("Include explicit tags for nudity, sexual acts, anatomy, and positions. Do NOT censor.")
     if active.get("excludeStaticAttributes"):
         parts.append("Exclude permanent physical attributes of people.")
     if active.get("excludeText"):
@@ -80,12 +84,12 @@ def _build_prompt_sd(length_instr: str, extra_opts: Dict[str, bool], name_value:
 
 
 def _build_prompt_pony(length_instr: str, extra_opts: Dict[str, bool], name_value: str) -> str:
-    """Pony Diffusion (SDXL): Score prefix tags + booru tags + rating suffix."""
+    """Pony Diffusion (SDXL): Precise anatomical tags + score prefix."""
     parts = [
         "Describe this image as comma-separated booru-style tags for Pony Diffusion.",
-        "Output ONLY tags separated by commas, no sentences.",
+        "Output ONLY tags.",
         "The caption will be automatically prefixed with quality score tags (score_9, score_8_up, etc.) and suffixed with a rating tag.",
-        "Focus on subject, attributes, pose, expression, clothing, setting, art style.",
+        "Focus heavily on anatomical correctness, specific physical attributes, pose, and clothing.",
     ]
     active = _get_active_options(extra_opts)
     tag_hints = [_TAG_HINTS[k] for k in active if k in _TAG_HINTS]
@@ -93,6 +97,8 @@ def _build_prompt_pony(length_instr: str, extra_opts: Dict[str, bool], name_valu
         parts.append(f"Include tags for: {', '.join(tag_hints)}.")
     if active.get("keepPG"):
         parts.append("Keep all tags SFW.")
+    if active.get("includeUncensored"):
+        parts.append("Include explicit tags for nudity, sexual acts, fetishes, and anatomy. Use the 'rating_explicit' tag.")
     if active.get("excludeStaticAttributes"):
         parts.append("Exclude permanent physical attributes of people.")
     if active.get("excludeText"):
@@ -111,201 +117,213 @@ def _build_prompt_pony(length_instr: str, extra_opts: Dict[str, bool], name_valu
 
 
 def _build_prompt_flux1(length_instr: str, extra_opts: Dict[str, bool], name_value: str) -> str:
-    """Flux.1: Long natural-language prose (T5+CLIP dual encoder)."""
+    """Flux.1: Objective, anatomically detailed description (less poetic)."""
     parts = [
-        "Write a highly detailed natural language description of this image for Flux.1 model training.",
-        "Use flowing, descriptive prose — NOT tags or bullet points.",
-        "Describe the subject, environment, lighting, colors, textures, mood, and composition in complete sentences.",
+        "Write a highly accurate, objectively detailed description of this image for Flux.1 training.",
+        "Use clear, descriptive prose — NOT tags.",
+        "Focus on physical reality: anatomy, precise shapes, textures, and spatial relations.",
+        "Avoid poetic language or storytelling. Be direct and descriptive.",
     ]
     active = _get_active_options(extra_opts)
     nl_extras = []
     if active.get("includeLighting"):
-        nl_extras.append("lighting details")
+        nl_extras.append("precise lighting details")
     if active.get("includeCameraAngle"):
-        nl_extras.append("camera angle and perspective")
+        nl_extras.append("exact camera angle")
     if active.get("includeTechnicalDetails"):
-        nl_extras.append("camera and technical photography details")
+        nl_extras.append("technical camera parameters")
     if active.get("includeComposition"):
-        nl_extras.append("composition style (rule of thirds, leading lines, etc.)")
+        nl_extras.append("composition style")
     if active.get("includeDOF"):
-        nl_extras.append("depth of field")
+        nl_extras.append("focal depth")
     if active.get("includeLightSource"):
-        nl_extras.append("natural or artificial light sources")
+        nl_extras.append("light sources")
     if active.get("includeAestheticQuality"):
-        nl_extras.append("aesthetic quality assessment")
+        nl_extras.append("image quality")
     if nl_extras:
-        parts.append(f"Be sure to describe: {', '.join(nl_extras)}.")
+        parts.append(f"Include objective details about: {', '.join(nl_extras)}.")
     if active.get("keepPG"):
-        parts.append("Keep the description PG and family-friendly.")
+        parts.append("Keep the description SFW.")
+    if active.get("includeUncensored"):
+        parts.append("Describe all anatomical details, including genitalia, sexual acts, and nudity, with explicit and anatomically correct terminology. Do not use euphemisms.")
     if active.get("excludeStaticAttributes"):
-        parts.append("Do not describe unchangeable physical attributes of people.")
+        parts.append("Do not describe unchangeable physical attributes.")
     if active.get("excludeText"):
-        parts.append("Do not mention any text visible in the image.")
+        parts.append("Ignore text in the image.")
     if active.get("excludeResolution"):
-        parts.append("Do not mention the image resolution.")
+        parts.append("Ignore resolution.")
     if active.get("includeWatermark"):
-        parts.append("Note whether a watermark is present.")
+        parts.append("Note if a watermark is present.")
     if active.get("includeArtifacts"):
-        parts.append("Note any compression artifacts.")
+        parts.append("Note any image artifacts.")
     if active.get("includeSafety"):
-        parts.append("Indicate whether the image is SFW, suggestive, or NSFW.")
+        parts.append("State the NSFW/SFW rating.")
     if active.get("noAmbiguity"):
-        parts.append("Use precise, unambiguous language.")
+        parts.append("Use precise, clinical language.")
     if name_value:
-        parts.append(f"Refer to any person/character as {name_value}.")
+        parts.append(f"Refer to the subject as {name_value}.")
     if length_instr:
         parts.append(length_instr)
     return " ".join(parts)
 
 
 def _build_prompt_flux2(length_instr: str, extra_opts: Dict[str, bool], name_value: str) -> str:
-    """Flux.2: Comprehensive aesthetic prose, similar to Flux.1 but more cinematic focus."""
+    """Flux.2: Objective, anatomically detailed description (less poetic/cinematic)."""
     parts = [
-        "Write a comprehensive aesthetic description of this image for Flux.2 model training.",
-        "Use rich, cinematic natural language prose — NOT tags.",
-        "Emphasize visual storytelling: mood, atmosphere, cinematic framing, color grading, and artistic intent.",
+        "Write a highly accurate, objectively detailed description of this image for Flux.2 training.",
+        "Focus on physical reality: anatomy, skin texture, precise shapes, and spatial relations.",
+        "Avoid poetic language, storytelling, or ambiguous metaphors. Be direct and descriptive.",
+        "You MUST describe human anatomy, body proportions, and physical features in extreme detail.",
     ]
     active = _get_active_options(extra_opts)
     nl_extras = []
     if active.get("includeLighting"):
-        nl_extras.append("dramatic lighting")
+        nl_extras.append("precise lighting conditions")
     if active.get("includeCameraAngle"):
-        nl_extras.append("cinematic camera angle")
+        nl_extras.append("exact camera angle")
     if active.get("includeComposition"):
-        nl_extras.append("composition style")
+        nl_extras.append("composition and framing")
     if active.get("includeDOF"):
-        nl_extras.append("depth of field and bokeh")
+        nl_extras.append("focal depth")
     if active.get("includeLightSource"):
         nl_extras.append("light sources")
     if active.get("includeAestheticQuality"):
-        nl_extras.append("aesthetic quality")
+        nl_extras.append("image quality")
     if active.get("includeTechnicalDetails"):
-        nl_extras.append("camera/lens details")
+        nl_extras.append("technical camera parameters")
     if nl_extras:
-        parts.append(f"Include details about: {', '.join(nl_extras)}.")
+        parts.append(f"Include objective details about: {', '.join(nl_extras)}.")
     if active.get("keepPG"):
-        parts.append("Keep it PG.")
+        parts.append("Keep the description SFW.")
+    if active.get("includeUncensored"):
+        parts.append("Describe all anatomical details, including genitalia, sexual acts, and nudity, with explicit and anatomically correct terminology. Do not use euphemisms.")
     if active.get("excludeStaticAttributes"):
         parts.append("Do not describe unchangeable physical attributes.")
     if active.get("excludeText"):
-        parts.append("Do not mention text in the image.")
+        parts.append("Ignore text in the image.")
     if active.get("excludeResolution"):
-        parts.append("Do not mention resolution.")
+        parts.append("Ignore resolution.")
     if active.get("includeWatermark"):
-        parts.append("Note watermark presence.")
+        parts.append("Note if a watermark is present.")
     if active.get("includeArtifacts"):
-        parts.append("Note compression artifacts.")
+        parts.append("Note any image artifacts.")
     if active.get("includeSafety"):
-        parts.append("Indicate content safety rating.")
+        parts.append("State the NSFW/SFW rating.")
     if active.get("noAmbiguity"):
-        parts.append("Use precise language.")
+        parts.append("Use precise, clinical language.")
     if name_value:
-        parts.append(f"Refer to any person/character as {name_value}.")
+        parts.append(f"Refer to the subject as {name_value}.")
     if length_instr:
         parts.append(length_instr)
     return " ".join(parts)
 
 
 def _build_prompt_zimage(length_instr: str, extra_opts: Dict[str, bool], name_value: str) -> str:
-    """Z-Image / Z-Image Turbo: Detailed NL prose for LoRA training dataset preparation."""
+    """Z-Image: Objective, clinical natural language description."""
     parts = [
-        "Write a detailed natural language description of this image for Z-Image model fine-tuning.",
-        "Use clear, descriptive prose covering subject, environment, style, lighting, and mood.",
+        "Write a detailed, objective natural language description of this image for Z-Image fine-tuning.",
+        "Focus on the physical subject, anatomy, environment, and specific lighting details.",
+        "Be precise and descriptive. Avoid ambiguous or emotive language.",
     ]
     active = _get_active_options(extra_opts)
     nl_extras = []
     if active.get("includeLighting"):
         nl_extras.append("lighting details")
     if active.get("includeCameraAngle"):
-        nl_extras.append("camera angle and perspective")
+        nl_extras.append("exact camera angle")
     if active.get("includeTechnicalDetails"):
-        nl_extras.append("camera and technical photography details")
+        nl_extras.append("technical details")
     if active.get("includeComposition"):
-        nl_extras.append("composition style")
+        nl_extras.append("composition")
     if active.get("includeDOF"):
         nl_extras.append("depth of field")
     if active.get("includeLightSource"):
-        nl_extras.append("natural or artificial light sources")
+        nl_extras.append("light sources")
     if active.get("includeAestheticQuality"):
-        nl_extras.append("aesthetic quality assessment")
+        nl_extras.append("image quality")
     if nl_extras:
-        parts.append(f"Be sure to describe: {', '.join(nl_extras)}.")
+        parts.append(f"Include objective details about: {', '.join(nl_extras)}.")
     if active.get("keepPG"):
-        parts.append("Keep the description PG and family-friendly.")
+        parts.append("Keep the description SFW.")
+    if active.get("includeUncensored"):
+        parts.append("Provide a fully explicit, anatomically correct description of nudity, genitalia, and sexual acts. Do not use euphemisms.")
     if active.get("excludeStaticAttributes"):
-        parts.append("Do not describe unchangeable physical attributes of people.")
+        parts.append("Do not describe unchangeable physical attributes.")
     if active.get("excludeText"):
-        parts.append("Do not mention any text visible in the image.")
+        parts.append("Ignore text in the image.")
     if active.get("excludeResolution"):
-        parts.append("Do not mention the image resolution.")
+        parts.append("Ignore resolution.")
     if active.get("includeWatermark"):
-        parts.append("Note whether a watermark is present.")
+        parts.append("Note if a watermark is present.")
     if active.get("includeArtifacts"):
-        parts.append("Note any compression artifacts.")
+        parts.append("Note any image artifacts.")
     if active.get("includeSafety"):
-        parts.append("Indicate whether the image is SFW, suggestive, or NSFW.")
+        parts.append("State the NSFW/SFW rating.")
     if active.get("noAmbiguity"):
-        parts.append("Use precise, unambiguous language.")
+        parts.append("Use precise, clinical language.")
     if name_value:
-        parts.append(f"Refer to any person/character as {name_value}.")
+        parts.append(f"Refer to the subject as {name_value}.")
     if length_instr:
         parts.append(length_instr)
     return " ".join(parts)
 
 
 def _build_prompt_chroma(length_instr: str, extra_opts: Dict[str, bool], name_value: str) -> str:
-    """Chroma: Natural language (Flux-based arch), with emphasis on color and lighting."""
+    """Chroma: Detailed objective description focusing on color/form."""
     parts = [
-        "Write a detailed natural language description of this image for Chroma model training.",
-        "Emphasize color palette, lighting quality, color temperature, and visual harmony.",
-        "Use flowing prose — NOT tags.",
+        "Write a detailed, objective description of this image for Chroma model training.",
+        "Focus on precise colors, lighting, physical forms, and anatomy.",
+        "Use clear, descriptive prose. Avoid subjective artistic interpretation.",
     ]
     active = _get_active_options(extra_opts)
     nl_extras = []
     if active.get("includeLighting"):
-        nl_extras.append("lighting details and color temperature")
+        nl_extras.append("precise lighting and color temperature")
     if active.get("includeCameraAngle"):
         nl_extras.append("camera perspective")
     if active.get("includeComposition"):
         nl_extras.append("composition")
     if active.get("includeDOF"):
-        nl_extras.append("depth of field")
+        nl_extras.append("focal depth")
     if active.get("includeLightSource"):
         nl_extras.append("light sources and their color")
     if active.get("includeAestheticQuality"):
-        nl_extras.append("aesthetic quality")
+        nl_extras.append("image quality")
     if active.get("includeTechnicalDetails"):
-        nl_extras.append("camera details")
+        nl_extras.append("technical details")
     if nl_extras:
-        parts.append(f"Include: {', '.join(nl_extras)}.")
+        parts.append(f"Include objective details about: {', '.join(nl_extras)}.")
     if active.get("keepPG"):
         parts.append("Keep it PG.")
+    if active.get("includeUncensored"):
+        parts.append("Describe all anatomical details, including genitalia and sexual acts, with explicit and anatomically correct terminology.")
     if active.get("excludeStaticAttributes"):
         parts.append("Do not describe unchangeable physical attributes.")
     if active.get("excludeText"):
-        parts.append("Do not mention text in the image.")
+        parts.append("Ignore text in the image.")
     if active.get("excludeResolution"):
-        parts.append("Do not mention resolution.")
+        parts.append("Ignore resolution.")
     if active.get("includeWatermark"):
-        parts.append("Note watermark presence.")
+        parts.append("Note if a watermark is present.")
     if active.get("includeArtifacts"):
-        parts.append("Note compression artifacts.")
+        parts.append("Note any image artifacts.")
     if active.get("includeSafety"):
-        parts.append("Indicate content safety rating.")
+        parts.append("State the NSFW/SFW rating.")
     if active.get("noAmbiguity"):
         parts.append("Use precise language.")
     if name_value:
-        parts.append(f"Refer to any person/character as {name_value}.")
+        parts.append(f"Refer to the subject as {name_value}.")
     if length_instr:
         parts.append(length_instr)
     return " ".join(parts)
 
 
 def _build_prompt_qwen(length_instr: str, extra_opts: Dict[str, bool], name_value: str) -> str:
-    """Qwen Image: Comprehensive descriptive natural language."""
+    """Qwen Image: Clinical, objective, comprehensive description."""
     parts = [
-        "Provide a comprehensive, detailed description of this image for Qwen-based image generation training.",
-        "Use complete sentences with rich detail about every visual element.",
+        "Provide a highly accurate, objective, and comprehensive description of this image for Qwen-based training.",
+        "Use complete sentences. Focus on physical reality, anatomy, and precise visual details.",
+        "Avoid storytelling, mood, or interpretation.",
     ]
     active = _get_active_options(extra_opts)
     # Append all applicable NL instructions (use full_text from 3-tuple)
@@ -315,8 +333,10 @@ def _build_prompt_qwen(length_instr: str, extra_opts: Dict[str, bool], name_valu
             if key == "referAsName":
                 continue
             parts.append(full_text)
+    if active.get("includeUncensored"):
+         parts.append("Describe all anatomy, nudity, and sexual acts in clear, explicit, and anatomically correct terms.")
     if name_value:
-        parts.append(f"If there is a person/character in the image you must refer to them as {name_value}.")
+        parts.append(f"Refer to the person/character as {name_value}.")
     if length_instr:
         parts.append(length_instr)
     return " ".join(parts)
@@ -358,6 +378,7 @@ EXTRA_OPTIONS = [
     ("includeLightSource", "Light sources", "If applicable, mention the likely use of artificial or natural lighting sources."),
     ("noAmbiguity", "No ambiguous language", "Do NOT use any ambiguous language."),
     ("includeSafety", "SFW / NSFW rating", "Include whether the image is sfw, suggestive, or nsfw."),
+    ("includeUncensored", "Uncensored / Adult Detail", "Describe all adult/NSFW content in explicit detail, including positions, looks, clothing/nudity, sexual activity, and provocative elements."),
 ]
 
 # Convenience set of all option keys — used by per-preset support mapping
@@ -468,6 +489,7 @@ class SettingsPanel(QFrame):
     load_model_requested = pyqtSignal()
     unload_model_requested = pyqtSignal()
     download_model_requested = pyqtSignal(str)   # combo display name
+    cancel_requested = pyqtSignal()               # cancel generation / batch / download
     settings_changed = pyqtSignal()
 
     def __init__(self, parent=None):
@@ -514,11 +536,13 @@ class SettingsPanel(QFrame):
         model_row.setSpacing(6)
 
         self.model_combo = QComboBox()
-        self.model_combo.addItems([
-            "QWEN 3 VL 8B_Q8",
-            "QWEN 3 VL 8B_Q6",
-        ])
-        self.model_combo.setCurrentIndex(1)  # Q6 default
+        # Populate from the full model registry (all GGUF quants + mmproj)
+        from gui.model_download_manager import get_all_model_display_names
+        self.model_combo.addItems(get_all_model_display_names())
+        # Default to Q6_K — a good balance of quality and VRAM usage
+        q6_index = self.model_combo.findText("Qwen3-VL 8B ABL — Q6_K (6.73 GB)")
+        if q6_index >= 0:
+            self.model_combo.setCurrentIndex(q6_index)
         model_row.addWidget(self.model_combo, 1)
 
         self._download_btn = QPushButton()
@@ -755,6 +779,21 @@ class SettingsPanel(QFrame):
         self.batch_btn.setToolTip("Generate captions for every imported image using current settings")
         self.batch_btn.clicked.connect(self.batch_caption_requested.emit)
         layout.addWidget(self.batch_btn)
+
+        # Cancel button — visible during generation / batch / download
+        self.cancel_btn = QPushButton("✕  Cancel")
+        self.cancel_btn.setFixedHeight(36)
+        self.cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.cancel_btn.setToolTip("Cancel current generation, batch, or download")
+        self.cancel_btn.setStyleSheet(
+            f"QPushButton {{ background: transparent; color: {COLORS['error']}; "
+            f"border: 1px solid {COLORS['error']}; border-radius: 6px; "
+            f"font-size: 12px; font-weight: 600; }} "
+            f"QPushButton:hover {{ background: {COLORS['error']}; color: #ffffff; }}"
+        )
+        self.cancel_btn.clicked.connect(self.cancel_requested.emit)
+        self.cancel_btn.setVisible(False)  # Hidden by default
+        layout.addWidget(self.cancel_btn)
 
         self.export_btn = QPushButton("#  Export to .txt Files")
         self.export_btn.setProperty("class", "secondary-button")
@@ -1133,3 +1172,11 @@ class SettingsPanel(QFrame):
         self.batch_btn.setEnabled(not is_generating)
         self.load_model_btn.setEnabled(not is_generating)
         self._download_btn.setEnabled(not is_generating)
+        # Show cancel button while generating
+        self.cancel_btn.setVisible(is_generating)
+
+    def set_download_in_progress(self, in_progress: bool):
+        """Toggle cancel button visibility during model download."""
+        self.cancel_btn.setVisible(in_progress)
+        self._download_btn.setEnabled(not in_progress)
+        self.load_model_btn.setEnabled(not in_progress)

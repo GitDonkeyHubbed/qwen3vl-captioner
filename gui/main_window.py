@@ -102,38 +102,7 @@ class CaptionWorker(QObject):
             self.error.emit(f"{e}\n{traceback.format_exc()}")
 
 
-class _ShieldIcon(QWidget):
-    """Small blue rounded-square with a shield glyph, matching the Figma brand icon."""
-    def __init__(self, size=28, parent=None):
-        super().__init__(parent)
-        self._size = size
-        self.setFixedSize(size, size)
 
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        # Rounded blue background
-        p.setBrush(QBrush(QColor(COLORS["accent"])))
-        p.setPen(Qt.PenStyle.NoPen)
-        p.drawRoundedRect(0, 0, self._size, self._size, 6, 6)
-        # Shield outline (simplified)
-        p.setPen(QPen(QColor(255, 255, 255, 180), 1.5))
-        p.setBrush(QBrush(QColor(255, 255, 255, 40)))
-        cx = self._size / 2
-        cy = self._size / 2
-        s = self._size * 0.32  # half-width
-        from PyQt6.QtGui import QPolygonF
-        from PyQt6.QtCore import QPointF
-        shield = QPolygonF([
-            QPointF(cx, cy - s * 1.1),      # top center
-            QPointF(cx + s, cy - s * 0.6),   # top right
-            QPointF(cx + s, cy + s * 0.1),   # mid right
-            QPointF(cx, cy + s * 1.1),       # bottom center
-            QPointF(cx - s, cy + s * 0.1),   # mid left
-            QPointF(cx - s, cy - s * 0.6),   # top left
-        ])
-        p.drawPolygon(shield)
-        p.end()
 
 
 class MainWindow(QMainWindow):
@@ -143,7 +112,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self, model_dir: Optional[Path] = None):
         super().__init__()
-        self.setWindowTitle("VL-CAPTIONER Studio Pro v1.4.2 — GGUF Engine")
+        self.setWindowTitle("QWEN 3 VL ABL Captioner V1.2.0 — GGUF Engine")
         self.setMinimumSize(1000, 650)
 
         # Screen-aware sizing: use 85% of available screen, clamped to minimums
@@ -211,16 +180,28 @@ class MainWindow(QMainWindow):
         left_group = QHBoxLayout()
         left_group.setSpacing(6)
 
-        # Shield icon
-        shield = _ShieldIcon(28)
-        left_group.addWidget(shield)
+        # Shield icon -> Qwen Logo (from file)
+        logo_path = Path(__file__).parent / "qwen-icon-logo-png_seeklogo-611724.png"
+        logo_label = QLabel()
+        logo_label.setFixedSize(28, 28)
+        if logo_path.exists():
+            from PyQt6.QtGui import QPixmap
+            pixmap = QPixmap(str(logo_path))
+            if not pixmap.isNull():
+                scaled = pixmap.scaled(
+                    28, 28,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation
+                )
+                logo_label.setPixmap(scaled)
+        left_group.addWidget(logo_label)
 
         # Brand text block
         brand_block = QVBoxLayout()
         brand_block.setContentsMargins(0, 0, 0, 0)
         brand_block.setSpacing(0)
 
-        brand_title = QLabel("VL-CAPTIONER")
+        brand_title = QLabel("QWEN 3 VL ABL Captioner")
         brand_title.setProperty("class", "brand-title")
         brand_title.setStyleSheet(
             f"color: {COLORS['text_primary']}; font-size: 13px; font-weight: 700; "
@@ -228,7 +209,7 @@ class MainWindow(QMainWindow):
         )
         brand_block.addWidget(brand_title)
 
-        brand_sub = QLabel("GGUF Studio Pro v1.4.2")
+        brand_sub = QLabel("V1.2.0")
         brand_sub.setProperty("class", "brand-subtitle")
         brand_sub.setStyleSheet(
             f"color: {COLORS['text_dim']}; font-size: 9px; font-family: 'Consolas', 'Courier New', monospace; "
@@ -545,6 +526,7 @@ class MainWindow(QMainWindow):
         self._settings_panel.export_requested.connect(self._export_all_captions)
         self._settings_panel.settings_changed.connect(self._on_settings_changed)
         self._settings_panel.download_model_requested.connect(self._download_model)
+        self._settings_panel.cancel_requested.connect(self._cancel_generation)
 
         # Header icon buttons
         if self._terminal_btn:
@@ -776,6 +758,9 @@ class MainWindow(QMainWindow):
         self._queue_label.setText(f"Downloading {info['filename']}...")
         self._notify(f"Downloading {info['filename']}...", "download")
 
+        # Show cancel button during download
+        self._settings_panel.set_download_in_progress(True)
+
         # Start download in background thread
         token = get_hf_token()
         self._download_thread = QThread()
@@ -804,6 +789,7 @@ class MainWindow(QMainWindow):
         """Handle successful download."""
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setVisible(False)
+        self._settings_panel.set_download_in_progress(False)
         filename = Path(local_path).name
         self._queue_label.setText(f"Downloaded: {filename}")
         self._notify(f"Download complete: {filename}", "success")
@@ -812,12 +798,17 @@ class MainWindow(QMainWindow):
         """Handle download failure."""
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setVisible(False)
+        self._settings_panel.set_download_in_progress(False)
         self._queue_label.setText("Download failed")
-        self._notify(f"Download failed: {error[:80]}", "error")
-        QMessageBox.critical(
-            self, "Download Error",
-            f"Failed to download model:\n\n{error}"
-        )
+        if "cancelled" not in error.lower():
+            self._notify(f"Download failed: {error[:80]}", "error")
+            QMessageBox.critical(
+                self, "Download Error",
+                f"Failed to download model:\n\n{error}"
+            )
+        else:
+            self._queue_label.setText("Download cancelled")
+            self._notify("Download cancelled by user", "info")
 
     # --- Notification helpers ---
 
@@ -843,9 +834,15 @@ class MainWindow(QMainWindow):
             self._bell_badge.setVisible(False)
 
     def _find_model_file(self) -> Optional[Path]:
-        """Search for the GGUF model file."""
-        search_dirs = []
+        """Search for the GGUF model file matching the selected combo entry."""
+        from gui.model_download_manager import get_model_info
 
+        # Try to match the specific model selected in the dropdown
+        combo_text = self._settings_panel.model_combo.currentText()
+        model_info = get_model_info(combo_text)
+        target_filename = model_info["filename"] if model_info else None
+
+        search_dirs = []
         if self._model_dir:
             search_dirs.append(self._model_dir)
 
@@ -854,6 +851,16 @@ class MainWindow(QMainWindow):
         search_dirs.append(app_dir.parent)
         search_dirs.append(app_dir)
 
+        # First pass: look for the specific selected model file
+        if target_filename:
+            for dir_path in search_dirs:
+                if not dir_path.is_dir():
+                    continue
+                candidate = dir_path / target_filename
+                if candidate.is_file():
+                    return candidate
+
+        # Fallback: any non-mmproj GGUF file
         for dir_path in search_dirs:
             if not dir_path.is_dir():
                 continue
@@ -908,6 +915,37 @@ class MainWindow(QMainWindow):
 
         self._generation_thread.start()
 
+    def _cancel_generation(self):
+        """Cancel the current caption generation or batch process."""
+        cancelled_something = False
+
+        # Cancel active caption worker
+        if self._caption_worker and self._is_generating:
+            self._caption_worker.cancel()
+            cancelled_something = True
+
+        # Cancel batch queue
+        if self._batch_queue:
+            remaining = len(self._batch_queue)
+            self._batch_queue.clear()
+            self._batch_index = 0
+            self._progress_bar.setVisible(False)
+            self._queue_label.setText(f"Batch cancelled ({remaining} remaining skipped)")
+            self._notify(f"Batch cancelled — {remaining} images skipped", "info")
+            cancelled_something = True
+
+        # Cancel active download
+        if self._download_worker and self._download_thread and self._download_thread.isRunning():
+            self._download_worker.cancel()
+            self._notify("Cancelling download...", "info")
+            cancelled_something = True
+
+        if cancelled_something:
+            self._caption_panel.show_feedback("Cancelled", is_success=False)
+            self._set_connection_status("ready", "Cancelled")
+        else:
+            self._caption_panel.show_feedback("Nothing to cancel", is_success=False)
+
     def _on_caption_finished(self, caption: str):
         """Handle completed caption generation."""
         self._is_generating = False
@@ -928,9 +966,46 @@ class MainWindow(QMainWindow):
 
         self._set_connection_status("ready", "Ready")
 
-        # Continue batch if active
+        # ── Auto-Save popup ──
+        # If we're in a batch, auto-save silently; otherwise ask the user.
         if self._batch_queue:
+            # During batch: auto-save each completed caption silently
+            self._auto_save_caption(self._current_image, caption)
             self._process_next_batch_item()
+        else:
+            # Single image or last batch item: ask user
+            self._prompt_auto_save(caption)
+
+    def _prompt_auto_save(self, caption: str):
+        """Show a Yes/No dialog asking whether to auto-save the caption file."""
+        if not self._current_image or not caption:
+            return
+
+        txt_path = self._current_image.with_suffix(".txt")
+        answer = QMessageBox.question(
+            self, "Auto Save Caption",
+            f"Caption generated!\n\n"
+            f"Save as: {txt_path.name}\n"
+            f"Location: {txt_path.parent}\n\n"
+            "Would you like to save this caption now?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,  # default to Yes
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self._auto_save_caption(self._current_image, caption)
+
+    def _auto_save_caption(self, image_path: Path, caption: str):
+        """Silently save a caption as a .txt sidecar file."""
+        if not image_path or not caption:
+            return
+        txt_path = image_path.with_suffix(".txt")
+        try:
+            txt_path.write_text(caption, encoding="utf-8")
+            self._captions[str(image_path)] = caption
+            self._file_browser.set_item_status(image_path, "done")
+            self._caption_panel.show_feedback(f"Saved: {txt_path.name}")
+        except Exception as e:
+            self._caption_panel.show_feedback(f"Save error: {e}", is_success=False)
 
     def _on_caption_error(self, error: str):
         """Handle caption generation error."""
@@ -938,12 +1013,20 @@ class MainWindow(QMainWindow):
         self._caption_panel.set_generating(False)
         self._settings_panel.set_generating(False)
         self._image_viewer.set_processing(False)
-        self._caption_panel.show_feedback(f"Error: {error[:80]}", is_success=False)
-        self._set_connection_status("error", "Error")
-        self._notify(f"Caption error: {error[:80]}", "error")
 
-        # Cancel batch on error
-        self._batch_queue.clear()
+        # Don't show error if it was a user cancellation
+        if "cancel" in error.lower():
+            self._caption_panel.show_feedback("Generation cancelled", is_success=False)
+            self._set_connection_status("ready", "Cancelled")
+            self._notify("Caption generation cancelled", "info")
+        else:
+            self._caption_panel.show_feedback(f"Error: {error[:80]}", is_success=False)
+            self._set_connection_status("error", "Error")
+            self._notify(f"Caption error: {error[:80]}", "error")
+
+        # Cancel batch on error (not on cancel — that was already handled)
+        if "cancel" not in error.lower():
+            self._batch_queue.clear()
 
     # --- Status helpers ---
 
@@ -1037,6 +1120,18 @@ class MainWindow(QMainWindow):
         self._settings_panel.set_batch_progress(total, total)
         self._caption_panel.show_feedback(f"Batch complete! {total} images captioned.")
         self._notify(f"Batch complete: {total} images captioned", "success")
+
+        # Prompt to auto-save all batch captions
+        answer = QMessageBox.question(
+            self, "Auto Save All Captions",
+            f"Batch captioning complete! ({total} images)\n\n"
+            "All captions were saved during batch processing.\n"
+            "Would you also like to export all captions as .txt files?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self._export_all_captions()
 
     # --- Save / Export ---
 

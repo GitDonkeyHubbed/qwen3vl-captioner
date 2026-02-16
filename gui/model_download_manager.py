@@ -4,32 +4,119 @@ Model Download Manager for VL-CAPTIONER Studio Pro.
 Provides:
   - MODEL_REGISTRY: maps model combo display names to HF repo info
   - ModelDownloadWorker: QObject that downloads a GGUF in a background QThread
+  - get_all_model_display_names(): returns ordered list of display names for combo
 """
 
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
 
 # ---------------------------------------------------------------------------
 # Registry: combo text -> download info
+#
+# All models from: prithivMLmods/Qwen3-VL-8B-Instruct-abliterated-v1-GGUF
+# Each key is the human-readable dropdown label:
+#   "Qwen3-VL 8B Abliterated — <QUANT> (<SIZE>)"
 # ---------------------------------------------------------------------------
 
 MODEL_REGISTRY: Dict[str, Dict[str, Any]] = {
-    "QWEN 3 VL 8B_Q8": {
+    # ── Main model quants (smallest → largest) ──────────────────
+    "Qwen3-VL 8B ABL — Q2_K (3.28 GB)": {
         "repo_id": "prithivMLmods/Qwen3-VL-8B-Instruct-abliterated-v1-GGUF",
-        "filename": "Qwen3-VL-8B-Instruct-abliterated-v1.Q8_0.gguf",
-        "size_gb": 8.5,
+        "filename": "Qwen3-VL-8B-Instruct-abliterated-v1.Q2_K.gguf",
+        "size_gb": 3.28,
         "gated": False,
     },
-    "QWEN 3 VL 8B_Q6": {
+    "Qwen3-VL 8B ABL — Q3_K_S (3.77 GB)": {
+        "repo_id": "prithivMLmods/Qwen3-VL-8B-Instruct-abliterated-v1-GGUF",
+        "filename": "Qwen3-VL-8B-Instruct-abliterated-v1.Q3_K_S.gguf",
+        "size_gb": 3.77,
+        "gated": False,
+    },
+    "Qwen3-VL 8B ABL — Q3_K_M (4.12 GB)": {
+        "repo_id": "prithivMLmods/Qwen3-VL-8B-Instruct-abliterated-v1-GGUF",
+        "filename": "Qwen3-VL-8B-Instruct-abliterated-v1.Q3_K_M.gguf",
+        "size_gb": 4.12,
+        "gated": False,
+    },
+    "Qwen3-VL 8B ABL — Q3_K_L (4.43 GB)": {
+        "repo_id": "prithivMLmods/Qwen3-VL-8B-Instruct-abliterated-v1-GGUF",
+        "filename": "Qwen3-VL-8B-Instruct-abliterated-v1.Q3_K_L.gguf",
+        "size_gb": 4.43,
+        "gated": False,
+    },
+    "Qwen3-VL 8B ABL — IQ4_XS (4.59 GB)": {
+        "repo_id": "prithivMLmods/Qwen3-VL-8B-Instruct-abliterated-v1-GGUF",
+        "filename": "Qwen3-VL-8B-Instruct-abliterated-v1.IQ4_XS.gguf",
+        "size_gb": 4.59,
+        "gated": False,
+    },
+    "Qwen3-VL 8B ABL — Q4_K_S (4.80 GB)": {
+        "repo_id": "prithivMLmods/Qwen3-VL-8B-Instruct-abliterated-v1-GGUF",
+        "filename": "Qwen3-VL-8B-Instruct-abliterated-v1.Q4_K_S.gguf",
+        "size_gb": 4.80,
+        "gated": False,
+    },
+    "Qwen3-VL 8B ABL — Q4_K_M (5.03 GB)": {
+        "repo_id": "prithivMLmods/Qwen3-VL-8B-Instruct-abliterated-v1-GGUF",
+        "filename": "Qwen3-VL-8B-Instruct-abliterated-v1.Q4_K_M.gguf",
+        "size_gb": 5.03,
+        "gated": False,
+    },
+    "Qwen3-VL 8B ABL — Q5_K_S (5.72 GB)": {
+        "repo_id": "prithivMLmods/Qwen3-VL-8B-Instruct-abliterated-v1-GGUF",
+        "filename": "Qwen3-VL-8B-Instruct-abliterated-v1.Q5_K_S.gguf",
+        "size_gb": 5.72,
+        "gated": False,
+    },
+    "Qwen3-VL 8B ABL — Q5_K_M (5.85 GB)": {
+        "repo_id": "prithivMLmods/Qwen3-VL-8B-Instruct-abliterated-v1-GGUF",
+        "filename": "Qwen3-VL-8B-Instruct-abliterated-v1.Q5_K_M.gguf",
+        "size_gb": 5.85,
+        "gated": False,
+    },
+    "Qwen3-VL 8B ABL — Q6_K (6.73 GB)": {
         "repo_id": "prithivMLmods/Qwen3-VL-8B-Instruct-abliterated-v1-GGUF",
         "filename": "Qwen3-VL-8B-Instruct-abliterated-v1.Q6_K.gguf",
-        "size_gb": 6.6,
+        "size_gb": 6.73,
+        "gated": False,
+    },
+    "Qwen3-VL 8B ABL — Q8_0 (8.71 GB)": {
+        "repo_id": "prithivMLmods/Qwen3-VL-8B-Instruct-abliterated-v1-GGUF",
+        "filename": "Qwen3-VL-8B-Instruct-abliterated-v1.Q8_0.gguf",
+        "size_gb": 8.71,
+        "gated": False,
+    },
+    "Qwen3-VL 8B ABL — F16 (16.4 GB)": {
+        "repo_id": "prithivMLmods/Qwen3-VL-8B-Instruct-abliterated-v1-GGUF",
+        "filename": "Qwen3-VL-8B-Instruct-abliterated-v1.f16.gguf",
+        "size_gb": 16.4,
         "gated": False,
     },
 }
+
+# Ordered list for the dropdown — sorted by quant size ascending
+_MODEL_ORDER = [
+    "Qwen3-VL 8B ABL — Q2_K (3.28 GB)",
+    "Qwen3-VL 8B ABL — Q3_K_S (3.77 GB)",
+    "Qwen3-VL 8B ABL — Q3_K_M (4.12 GB)",
+    "Qwen3-VL 8B ABL — Q3_K_L (4.43 GB)",
+    "Qwen3-VL 8B ABL — IQ4_XS (4.59 GB)",
+    "Qwen3-VL 8B ABL — Q4_K_S (4.80 GB)",
+    "Qwen3-VL 8B ABL — Q4_K_M (5.03 GB)",
+    "Qwen3-VL 8B ABL — Q5_K_S (5.72 GB)",
+    "Qwen3-VL 8B ABL — Q5_K_M (5.85 GB)",
+    "Qwen3-VL 8B ABL — Q6_K (6.73 GB)",
+    "Qwen3-VL 8B ABL — Q8_0 (8.71 GB)",
+    "Qwen3-VL 8B ABL — F16 (16.4 GB)",
+]
+
+
+def get_all_model_display_names() -> List[str]:
+    """Return the ordered list of model display names for the dropdown combo."""
+    return list(_MODEL_ORDER)
 
 
 def get_model_info(combo_text: str) -> Optional[Dict[str, Any]]:
@@ -72,6 +159,11 @@ class ModelDownloadWorker(QObject):
         self.filename = filename
         self.target_dir = target_dir
         self.hf_token = hf_token or None
+        self._cancelled = False
+
+    def cancel(self):
+        """Request cancellation of the download."""
+        self._cancelled = True
 
     def run(self):
         """Execute the download (call from a QThread)."""
@@ -82,6 +174,10 @@ class ModelDownloadWorker(QObject):
                 "huggingface-hub is not installed.\n"
                 "Run: pip install huggingface-hub"
             )
+            return
+
+        if self._cancelled:
+            self.error.emit("Download cancelled before starting.")
             return
 
         try:
@@ -98,10 +194,17 @@ class ModelDownloadWorker(QObject):
                 token=self.hf_token,
             )
 
+            if self._cancelled:
+                self.error.emit("Download cancelled.")
+                return
+
             self.progress.emit("Download complete", 1.0)
             self.finished.emit(str(local_path))
 
         except Exception as exc:
+            if self._cancelled:
+                self.error.emit("Download cancelled.")
+                return
             msg = str(exc)
             # Surface auth errors clearly
             if "401" in msg or "403" in msg:
