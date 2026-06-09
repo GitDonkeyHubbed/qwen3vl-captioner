@@ -6,6 +6,15 @@ echo   Qwen3-VL Captioner - Portable Setup
 echo   This will install everything needed to run the app.
 echo ============================================================
 echo.
+echo   PREREQUISITES (install these on your system first):
+echo     - Windows 10/11 (64-bit)
+echo     - NVIDIA GPU with current drivers
+echo     - NVIDIA CUDA Toolkit 12.4 - 13.x  (NOT just the GPU driver)
+echo       Install:  winget install Nvidia.CUDA
+echo.
+echo   Setup will install Python 3.12 and the llama-cpp wheel that
+echo   matches your CUDA Toolkit version. Re-run setup after installing CUDA.
+echo.
 
 REM --- Step 1: Get or verify uv ---
 echo [1/5] Checking for uv package manager...

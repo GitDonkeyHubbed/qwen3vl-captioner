@@ -8,7 +8,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/version-1.2.0-blue" alt="Version"/>
   <img src="https://img.shields.io/badge/python-3.12-blue?logo=python" alt="Python"/>
-  <img src="https://img.shields.io/badge/GPU-CUDA%2012.x-green?logo=nvidia" alt="CUDA"/>
+  <img src="https://img.shields.io/badge/GPU-CUDA%2012.x--13.x-green?logo=nvidia" alt="CUDA"/>
   <img src="https://img.shields.io/badge/platform-Windows-lightgrey?logo=windows" alt="Platform"/>
 </p>
 
@@ -59,16 +59,47 @@ When enabled, this injects explicit instructions to describe **all** content (in
 
 ---
 
+## 📋 Prerequisites (Windows)
+
+Install these **before** running the app. `setup.bat` handles Python and Python packages automatically; the items below must be present on the system first.
+
+| Required | Notes |
+|----------|-------|
+| **Windows 10/11 (64-bit)** | Portable release is Windows-only |
+| **NVIDIA GPU (8 GB+ VRAM)** | GTX 1070 minimum; RTX 3060+ recommended |
+| **NVIDIA GPU driver (current)** | Install or update from [NVIDIA Drivers](https://www.nvidia.com/drivers) |
+| **NVIDIA CUDA Toolkit (12.4 – 13.x)** | **Required.** Drivers alone are not enough. Install via `winget install Nvidia.CUDA` or [CUDA Downloads](https://developer.nvidia.com/cuda-downloads) (~2–3 GB) |
+| **~10–15 GB free disk** | App, dependencies, and GGUF model files |
+
+**CUDA version notes**
+
+- Use a **current CUDA Toolkit** (12.4, 12.8, or 13.x). All are supported.
+- `setup.bat` detects your installed Toolkit and installs the matching `llama-cpp-python` build (`cu124`, `cu128`, or `cu130`).
+- The Toolkit version and the llama-cpp wheel **must match**. A common failure is installing the CUDA 13.x Toolkit while setup installs the CUDA 12.4 wheel — re-run `setup.bat` after installing CUDA so the correct wheel is selected.
+- GPU drivers can report a newer CUDA *capability* (e.g. 13.3) than the Toolkit you have installed. What matters is the **CUDA Toolkit on disk**, not the driver label alone.
+
+**Installed automatically by `setup.bat`:** Python 3.12, PyQt6, and the correct JamePeng `llama-cpp-python` CUDA wheel.
+
+---
+
 ## ⚡ Quick Start
 
-### 1. Run Setup
-Double-click `setup.bat` to automatically install Python and all necessary dependencies.
+### 1. Install CUDA Toolkit (if not already installed)
+```powershell
+winget install Nvidia.CUDA
+```
+Or download from [developer.nvidia.com/cuda-downloads](https://developer.nvidia.com/cuda-downloads).
 
-### 2. Get Models
+### 2. Run Setup
+Double-click `setup.bat` to install Python and all Python dependencies (including the CUDA-matched llama-cpp wheel).
+
+If you install CUDA **after** the first setup run, run `setup.bat` again so the correct wheel is installed.
+
+### 3. Get Models
 You can download models directly inside the app, or place your `.gguf` files in this same folder.
 **Recommended:** `Qwen3-VL-8B-Instruct-abliterated-v1.Q6_K.gguf`
 
-### 3. Launch
+### 4. Launch
 Double-click `run.bat` to start the captioner.
 
 ---
@@ -194,8 +225,8 @@ python app.py
 | **VRAM** | 8 GB | 12+ GB |
 | **RAM** | 16 GB | 32 GB |
 | **Storage** | ~10 GB (model + app) | ~15 GB (both quants) |
-| **CUDA** | 12.0 | 12.4 |
-| **Python** | 3.11 | 3.12 |
+| **CUDA Toolkit** | 12.4 | 13.x (latest) |
+| **Python** | 3.12 (via setup.bat) | 3.12 |
 
 ---
 
