@@ -8,14 +8,20 @@ GGUF model in the parent directory, and launches the main window.
 import sys
 from pathlib import Path
 
-# CRITICAL: Initialize CUDA BEFORE importing PyQt6!
-# PyQt6 initialization interferes with CUDA context creation
+from engine.cuda_setup import cuda_toolkit_missing_message, setup_cuda_dll_path
+
+# CRITICAL: Load CUDA DLLs and initialize llama.cpp BEFORE importing PyQt6!
+# PyQt6 initialization interferes with CUDA context creation.
+setup_cuda_dll_path()
 try:
     import llama_cpp
+
     llama_cpp.llama_backend_init()
     print("[OK] CUDA backend initialized successfully (before PyQt6 import)")
 except Exception as e:
     print(f"[WARNING] Failed to initialize CUDA backend early: {e}")
+    if sys.platform == "win32" and "ggml.dll" in str(e):
+        print(cuda_toolkit_missing_message())
     print("[INFO] Will attempt regular initialization later")
 
 # Now safe to import PyQt6

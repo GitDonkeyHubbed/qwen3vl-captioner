@@ -153,8 +153,10 @@ python -m venv .venv
 pip install -r requirements.txt
 
 # 3. Install llama-cpp-python with CUDA support
-# Download the appropriate wheel from:
+# setup.bat auto-detects your CUDA version and installs the matching wheel.
+# Manual install: download the wheel for your CUDA version from:
 # https://github.com/JamePeng/llama-cpp-python/releases
+#   CUDA 13.x -> cu130.basic   CUDA 12.8+ -> cu128.basic   CUDA 12.4 -> cu124.basic
 pip install llama_cpp_python-0.3.24+cu124.basic-cp312-cp312-win_amd64.whl
 
 # 4. Run
@@ -215,11 +217,12 @@ This is the standard sidecar format expected by most training tools (Kohya, Ever
 | Issue | Solution |
 |-------|----------|
 | **"Model not found"** | Place `.gguf` files in the parent directory (one level above `qwen3vl-captioner/`) |
-| **"CUDA not available"** | Install [CUDA Toolkit 12.x](https://developer.nvidia.com/cuda-downloads) and restart |
+| **"CUDA not available"** | Install the [CUDA Toolkit](https://developer.nvidia.com/cuda-downloads) (not just GPU drivers), then re-run `setup.bat` |
+| **"Failed to load ggml.dll"** | CUDA Toolkit missing or llama-cpp wheel doesn't match your CUDA version. Run `winget install Nvidia.CUDA`, then re-run `setup.bat` |
 | **Blank image preview** | Fixed in v1.4.2 — Qt image allocation limit raised to handle large files |
 | **Slow model loading** | Normal — first load takes 30-60s. Subsequent loads are faster |
 | **Out of VRAM** | Use Q6_K instead of Q8_0, or reduce `max_tokens` |
-| **"access violation"** | CUDA DLLs not found. Run `run.bat` (sets PATH automatically) |
+| **"access violation"** | CUDA DLLs not found. Run `run.bat` (sets PATH automatically) and ensure CUDA Toolkit is installed |
 
 ---
 
