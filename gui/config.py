@@ -4,6 +4,7 @@ Persistent application configuration for VL-CAPTIONER Studio Pro.
 Stores settings as JSON in ~/.vlcaptioner/config.json.
 """
 
+import copy
 import json
 from pathlib import Path
 from typing import Any, Dict
@@ -28,7 +29,10 @@ def _ensure_dir():
 
 def load_config() -> Dict[str, Any]:
     """Load config from disk, falling back to defaults for missing keys."""
-    cfg = dict(_DEFAULTS)
+    # Deep copy so mutable defaults (e.g. the custom_models list) are never
+    # shared with _DEFAULTS — otherwise callers like add_custom_model() would
+    # mutate the module-level defaults in place when no config file exists yet.
+    cfg = copy.deepcopy(_DEFAULTS)
     if _CONFIG_FILE.exists():
         try:
             with open(_CONFIG_FILE, "r", encoding="utf-8") as f:

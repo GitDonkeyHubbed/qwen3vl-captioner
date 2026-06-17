@@ -32,10 +32,19 @@ ENGINEERING_NOTES.md
 FIX_SUMMARY.md
 TROUBLESHOOTING.md
 diagnose_cuda.py
-test_*.py
+# Ad-hoc scratch test scripts at the repo ROOT only (e.g. a throwaway
+# test_load.py while debugging). Root-anchored so it never swallows the
+# committed pytest suite under tests/ — an unanchored "test_*.py" here
+# previously hid tests/test_*.py, so those files silently failed to commit
+# and the CI "test" job had nothing to run.
+/test_*.py
 model_load_test*.log
 model_verbose*.log
 gui/VL_GGUF_Captioner*
+
+# Always keep the committed pytest suite's source, regardless of any test-*
+# patterns above. Scoped to *.py so __pycache__/*.pyc under tests/ stays ignored.
+!/tests/**/*.py
 
 # ─── OS files ─────────────────────────────────────────────
 .DS_Store
