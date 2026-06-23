@@ -73,11 +73,19 @@ def _stream_with_sampling(
     if make_sampler == "auto":
         make_sampler = _load_make_sampler()
     if make_sampler is not None:
+        # Build the sampler OUTSIDE the try: a failure here is a real
+        # make_sampler problem and must not be mistaken for "this build has no
+        # sampler kwarg" (which would wrongly retry the legacy kwargs and crash
+        # on a newer mlx-vlm that removed them).
+        sampler = make_sampler(temp=temperature, top_p=top_p)
         try:
-            sampler = make_sampler(temp=temperature, top_p=top_p)
             return stream_generate(*args, sampler=sampler, **kwargs)
-        except TypeError:
-            pass  # this build doesn't accept a sampler — use legacy kwargs
+        except TypeError as exc:
+            # Only fall back when stream_generate specifically rejects the
+            # `sampler` keyword (older 0.1.x). Any other TypeError is a genuine
+            # error and must propagate.
+            if "sampler" not in str(exc):
+                raise
     return stream_generate(*args, temperature=temperature, top_p=top_p, **kwargs)
 
 

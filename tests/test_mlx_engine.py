@@ -6,6 +6,8 @@ An MLX model is a directory holding ``config.json`` plus at least one
 
 import sys
 
+import pytest
+
 from engine.mlx_engine import (
     MLX_SUPPORTED,
     _stream_with_sampling,
@@ -147,3 +149,53 @@ def test_stream_with_sampling_legacy_when_no_make_sampler():
     assert captured["kwargs"]["temperature"] == 0.0
     assert captured["kwargs"]["top_p"] == 1.0
     assert "sampler" not in captured["kwargs"]
+
+
+def test_stream_with_sampling_propagates_unrelated_typeerror():
+    # A TypeError from stream_generate that is NOT about the `sampler` kwarg is
+    # a genuine error and must propagate, not silently retry legacy kwargs.
+    legacy_called = {"hit": False}
+
+    def fake_make_sampler(temp, top_p):
+        return "sampler"
+
+    def fake_stream_generate(*args, **kwargs):
+        if "sampler" in kwargs:
+            raise TypeError("internal explosion unrelated to sampling")
+        legacy_called["hit"] = True
+        return iter(["legacy"])
+
+    with pytest.raises(TypeError, match="internal explosion"):
+        _stream_with_sampling(
+            fake_stream_generate,
+            ("m", "p", "prompt"),
+            {"max_tokens": 10},
+            0.6,
+            0.9,
+            make_sampler=fake_make_sampler,
+        )
+    assert legacy_called["hit"] is False
+
+
+def test_stream_with_sampling_propagates_make_sampler_error():
+    # If make_sampler() itself fails, that must surface — falling back to legacy
+    # kwargs on a newer mlx-vlm would reintroduce the crash this guards against.
+    legacy_called = {"hit": False}
+
+    def fake_make_sampler(temp, top_p):
+        raise TypeError("make_sampler signature mismatch")
+
+    def fake_stream_generate(*args, **kwargs):
+        legacy_called["hit"] = True
+        return iter(["legacy"])
+
+    with pytest.raises(TypeError, match="make_sampler"):
+        _stream_with_sampling(
+            fake_stream_generate,
+            ("m", "p", "prompt"),
+            {"max_tokens": 10},
+            0.6,
+            0.9,
+            make_sampler=fake_make_sampler,
+        )
+    assert legacy_called["hit"] is False
