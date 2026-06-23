@@ -197,8 +197,10 @@ class CaptionPanel(QFrame):
         if text:
             clipboard = QApplication.clipboard()
             clipboard.setText(text)
-            # Swap icon to checkmark for 2 seconds
-            original_text = self.copy_btn.text()
+            # Swap icon to checkmark for 2 seconds. Restore to the fixed
+            # clipboard glyph (not the button's current text) so a second click
+            # within the 2s window doesn't capture the checkmark and leave the
+            # button stuck showing it.
             self.copy_btn.setText("\u2714")  # heavy checkmark
             self.copy_btn.setStyleSheet(
                 f"color: {COLORS['success']}; background: transparent; "
@@ -207,7 +209,7 @@ class CaptionPanel(QFrame):
             self.show_feedback("Copied!")
 
             def _restore():
-                self.copy_btn.setText(original_text)
+                self.copy_btn.setText("\U0001F4CB")  # clipboard
                 self.copy_btn.setStyleSheet("")
                 self.copy_btn.setProperty("class", "icon-button")
                 self.copy_btn.style().unpolish(self.copy_btn)

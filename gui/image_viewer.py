@@ -276,7 +276,9 @@ class ImageViewer(QFrame):
         # Calculate scale to fit
         scale_w = (view_size.width() - 20) / img_w
         scale_h = (view_size.height() - 20) / img_h
-        self._zoom = min(scale_w, scale_h, 1.0)  # Don't upscale beyond 100%
+        # Clamp to a sane floor (as _set_zoom does) so a momentarily-degenerate
+        # view size can't produce a zero/negative zoom and a blank image.
+        self._zoom = max(0.1, min(scale_w, scale_h, 1.0))  # Don't upscale beyond 100%
 
         self._apply_zoom()
 

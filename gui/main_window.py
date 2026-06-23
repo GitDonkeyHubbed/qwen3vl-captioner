@@ -1314,6 +1314,14 @@ class MainWindow(QMainWindow):
         self._image_viewer.set_processing(True)
         self._set_connection_status("generating", "Generating...")
 
+        # Keep references to finishing generation threads (mirrors the download
+        # path) so a still-shutting-down QThread from the previous batch item
+        # isn't garbage-collected while its C++ side is alive ("QThread
+        # destroyed while still running").
+        self._finished_threads = [t for t in self._finished_threads if t.isRunning()]
+        if self._generation_thread is not None:
+            self._finished_threads.append(self._generation_thread)
+
         # Start generation in background thread — store as instance attrs
         self._generation_thread = QThread()
         self._caption_worker = CaptionWorker(
@@ -1539,7 +1547,18 @@ class MainWindow(QMainWindow):
         self._queue_label.setText(f"Queue: {len(self._batch_queue)} remaining")
 
         # Generate (will call _process_next_batch_item on finish via _on_caption_finished)
-        QTimer.singleShot(100, self._generate_caption)
+        QTimer.singleShot(100, self._start_deferred_batch_caption)
+
+    def _start_deferred_batch_caption(self):
+        """Fire the next batch caption, unless the batch was cancelled.
+
+        There's a ~100 ms gap between batch items where _is_generating is
+        already False; if the user cancels in that window, _batch_active is
+        cleared. Guard here so the queued timer doesn't start an orphan
+        generation on the last-selected image after cancellation.
+        """
+        if self._batch_active:
+            self._generate_caption()
 
     def _on_batch_complete(self):
         """Handle batch completion."""

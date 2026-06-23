@@ -33,6 +33,8 @@ class AppSettingsDialog(QDialog):
         )
 
         self._cfg = load_config()
+        # Remember the theme we opened with so Cancel can undo a live preview.
+        self._orig_theme = self._cfg.get("theme", "dark")
         self._build_ui()
 
     # ------------------------------------------------------------------ #
@@ -290,6 +292,14 @@ class AppSettingsDialog(QDialog):
         mode = "dark" if self._dark_mode_cb.isChecked() else "light"
         self._cfg["theme"] = mode
         self.theme_changed.emit(mode)
+
+    def reject(self):
+        """Cancel: undo any live theme preview so the running app matches the
+        still-unchanged saved config."""
+        current = "dark" if self._dark_mode_cb.isChecked() else "light"
+        if current != self._orig_theme:
+            self.theme_changed.emit(self._orig_theme)
+        super().reject()
 
     def _save_and_close(self):
         self._cfg["theme"] = "dark" if self._dark_mode_cb.isChecked() else "light"

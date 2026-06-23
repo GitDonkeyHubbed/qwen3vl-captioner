@@ -106,7 +106,6 @@ def download_mmproj(
                 repo_id=repo_id,
                 filename=filename,
                 local_dir=str(target_dir),
-                local_dir_use_symlinks=False,
             )
             
             result_path = Path(downloaded_path)
@@ -160,7 +159,6 @@ def download_named_mmproj(
         repo_id=repo_id,
         filename=filename,
         local_dir=str(target_dir),
-        local_dir_use_symlinks=False,
     )
     result = Path(downloaded_path)
 
