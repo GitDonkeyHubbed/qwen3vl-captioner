@@ -10,6 +10,7 @@ import pytest
 
 from engine.mlx_engine import (
     MLX_SUPPORTED,
+    _load_make_sampler,
     _stream_with_sampling,
     is_mlx_model_dir,
 )
@@ -62,6 +63,13 @@ def test_mlx_supported_matches_platform():
 
     expected = sys.platform == "darwin" and platform.machine() == "arm64"
     assert MLX_SUPPORTED == expected
+
+
+def test_load_make_sampler_never_raises():
+    # Returns None when mlx_lm is missing/too old (the common non-Mac case), or
+    # the callable factory if present — but must never raise.
+    result = _load_make_sampler()
+    assert result is None or callable(result)
 
 
 # --- _stream_with_sampling: version-tolerant mlx-vlm dispatch ---------------

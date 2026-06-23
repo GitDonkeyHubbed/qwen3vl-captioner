@@ -53,7 +53,10 @@ def _load_make_sampler():
     try:
         from mlx_lm.sample_utils import make_sampler
         return make_sampler
-    except Exception:
+    except ImportError:
+        # mlx_lm missing or too old to expose make_sampler — use legacy kwargs.
+        # (By the time this runs mlx is already imported, so a non-import error
+        # here would be a genuine problem and should not be masked.)
         return None
 
 
