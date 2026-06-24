@@ -39,9 +39,10 @@ jobs:
 
       - name: Doctor report (informational — runner has no GPU, problems expected)
         # doctor.py exits non-zero when it finds problems (always true on a
-        # GPU-less CI runner). Swallow the exit code so this informational step
-        # doesn't surface a misleading "exit code 1" annotation on a passing run.
-        run: python doctor.py || echo "(doctor reported issues — expected on a GPU-less runner)"
+        # GPU-less CI runner). continue-on-error lets GitHub Actions show the
+        # step output without failing the job.
+        run: python doctor.py
+        continue-on-error: true
 
       - name: Headless app import (exercises the no-CUDA startup path)
         env:
