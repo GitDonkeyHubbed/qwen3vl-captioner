@@ -2,11 +2,11 @@
   <img src="assets/VL_GGUF_Captioner GUI Screenshot 2.png" alt="QWEN 3 VL ABL Captioner" width="900"/>
 </p>
 
-<h1 align="center">QWEN 3 VL ABL Captioner V1.4.1 — GGUF + MLX Engines</h1>
+<h1 align="center">QWEN 3 VL ABL Captioner V1.4.2 — GGUF + MLX Engines</h1>
 <h3 align="center">Professional GPU-Accelerated Image Captioning for Datasets</h3>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.4.1-blue" alt="Version"/>
+  <img src="https://img.shields.io/badge/version-1.4.2-blue" alt="Version"/>
   <img src="https://img.shields.io/badge/python-3.12-blue?logo=python" alt="Python"/>
   <img src="https://img.shields.io/badge/GPU-CUDA%2012.4%E2%80%9313.x-green?logo=nvidia" alt="CUDA"/>
   <img src="https://img.shields.io/badge/Apple%20Silicon-Metal%20%2B%20MLX-black?logo=apple" alt="Apple Silicon"/>
@@ -38,6 +38,18 @@
 > 🪟 **Windows note:** you also need the NVIDIA **CUDA Toolkit** for GPU speed. If you don't have it, install it with one command: `winget install Nvidia.CUDA`
 
 <sub>🧰 <b>Power users:</b> prefer a specific tagged release? Grab it from the <a href="https://github.com/GitDonkeyHubbed/qwen3vl-captioner/releases/latest">Releases page</a>.</sub>
+
+---
+
+## 🔒 What's New in V1.4.2 — Security & Dependency Maintenance
+
+No new features — just keeping things safe and clean for everyone.
+
+- **Pillow patched to >=12.2.0** — fixes 5 CVEs (2 HIGH, 3 MODERATE): integer overflow / OOB writes when loading certain PSD and font files, a FITS decompression bomb, and a PDF trailer denial-of-service. If you're on an older install, run `setup.bat` / `setup.sh` again or `pip install --upgrade Pillow` inside your venv.
+- `nvidia-ml-py>=12.0` replaces the deprecated `pynvml` package — same module, eliminates an import FutureWarning for NVIDIA GPU users.
+- `huggingface-hub>=0.32` floor raised; `hf_xet>=1.0` pinned as an explicit dependency.
+- Windows smoke CI restored after a PowerShell incompatibility broke it silently.
+- Added `SECURITY.md` — vulnerability reports now go through GitHub's private advisory system.
 
 ---
 
