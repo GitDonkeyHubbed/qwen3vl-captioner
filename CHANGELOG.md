@@ -4,6 +4,30 @@ All notable changes to this project are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versions correspond to
 git tags (`V1.x.x`).
 
+## [1.4.2] — 2026-06-24
+
+Security and dependency maintenance release. No new features.
+
+### Security
+- **Pillow floor bumped to >=12.2.0** — fixes 5 CVEs (2 HIGH, 3 MODERATE)
+  including integer overflow / OOB writes (PSD, fonts), a FITS decompression
+  bomb, and a PDF trailer DoS. Users on older Pillow builds were exposed when
+  loading images.
+
+### Changed
+- `nvidia-ml-py>=12.0` replaces deprecated `pynvml` package (same module, no
+  behaviour change — eliminates a FutureWarning on import).
+- `huggingface-hub>=0.32` floor raised; `hf_xet>=1.0` added as explicit
+  dependency (high-performance HuggingFace transfer was already used but not
+  pinned).
+
+### Infrastructure
+- CI doctor step (`continue-on-error`) restored — Windows smoke test had
+  regressed to always-fail after a PowerShell incompatibility.
+- Added `SECURITY.md` with private vulnerability reporting instructions.
+
+---
+
 ## [1.4.1] — 2026-06-16
 
 Hardening release from a deep multi-agent code review (19 confirmed findings,
