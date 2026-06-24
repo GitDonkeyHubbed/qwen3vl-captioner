@@ -6,7 +6,7 @@ requires-python = ">=3.11,<3.13"
 dependencies = [
     "llama-cpp-python>=0.3.0",
     "PyQt6>=6.7",
-    "Pillow>=10.0",
+    "Pillow>=12.2.0",
     "huggingface-hub>=0.32",
     "hf_xet>=1.0",
     "numpy>=1.26",

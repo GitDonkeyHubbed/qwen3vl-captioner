@@ -2,7 +2,7 @@
 # For llama-cpp-python with CUDA, see README.md for special instructions.
 
 PyQt6>=6.7
-Pillow>=10.0
+Pillow>=12.2.0
 huggingface-hub>=0.32
 hf_xet>=1.0  # Rust Xet client; high-performance hf_hub_download/snapshot_download
 numpy>=1.26
