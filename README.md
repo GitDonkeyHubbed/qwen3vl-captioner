@@ -41,6 +41,18 @@
 
 ---
 
+## 🔒 What's New in V1.4.2 — Security & Dependency Maintenance
+
+No new features — just keeping things safe and clean for everyone.
+
+- **Pillow patched to >=12.2.0** — fixes 5 CVEs (2 HIGH, 3 MODERATE): integer overflow / OOB writes when loading certain PSD and font files, a FITS decompression bomb, and a PDF trailer denial-of-service. If you're on an older install, run `setup.bat` / `setup.sh` again or `pip install --upgrade Pillow` inside your venv.
+- `nvidia-ml-py>=12.0` replaces the deprecated `pynvml` package — same module, eliminates an import FutureWarning for NVIDIA GPU users.
+- `huggingface-hub>=0.32` floor raised; `hf_xet>=1.0` pinned as an explicit dependency.
+- Windows smoke CI restored after a PowerShell incompatibility broke it silently.
+- Added `SECURITY.md` — vulnerability reports now go through GitHub's private advisory system.
+
+---
+
 ## 🚀 What's New in V1.4.0 — macOS Support
 
 The captioner now runs natively on Macs, with **two** GPU backends:
