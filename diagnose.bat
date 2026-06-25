@@ -1,4 +1,5 @@
 @echo off
+setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
 echo Running install diagnostics...
@@ -10,7 +11,7 @@ if exist ".venv\Scripts\python.exe" (
     echo [WARN] Virtual environment not found - run setup.bat first.
     echo        Trying system Python as a fallback...
     where python >nul 2>&1
-    if %ERRORLEVEL% EQU 0 (
+    if !ERRORLEVEL! EQU 0 (
         python doctor.py
     ) else (
         echo [FAIL] No Python found. Run setup.bat first.

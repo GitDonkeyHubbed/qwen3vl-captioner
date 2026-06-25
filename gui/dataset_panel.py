@@ -166,9 +166,6 @@ class DatasetPanel(QFrame):
             if has_caption:
                 captioned += 1
             status_item = QTableWidgetItem("Yes" if has_caption else "No")
-            status_item.setForeground(
-                QPixmap(1, 1).toImage().pixelColor(0, 0)  # placeholder — set via stylesheet
-            )
             if has_caption:
                 status_item.setForeground(Qt.GlobalColor.green)
             else:
