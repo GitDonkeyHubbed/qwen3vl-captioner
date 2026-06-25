@@ -4,6 +4,56 @@ All notable changes to this project are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versions correspond to
 git tags (`V1.x.x`).
 
+## [1.4.3] — Unreleased
+
+Maintenance release from a full repository health check (every finding
+adversarially verified against the source). No new features.
+
+### Fixed
+- **Version string lag.** `gui/version.py` and `pyproject.toml` were still
+  `1.4.1` after the 1.4.2 release, so the in-app "Check for Updates" reported a
+  phantom update to every up-to-date user. Versions are back in sync.
+- **GUI froze during a vision-encoder download.** When a model's `mmproj` was
+  missing, the Load flow downloaded it synchronously on the Qt UI thread,
+  freezing the window with no progress for the whole multi-hundred-MB transfer.
+  It now runs off-thread behind a responsive modal dialog.
+- **Shutdown safety.** Closing the window mid-download no longer risks
+  destroying a still-running download thread — the `wait()` result is honored
+  like the load/caption threads, and earlier shutting-down threads are joined
+  before the engine is freed.
+- **Download integrity.** A stale `.part` left under the same name by a
+  different file can no longer be silently appended onto and finalized as a
+  corrupt model — partials are validated against an identity sidecar before
+  resume. Downloads now also pre-flight free disk space and fail fast with a
+  clear message.
+- **Atomic config writes.** `config.json` is written to a temp file and
+  `os.replace`d into place, so an interrupted save can't truncate it (which
+  load silently discarded, losing the hf_token / custom models / theme).
+- **Caption robustness.** The non-streaming path no longer crashes when the
+  model returns `null` content; the streaming path tolerates an empty
+  `choices` list.
+- **Presets.** Toggling a preset off now restores the user's own
+  prefix/suffix instead of leaving the preset's tokens applied; the
+  "Refer-as name" field now emits `settings_changed` like other inputs.
+- **Deterministic encoder pick.** `find_mmproj_file` sorts (preferring `f16`)
+  when a folder holds more than one encoder, instead of relying on filesystem
+  order.
+- **Misc.** `diagnose.bat` now evaluates `where python` correctly (delayed
+  expansion); removed two stray `.gitignore` patterns; the `mlx` extra floor is
+  raised to `mlx-vlm>=0.6` to match the shipped next-gen MLX models.
+
+### Docs
+- README MLX lineup, "default quant" wording, version header, and
+  project-structure tree corrected; `CONTRIBUTING.md` now points at the real
+  registry test (`tests/test_model_registry.py`).
+
+### Known limitations
+- Cancelling an MLX folder (snapshot) download still only takes effect between
+  files — a large shard already in flight must finish first — but the UI now
+  says so instead of looking hung.
+
+---
+
 ## [1.4.2] — 2026-06-24
 
 Security and dependency maintenance release. No new features.
