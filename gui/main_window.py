@@ -801,7 +801,14 @@ class MainWindow(QMainWindow):
         dialog.close()
 
         thread.quit()
-        thread.wait(5000)
+        # Wait without a timeout: loop.exec() only returns after the worker
+        # emitted finished/error (the last thing run() does), so the thread is
+        # already finishing. A bounded wait that timed out would let thread/
+        # worker fall out of scope while still running -> "QThread: Destroyed
+        # while thread is still running" and a possible crash. Once wait()
+        # returns the thread has fully stopped, so dropping the references on
+        # return is safe.
+        thread.wait()
 
         if state["error"] is not None:
             raise RuntimeError(state["error"])

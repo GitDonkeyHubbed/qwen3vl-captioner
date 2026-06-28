@@ -304,5 +304,12 @@ class AppSettingsDialog(QDialog):
     def _save_and_close(self):
         self._cfg["theme"] = "dark" if self._dark_mode_cb.isChecked() else "light"
         self._cfg["hf_token"] = self._token_input.text().strip()
-        save_config(self._cfg)
+        if not save_config(self._cfg):
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                self, "Save Failed",
+                "Could not save your settings to disk — the location may be "
+                "full or read-only. Your changes have not been persisted.",
+            )
+            return  # keep the dialog open so the user can retry
         self.accept()

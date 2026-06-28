@@ -63,6 +63,15 @@ def test_find_mmproj_file_locates_mmproj(tmp_path):
     assert "mmproj" in found.name.lower()
 
 
+def test_find_mmproj_file_prefers_f16(tmp_path):
+    """With several encoders present, the f16 mmproj is chosen deterministically
+    (not whatever iterdir() happens to yield first)."""
+    (tmp_path / "model.mmproj-Q8_0.gguf").write_bytes(b"\x00")
+    f16 = tmp_path / "model.mmproj-f16.gguf"
+    f16.write_bytes(b"\x00")
+    assert find_mmproj_file(tmp_path) == f16
+
+
 def test_find_mmproj_file_none_when_absent(tmp_path):
     (tmp_path / "model.Q4_K_M.gguf").write_bytes(b"\x00")
     assert find_mmproj_file(tmp_path) is None

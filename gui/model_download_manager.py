@@ -534,7 +534,11 @@ class ModelDownloadWorker(QObject):
                 free = shutil.disk_usage(probe_dir).free
             except Exception:
                 free = None
-            needed = total + 256 * 1024 * 1024  # 256 MiB headroom
+            # Only the not-yet-downloaded bytes need to fit: a resumable .part
+            # already on disk counts toward the file, so don't demand room for a
+            # second full copy (which would block a nearly-complete resume).
+            existing_part = part.stat().st_size if part.exists() else 0
+            needed = max(total - existing_part, 0) + 256 * 1024 * 1024  # +256 MiB headroom
             if free is not None and free < needed:
                 self.error.emit(
                     f"Not enough free disk space for {self.filename}: need "
@@ -823,11 +827,22 @@ class ModelDownloadWorker(QObject):
                 response = opener.open(request, timeout=self._SOCKET_TIMEOUT)
             except urllib.error.HTTPError as http_err:
                 if http_err.code == 416 and resume_pos:
-                    # Range beyond EOF — the .part file is already complete
-                    part.replace(target)
-                    self._safe_unlink(self._part_meta_path(part))
-                    self.progress.emit("Download complete", 1.0)
-                    self.finished.emit(str(target))
+                    # 416 = requested range unsatisfiable. Only treat the .part
+                    # as complete when its size matches the known remote total —
+                    # a 416 alone doesn't prove completeness (the probe may have
+                    # failed, or the .part may be oversized/corrupt). When we
+                    # can't verify, keep the .part for a future resume rather
+                    # than promoting possibly-corrupt data to the final file.
+                    if probed_total and resume_pos == probed_total:
+                        part.replace(target)
+                        self._safe_unlink(self._part_meta_path(part))
+                        self.progress.emit("Download complete", 1.0)
+                        self.finished.emit(str(target))
+                        return
+                    self.error.emit(
+                        "Could not verify the existing partial download; "
+                        "download again to retry."
+                    )
                     return
                 raise
 

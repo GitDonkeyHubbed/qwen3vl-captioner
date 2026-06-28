@@ -258,7 +258,8 @@ class Qwen3VLEngine:
                 stream=False,
             )
             
-            message = response["choices"][0]["message"]
+            choices = response.get("choices") or [{}]
+            message = (choices[0] or {}).get("message") or {}
             caption = (message.get("content") or "").strip()
         
         self._last_inference_time = time.perf_counter() - start_time

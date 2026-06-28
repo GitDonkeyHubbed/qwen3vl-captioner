@@ -45,22 +45,28 @@ def load_config() -> Dict[str, Any]:
     return cfg
 
 
-def save_config(cfg: Dict[str, Any]):
+def save_config(cfg: Dict[str, Any]) -> bool:
     """Persist the full config dict to disk atomically.
 
     Write to a sibling temp file and os.replace() it into place so an
     interrupted write (crash, power loss) can never leave config.json
     truncated — which load_config() would silently discard, losing the
     user's hf_token, custom_models, theme, and auto_save settings.
+
+    Returns True on success and False if the write/replace failed (e.g. the
+    disk is full or the location is read-only), so callers that care — like
+    the settings dialog — can surface the failure instead of assuming the
+    save succeeded.
     """
-    _ensure_dir()
     try:
+        _ensure_dir()
         tmp = _CONFIG_FILE.with_suffix(".json.tmp")
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2)
         os.replace(tmp, _CONFIG_FILE)
+        return True
     except Exception:
-        pass  # best-effort
+        return False  # best-effort; caller may surface this
 
 
 def get_hf_token() -> str:
