@@ -39,10 +39,15 @@ jobs:
 
       - name: Doctor report (informational — runner has no GPU, problems expected)
         # doctor.py exits non-zero when it finds problems (always true on a
-        # GPU-less CI runner). continue-on-error lets GitHub Actions show the
-        # step output without failing the job.
-        run: python doctor.py
-        continue-on-error: true
+        # GPU-less CI runner). In PowerShell, `|| echo ...` still leaves
+        # LASTEXITCODE set, so we explicitly normalize this informational
+        # non-zero exit to success for the workflow.
+        run: |
+          python doctor.py
+          if ($LASTEXITCODE -ne 0) {
+            echo "(doctor reported issues — expected on a GPU-less runner)"
+            exit 0
+          }
 
       - name: Headless app import (exercises the no-CUDA startup path)
         env:
