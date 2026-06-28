@@ -240,7 +240,8 @@ class Qwen3VLEngine:
                 if cancel_check and cancel_check():
                     break
                 
-                delta = chunk.get("choices", [{}])[0].get("delta", {})
+                choices = chunk.get("choices") or [{}]
+                delta = choices[0].get("delta", {})
                 token_text = delta.get("content", "")
                 if token_text:
                     caption_parts.append(token_text)
@@ -257,7 +258,9 @@ class Qwen3VLEngine:
                 stream=False,
             )
             
-            caption = response["choices"][0]["message"]["content"].strip()
+            choices = response.get("choices") or [{}]
+            message = (choices[0] or {}).get("message") or {}
+            caption = (message.get("content") or "").strip()
         
         self._last_inference_time = time.perf_counter() - start_time
 

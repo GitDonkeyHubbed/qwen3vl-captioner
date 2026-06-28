@@ -500,6 +500,11 @@ class SettingsPanel(QFrame):
         self.setMaximumWidth(420)
 
         self._active_preset_id: Optional[str] = None
+        # The user's own prefix/suffix, stashed when entering preset mode so
+        # deselecting a preset restores them instead of leaving the preset's
+        # tokens (e.g. Pony's "score_9, ...") baked into the input fields.
+        self._user_prefix_before_preset: Optional[str] = None
+        self._user_suffix_before_preset: Optional[str] = None
         self._preset_buttons: Dict[str, QPushButton] = {}
         self._extra_checkboxes: Dict[str, QCheckBox] = {}
         self._show_extra_options = True
@@ -667,7 +672,11 @@ class SettingsPanel(QFrame):
             f"border: 1px solid {COLORS['border_light']}; border-radius: 4px; "
             f"padding: 4px 8px; font-size: 12px;"
         )
-        self.name_input.textChanged.connect(lambda _=None: self._refresh_prompt_preview())
+        # Emit settings_changed too (like every other prompt-affecting input),
+        # not just refresh the preview, so listeners see the name change.
+        self.name_input.textChanged.connect(
+            lambda _=None: (self._refresh_prompt_preview(), self.settings_changed.emit())
+        )
         layout.addWidget(self.name_input)
 
         layout.addWidget(self._separator())
@@ -815,7 +824,7 @@ class SettingsPanel(QFrame):
         )
         layout.addWidget(self.auto_save_cb)
 
-        self.batch_btn = QPushButton("Batch Caption All")
+        self.batch_btn = QPushButton("⚡  Batch Caption All")
         self.batch_btn.setProperty("class", "accent-button")
         self.batch_btn.setFixedHeight(40)
         self.batch_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -958,6 +967,14 @@ class SettingsPanel(QFrame):
         btn.style().unpolish(btn)
         btn.style().polish(btn)
 
+        # Remember the user's own prefix/suffix the first time we enter preset
+        # mode (old_id is None), so deselecting the preset restores them rather
+        # than leaving the preset's tokens applied. Switching preset→preset must
+        # not overwrite the stash with the outgoing preset's values.
+        if old_id is None:
+            self._user_prefix_before_preset = self.prefix_input.text()
+            self._user_suffix_before_preset = self.suffix_input.text()
+
         # Apply prefix, suffix
         self.prefix_input.setText(preset["prefix"])
         self.suffix_input.setText(preset["suffix"])
@@ -1025,6 +1042,13 @@ class SettingsPanel(QFrame):
         if prev_selection in _ALL_LENGTH_KEYS:
             self.caption_length_combo.setCurrentText(prev_selection)
         self.caption_length_combo.blockSignals(False)
+
+        # Restore the user's pre-preset prefix/suffix (cleared if they had
+        # none), so a toggled-off preset doesn't leave its tokens applied.
+        self.prefix_input.setText(self._user_prefix_before_preset or "")
+        self.suffix_input.setText(self._user_suffix_before_preset or "")
+        self._user_prefix_before_preset = None
+        self._user_suffix_before_preset = None
 
         # Restore editable prompt
         self.prompt_text.setReadOnly(False)

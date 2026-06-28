@@ -1,6 +1,6 @@
 [project]
 name = "qwen3vl-captioner"
-version = "1.4.1"
+version = "1.4.3"
 description = "Portable Qwen3-VL image captioning GUI with GGUF inference"
 requires-python = ">=3.11,<3.13"
 dependencies = [
@@ -16,7 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # MLX backend for Apple Silicon Macs (installed automatically by setup.sh)
-mlx = ["mlx-vlm>=0.1.0"]
+mlx = ["mlx-vlm>=0.6"]
 
 [project.scripts]
 qwen3vl-captioner = "app:main"

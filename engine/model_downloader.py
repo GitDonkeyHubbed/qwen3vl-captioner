@@ -55,13 +55,18 @@ def find_mmproj_file(model_dir: Path) -> Optional[Path]:
     """
     if not model_dir.is_dir():
         return None
-    
-    for f in model_dir.iterdir():
-        name_lower = f.name.lower()
-        if f.is_file() and f.suffix == ".gguf" and "mmproj" in name_lower:
-            return f
-    
-    return None
+
+    # A model folder can legitimately hold more than one encoder (e.g. an f16
+    # and a Q8_0 mmproj). iterdir() order is filesystem-dependent, so sort for
+    # a deterministic pick and prefer the higher-quality f16 when present.
+    matches = sorted(
+        (
+            f for f in model_dir.iterdir()
+            if f.is_file() and f.suffix == ".gguf" and "mmproj" in f.name.lower()
+        ),
+        key=lambda f: (0 if "f16" in f.name.lower() else 1, f.name.lower()),
+    )
+    return matches[0] if matches else None
 
 
 def download_mmproj(

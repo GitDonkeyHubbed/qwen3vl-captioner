@@ -14,11 +14,11 @@ import traceback
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QTimer
+from PyQt6.QtCore import Qt, QThread, QEventLoop, pyqtSignal, QObject, QTimer
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QSplitter, QStatusBar, QProgressBar, QApplication, QFileDialog,
-    QMessageBox, QSizePolicy, QStackedWidget,
+    QMessageBox, QSizePolicy, QStackedWidget, QProgressDialog,
 )
 
 from gui.file_browser import FileBrowserPanel
@@ -55,6 +55,34 @@ class ModelLoadWorker(QObject):
             self.finished.emit()
         except Exception as e:
             self.error.emit(f"{e}\n{traceback.format_exc()}")
+
+
+# --- Worker for a blocking download run on a background thread ---
+class _BlockingDownloadWorker(QObject):
+    """Runs a blocking download callable on a QThread.
+
+    The callable receives a ``progress_callback(message, fraction)`` and
+    returns its result (e.g. a Path). Used to move the vision-encoder
+    (mmproj) download off the Qt UI thread so the window stays responsive
+    while it runs (see MainWindow._download_mmproj_blocking).
+    """
+    progress = pyqtSignal(str)
+    finished = pyqtSignal(object)   # result of the callable
+    error = pyqtSignal(str)
+
+    def __init__(self, fn):
+        super().__init__()
+        self._fn = fn
+
+    def run(self):
+        try:
+            result = self._fn(
+                lambda msg, _f=None: self.progress.emit(str(msg))
+            )
+        except Exception as e:
+            self.error.emit(str(e))
+            return
+        self.finished.emit(result)
 
 
 # --- Worker for background caption generation ---
@@ -644,11 +672,11 @@ class MainWindow(QMainWindow):
     def _load_model(self):
         """Load the selected model, guarding against re-entrant loads.
 
-        The mmproj dialogs / synchronous encoder download in the implementation
-        spin the Qt event loop while is_loaded is still False and the Load
-        button is enabled, so a second trigger could otherwise start a second
-        concurrent load on a single engine (racing self.model assignment). The
-        _is_loading flag prevents that.
+        The mmproj dialogs and the modal encoder-download dialog in the
+        implementation spin the Qt event loop while is_loaded is still False
+        and the Load button is enabled, so a second trigger could otherwise
+        start a second concurrent load on a single engine (racing self.model
+        assignment). The _is_loading flag prevents that.
         """
         if self._is_loading or (self._model_load_thread and self._model_load_thread.isRunning()):
             return
@@ -721,6 +749,71 @@ class MainWindow(QMainWindow):
             return None
         return get_model_info(value)
 
+    def _download_mmproj_blocking(self, title, fn):
+        """Run a blocking mmproj download off the UI thread.
+
+        ``fn`` takes a ``progress_callback(message, fraction)`` and returns the
+        downloaded Path. The work runs on a QThread while a modal, indeterminate
+        progress dialog spins a local event loop, so the main window keeps
+        repainting (no 'Not Responding') instead of freezing for the whole
+        multi-hundred-MB encoder transfer. Returns the Path, or re-raises the
+        worker's exception so the caller's existing error handling applies.
+        """
+        thread = QThread()
+        worker = _BlockingDownloadWorker(fn)
+        worker.moveToThread(thread)
+
+        dialog = QProgressDialog(
+            f"{title}\nThis can take a while for large encoders…",
+            None, 0, 0, self,   # no Cancel button; 0/0 = indeterminate
+        )
+        dialog.setWindowTitle("Downloading Vision Encoder")
+        dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dialog.setMinimumDuration(0)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+
+        loop = QEventLoop()
+        state = {"result": None, "error": None}
+
+        def on_progress(msg):
+            dialog.setLabelText(msg)
+            self._settings_panel.set_model_status(msg)
+
+        def on_finished(result):
+            state["result"] = result
+            loop.quit()
+
+        def on_error(msg):
+            state["error"] = msg
+            loop.quit()
+
+        worker.progress.connect(on_progress)
+        worker.finished.connect(on_finished)
+        worker.error.connect(on_error)
+        worker.finished.connect(thread.quit)
+        worker.error.connect(thread.quit)
+        thread.started.connect(worker.run)
+
+        thread.start()
+        dialog.show()
+        loop.exec()            # keeps the UI alive until the worker signals done
+        dialog.close()
+
+        thread.quit()
+        # Wait without a timeout: loop.exec() only returns after the worker
+        # emitted finished/error (the last thing run() does), so the thread is
+        # already finishing. A bounded wait that timed out would let thread/
+        # worker fall out of scope while still running -> "QThread: Destroyed
+        # while thread is still running" and a possible crash. Once wait()
+        # returns the thread has fully stopped, so dropping the references on
+        # return is safe.
+        thread.wait()
+
+        if state["error"] is not None:
+            raise RuntimeError(state["error"])
+        return state["result"]
+
     def _resolve_missing_mmproj(self, model_dir, info, expected_mmproj):
         """Obtain a vision encoder when the one matching the model isn't on disk.
 
@@ -751,9 +844,12 @@ class MainWindow(QMainWindow):
                     self._settings_panel.set_model_status(
                         "Downloading matching vision encoder..."
                     )
-                    return download_named_mmproj(
-                        info["repo_id"], expected_mmproj, model_dir,
-                        progress_callback=lambda msg, _f: self._settings_panel.set_model_status(msg),
+                    return self._download_mmproj_blocking(
+                        f"Downloading matching vision encoder ({expected_mmproj})…",
+                        lambda cb: download_named_mmproj(
+                            info["repo_id"], expected_mmproj, model_dir,
+                            progress_callback=cb,
+                        ),
                     )
                 except Exception as e:
                     QMessageBox.critical(
@@ -788,9 +884,9 @@ class MainWindow(QMainWindow):
         )
         if answer == QMessageBox.StandardButton.Yes:
             try:
-                return ensure_mmproj(
-                    model_dir,
-                    progress_callback=lambda msg, _f: self._settings_panel.set_model_status(msg),
+                return self._download_mmproj_blocking(
+                    "Downloading default vision encoder…",
+                    lambda cb: ensure_mmproj(model_dir, progress_callback=cb),
                 )
             except Exception as e:
                 QMessageBox.critical(
@@ -1104,7 +1200,15 @@ class MainWindow(QMainWindow):
         self._download_worker.cancel()
         self._dl_stop_btn.setEnabled(False)
         self._dl_stop_btn.setText("Stopping…")
-        self._notify("Stopping download…", "info")
+        # An MLX folder (snapshot) download can only stop between files — a
+        # large shard already in flight has to finish first — so be honest
+        # about the delay instead of looking hung.
+        if getattr(self._download_worker, "snapshot_folder", None):
+            msg = "Stopping after the current file finishes…"
+            self._queue_label.setText(msg)
+            self._notify(msg, "info")
+        else:
+            self._notify("Stopping download…", "info")
 
     def _hide_download_stop_btn(self):
         """Reset and hide the status-bar download Stop button."""
@@ -1766,12 +1870,24 @@ class MainWindow(QMainWindow):
                 threads_clean = False
 
         # Download: quit() alone can't stop the blocking run()/thread pool —
-        # signal cancel first so the worker threads actually exit.
+        # signal cancel first so the worker threads actually exit. Capture the
+        # wait() result like the other threads: a download stuck mid-shard must
+        # block unload() rather than be destroyed while still running.
         if self._download_thread and self._download_thread.isRunning():
             if self._download_worker:
                 self._download_worker.cancel()
             self._download_thread.quit()
-            self._download_thread.wait(10000)
+            if not self._download_thread.wait(10000):
+                threads_clean = False
+
+        # Any earlier download/generation threads still shutting down (kept alive
+        # in _finished_threads so they aren't GC'd mid-stop) must also be joined
+        # before unload(), so none is destroyed while still running.
+        for t in getattr(self, "_finished_threads", []):
+            if t.isRunning():
+                t.quit()
+                if not t.wait(10000):
+                    threads_clean = False
 
         # Only free the native engine objects once no worker can still be using
         # them. On a dirty exit (a wait timed out), skip unload() — the process

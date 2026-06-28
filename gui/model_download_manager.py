@@ -9,7 +9,9 @@ Provides:
 
 import concurrent.futures
 import importlib.util
+import json
 import os
+import shutil
 import threading
 import time
 import urllib.error
@@ -445,7 +447,6 @@ class ModelDownloadWorker(QObject):
 
         def _discard_partial():
             if not already_complete:
-                import shutil
                 shutil.rmtree(dest, ignore_errors=True)
 
         try:
@@ -520,6 +521,32 @@ class ModelDownloadWorker(QObject):
         # stream for small files, servers without Range support, or when a
         # resumable .part already exists.
         total, supports_range = self._probe(url)
+
+        # Pre-flight disk-space check so a multi-GB download fails fast with a
+        # clear message instead of dying mid-write — the parallel path even
+        # pre-allocates the full size, which can sparse-succeed and only fail
+        # later as opaque write errors.
+        if total:
+            probe_dir = self.target_dir
+            while not probe_dir.exists() and probe_dir != probe_dir.parent:
+                probe_dir = probe_dir.parent
+            try:
+                free = shutil.disk_usage(probe_dir).free
+            except Exception:
+                free = None
+            # Only the not-yet-downloaded bytes need to fit: a resumable .part
+            # already on disk counts toward the file, so don't demand room for a
+            # second full copy (which would block a nearly-complete resume).
+            existing_part = part.stat().st_size if part.exists() else 0
+            needed = max(total - existing_part, 0) + 256 * 1024 * 1024  # +256 MiB headroom
+            if free is not None and free < needed:
+                self.error.emit(
+                    f"Not enough free disk space for {self.filename}: need "
+                    f"~{needed / 1024**3:.1f} GB, but only "
+                    f"{free / 1024**3:.1f} GB free at {probe_dir}."
+                )
+                return
+
         use_parallel = (
             supports_range
             and total >= self._PARALLEL_THRESHOLD
@@ -726,6 +753,43 @@ class ModelDownloadWorker(QObject):
         self.progress.emit("Download complete", 1.0)
         self.finished.emit(str(target))
 
+    @staticmethod
+    def _part_meta_path(part: Path) -> Path:
+        return part.with_name(part.name + ".meta")
+
+    def _write_part_identity(self, part: Path, total: int):
+        """Record which file this .part belongs to, so a later resume can tell
+        it apart from a stale .part left under the same name by a different
+        download (e.g. a different quant, or a renamed registry stem)."""
+        try:
+            self._part_meta_path(part).write_text(
+                json.dumps({
+                    "repo_id": self.repo_id,
+                    "filename": self.filename,
+                    "total": int(total or 0),
+                }),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
+    def _part_identity_matches(self, part: Path, probed_total: int) -> bool:
+        """True only if the .part's identity sidecar matches this exact
+        repo/file (and the recorded total size, when known)."""
+        try:
+            data = json.loads(
+                self._part_meta_path(part).read_text(encoding="utf-8")
+            )
+        except Exception:
+            return False
+        if (data.get("repo_id") != self.repo_id
+                or data.get("filename") != self.filename):
+            return False
+        recorded = int(data.get("total") or 0)
+        if recorded and probed_total and recorded != probed_total:
+            return False
+        return True
+
     def _run_single(self, url, target: Path, part: Path):
         """Download *url* into *part* over a single resumable connection."""
         try:
@@ -733,15 +797,22 @@ class ModelDownloadWorker(QObject):
 
             resume_pos = part.stat().st_size if part.exists() else 0
             if resume_pos:
-                # Guard against resuming onto a stale/oversized .part (e.g. one
-                # left by a different file with the same name): if it already
-                # exceeds the current remote size it can't be a valid partial of
-                # this file, so discard it and start fresh. Cheap probe, only on
-                # the resume path. (A .part exactly == total is kept and the 416
-                # branch below finalizes it.)
+                # Guard against resuming onto a stale/mismatched .part. Size
+                # alone can't prove a partial belongs to this file — a leftover
+                # .part from a *different* file under the same name that is
+                # SMALLER than the new remote file would otherwise be appended
+                # onto, producing a full-size but corrupt result. So discard the
+                # .part unless its identity sidecar matches this exact repo/file
+                # (and recorded size), or if it already exceeds the remote size.
+                # (A matching .part exactly == total is kept and the 416 branch
+                # below finalizes it.)
                 probed_total, _ = self._probe(url)
-                if probed_total and resume_pos > probed_total:
+                if (
+                    not self._part_identity_matches(part, probed_total)
+                    or (probed_total and resume_pos > probed_total)
+                ):
                     self._safe_unlink(part)
+                    self._safe_unlink(self._part_meta_path(part))
                     resume_pos = 0
             if resume_pos:
                 headers["Range"] = f"bytes={resume_pos}-"
@@ -756,10 +827,22 @@ class ModelDownloadWorker(QObject):
                 response = opener.open(request, timeout=self._SOCKET_TIMEOUT)
             except urllib.error.HTTPError as http_err:
                 if http_err.code == 416 and resume_pos:
-                    # Range beyond EOF — the .part file is already complete
-                    part.replace(target)
-                    self.progress.emit("Download complete", 1.0)
-                    self.finished.emit(str(target))
+                    # 416 = requested range unsatisfiable. Only treat the .part
+                    # as complete when its size matches the known remote total —
+                    # a 416 alone doesn't prove completeness (the probe may have
+                    # failed, or the .part may be oversized/corrupt). When we
+                    # can't verify, keep the .part for a future resume rather
+                    # than promoting possibly-corrupt data to the final file.
+                    if probed_total and resume_pos == probed_total:
+                        part.replace(target)
+                        self._safe_unlink(self._part_meta_path(part))
+                        self.progress.emit("Download complete", 1.0)
+                        self.finished.emit(str(target))
+                        return
+                    self.error.emit(
+                        "Could not verify the existing partial download; "
+                        "download again to retry."
+                    )
                     return
                 raise
 
@@ -781,11 +864,17 @@ class ModelDownloadWorker(QObject):
                 last_emit = 0.0
                 self.target_dir.mkdir(parents=True, exist_ok=True)
 
+                if resume_pos == 0:
+                    # Fresh .part — stamp its identity so a future resume can
+                    # confirm the partial belongs to this exact file.
+                    self._write_part_identity(part, total)
+
                 with open(part, mode) as f:
                     while True:
                         if self._cancelled:
                             # User cancelled — discard so a new model can be chosen
                             self._safe_unlink(part)
+                            self._safe_unlink(self._part_meta_path(part))
                             self.error.emit("Download cancelled.")
                             return
                         chunk = response.read(self._CHUNK_SIZE)
@@ -821,12 +910,14 @@ class ModelDownloadWorker(QObject):
                 return
 
             part.replace(target)
+            self._safe_unlink(self._part_meta_path(part))
             self.progress.emit("Download complete", 1.0)
             self.finished.emit(str(target))
 
         except Exception as exc:
             if self._cancelled:
                 self._safe_unlink(part)
+                self._safe_unlink(self._part_meta_path(part))
                 self.error.emit("Download cancelled.")
                 return
             self.error.emit(self._format_error(exc))

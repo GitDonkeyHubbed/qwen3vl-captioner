@@ -90,8 +90,8 @@ the dropdown. **Always pair a model with the `mmproj` published in its own repo*
 built in (no `mmproj`). Add an entry to `_MLX_ABL` / `_MLX_STD` / `_MLX_NEXTGEN`
 with `repo_id`, `folder`, `size_gb`, and `"backend": "mlx"`.
 
-After editing the registry, run the tests — `tests/test_core.py` checks registry
-integrity (every entry resolves, has a valid mmproj, etc.).
+After editing the registry, run the tests — `tests/test_model_registry.py` checks
+registry integrity (every entry resolves, has a valid mmproj, etc.).
 
 ## Project layout
 

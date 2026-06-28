@@ -2,11 +2,11 @@
   <img src="assets/VL_GGUF_Captioner GUI Screenshot 2.png" alt="QWEN 3 VL ABL Captioner" width="900"/>
 </p>
 
-<h1 align="center">QWEN 3 VL ABL Captioner V1.4.2 — GGUF + MLX Engines</h1>
+<h1 align="center">QWEN 3 VL ABL Captioner V1.4.3 — GGUF + MLX Engines</h1>
 <h3 align="center">Professional GPU-Accelerated Image Captioning for Datasets</h3>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.4.2-blue" alt="Version"/>
+  <img src="https://img.shields.io/badge/version-1.4.3-blue" alt="Version"/>
   <img src="https://img.shields.io/badge/python-3.12-blue?logo=python" alt="Python"/>
   <img src="https://img.shields.io/badge/GPU-CUDA%2012.4%E2%80%9313.x-green?logo=nvidia" alt="CUDA"/>
   <img src="https://img.shields.io/badge/Apple%20Silicon-Metal%20%2B%20MLX-black?logo=apple" alt="Apple Silicon"/>
@@ -41,6 +41,18 @@
 
 ---
 
+## 🩺 What's New in V1.4.3 — Health-Check Fixes
+
+No new features — a sweep of bug and consistency fixes from a full repository health check.
+
+- **No more phantom "update available" popup** — the in-app version was stuck at 1.4.1 and now matches the build.
+- **The window no longer freezes** while downloading a model's vision encoder — it runs in the background behind a progress dialog instead of going *Not Responding*.
+- **Safer downloads & settings** — an interrupted download can no longer be finalized as a corrupt model, downloads check free disk space first, and `config.json` is written atomically so a crash can't wipe your token/settings.
+- **Preset fix** — turning a preset off now restores *your* prefix/suffix instead of leaving the preset's tags applied.
+- Plus smaller robustness fixes (caption edge cases, deterministic encoder pick, a `diagnose.bat` bug, and doc corrections).
+
+---
+
 ## 🔒 What's New in V1.4.2 — Security & Dependency Maintenance
 
 No new features — just keeping things safe and clean for everyone.
@@ -69,7 +81,7 @@ The model dropdown is reorganized into groups (newest first):
 - **Qwen3-VL 8B Caption-it** — an abliterated fine-tune [specialized for image captioning](https://huggingface.co/prithivMLmods/Qwen3-VL-8B-Abliterated-Caption-it-GGUF)
 - **Huihui Qwen3-VL 8B ABL** — [huihui-ai's abliteration](https://huggingface.co/noctrex/Huihui-Qwen3-VL-8B-Instruct-abliterated-GGUF) (quantized by noctrex)
 - **Legacy v1** — kept for existing installs
-- **MLX (Apple Silicon): abliterated** ([alexgusevski's conversions](https://huggingface.co/alexgusevski/Huihui-Qwen3-VL-8B-Instruct-abliterated-q4-mlx)) **and standard** quants, plus an experimental **Qwen3.5 4B abliterated VLM**
+- **MLX (Apple Silicon)** — several groups in the dropdown: **Abliterated v2** (Qwen3-VL 8B, 4/6/8-bit — the recommended Mac default), **Gliese Caption** (Qwen3.5, 0.8B–9B, captioning-tuned), **Qwen3-VL c_abliterated** (newest), plus **huihui abliterated**, **standard**, and an experimental **Qwen3.5** group
 
 Downloading a model now also **auto-downloads its matching mmproj** (vision encoder) when none is present.
 
@@ -189,7 +201,7 @@ Download models directly inside the app (✓ marks the ones you already have), o
 
 | Your setup | Recommended pick |
 |---|---|
-| 12 GB+ VRAM (RTX 3060+) | **Qwen3-VL 8B ABL v2 — Q6_K** *(the default)* |
+| 12 GB+ VRAM (RTX 3060+) | **Qwen3-VL 8B ABL v2 — Q6_K** *(typical pick; the app auto-selects the best quant for your VRAM)* |
 | 8 GB VRAM | Qwen3-VL 8B ABL v2 — Q4_K_M |
 | Low VRAM / older GPU | Qwen3-VL 8B ABL v2 — Q2_K |
 | Best caption quality | Qwen3-VL 8B Caption-it — Q6_K *(captioning-tuned)* |
@@ -253,6 +265,7 @@ qwen3vl-captioner/
 │   ├── dataset_panel.py    # Dataset table view
 │   ├── theme.py            # Dark/light theme color system & QSS stylesheet
 │   ├── config.py           # User config persistence (~/.vlcaptioner/)
+│   ├── version.py          # single source of truth for APP_VERSION
 │   ├── notification_panel.py
 │   ├── app_settings_dialog.py
 │   └── model_download_manager.py
