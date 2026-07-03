@@ -447,16 +447,22 @@ class FileBrowserPanel(QFrame):
 
         # Warn about stem collisions: photo.jpg and photo.png share ONE
         # photo.txt sidecar, so captioning both silently overwrites one
-        # caption with the other.
+        # caption with the other. Only groups a NEWLY added file participates
+        # in are reported — recomputing over everything would re-fire the same
+        # warning on every later, unrelated import.
         stems: dict = {}
         for item in self._items.values():
             p = item.image_path
             stems.setdefault(str(p.with_suffix("")), []).append(p.name)
-        collisions = [names for names in stems.values() if len(names) > 1]
-        if collisions and new_paths:
-            example = " / ".join(sorted(collisions[0]))
+        new_stems = {str(p.with_suffix("")) for p in new_paths}
+        relevant = [
+            names for stem, names in stems.items()
+            if len(names) > 1 and stem in new_stems
+        ]
+        if relevant:
+            example = " / ".join(sorted(relevant[0]))
             self.stem_collision_detected.emit(
-                f"{len(collisions)} image(s) share a name with a different "
+                f"{len(relevant)} image(s) share a name with a different "
                 f"extension (e.g. {example}) — they will share ONE .txt "
                 "caption file, overwriting each other."
             )

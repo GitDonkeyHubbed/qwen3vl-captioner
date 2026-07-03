@@ -17,6 +17,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -36,6 +38,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -63,6 +67,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -71,7 +77,7 @@ jobs:
       - name: HEAD-check all pinned wheel URLs
         run: |
           python - <<'EOF'
-          import re, sys, urllib.request
+          import re, sys, time, urllib.request
 
           template = None
           for line in open("setup.bat", encoding="utf-8", errors="replace"):
@@ -87,13 +93,21 @@ jobs:
           failures = []
           for _, tag in _WHEEL_TAGS:
               url = template.replace("!CUDA_WHEEL!", tag).replace("%%2B", "%2B")
-              req = urllib.request.Request(url, method="HEAD")
-              try:
-                  with urllib.request.urlopen(req, timeout=30) as resp:
-                      print(f"OK   {tag}: {resp.status}")
-              except Exception as exc:
+              # Retry with backoff so a transient network hiccup / rate limit
+              # doesn't fail CI when the URL hasn't actually rotted.
+              last_exc = None
+              for attempt in range(3):
+                  req = urllib.request.Request(url, method="HEAD")
+                  try:
+                      with urllib.request.urlopen(req, timeout=30) as resp:
+                          print(f"OK   {tag}: {resp.status}")
+                          break
+                  except Exception as exc:
+                      last_exc = exc
+                      time.sleep(5 * (attempt + 1))
+              else:
                   failures.append(tag)
-                  print(f"FAIL {tag}: {exc}\n     {url}")
+                  print(f"FAIL {tag}: {last_exc}\n     {url}")
           if failures:
               sys.exit(f"wheel URL(s) no longer published: {', '.join(failures)}")
           EOF

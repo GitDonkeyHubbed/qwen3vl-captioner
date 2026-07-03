@@ -145,11 +145,15 @@ def setup_cuda_dll_path() -> Optional[Path]:
     import ctypes
 
     bin_dirs: list[Path] = []
+    root_version: dict[Path, tuple[int, int]] = {}
     for root in _cuda_install_roots():
+        ver = parse_cuda_version(root.name) or _version_from_install(root) or (0, 0)
         for sub in ("bin", os.path.join("bin", "x64")):
             path = root / sub
             if path.is_dir():
-                bin_dirs.append(path.resolve())
+                resolved = path.resolve()
+                bin_dirs.append(resolved)
+                root_version[resolved] = ver
 
     for bin_dir in bin_dirs:
         try:
@@ -181,13 +185,19 @@ def setup_cuda_dll_path() -> Optional[Path]:
     # ALL collected bin dirs, not just the first: CUDA 13.x on Windows moved
     # cudart64/cublas64 into bin\x64, so globbing only the plain bin dir made
     # this preload a silent no-op for exactly the cu130+ installs it targets.
+    # Scan newest toolkit first (matching how the wheel is chosen) — the raw
+    # bin_dirs order puts CUDA_PATH first, which may be an OLDER install, and
+    # the per-name dedup must not let its DLLs win over a newer toolkit's.
+    preload_order = sorted(
+        bin_dirs, key=lambda d: root_version.get(d, (0, 0)), reverse=True
+    )
     preload_patterns = ("cudart64_*.dll", "cublas64_*.dll", "cublasLt64_*.dll")
     preloaded: set[str] = set()
-    for bin_dir in bin_dirs:
+    for bin_dir in preload_order:
         for pattern in preload_patterns:
             for dll_path in sorted(bin_dir.glob(pattern), reverse=True):
                 if dll_path.name.lower() in preloaded:
-                    continue  # same DLL name found in an earlier (newer) root
+                    continue  # same DLL name already loaded from a newer root
                 try:
                     ctypes.CDLL(str(dll_path), winmode=ctypes.RTLD_GLOBAL)
                     preloaded.add(dll_path.name.lower())
