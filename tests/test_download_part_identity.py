@@ -15,7 +15,7 @@ import json
 
 import pytest
 
-from gui.model_download_manager import ModelDownloadWorker
+from gui.model_download_manager import ModelDownloadWorker, is_unsafe_repo_filename
 
 
 @pytest.fixture
@@ -95,3 +95,34 @@ def test_sidecar_content_shape(worker, part):
         "filename": "model.Q6_K.gguf",
         "total": 555,
     }
+
+
+@pytest.mark.parametrize(
+    "fname",
+    [
+        "/etc/passwd",             # POSIX absolute
+        "../outside.bin",          # POSIX traversal
+        "sub/../../outside.bin",   # nested POSIX traversal
+        "..\\evil.dll",            # Windows traversal (backslash separator)
+        "sub\\..\\..\\evil.dll",   # nested Windows traversal
+        "C:\\Windows\\evil.dll",   # Windows absolute with drive
+        "C:/Windows/evil.dll",     # drive with forward slashes
+        "C:evil.dll",              # drive-relative (no separator)
+        "\\\\server\\share\\x",    # UNC path
+    ],
+)
+def test_unsafe_repo_filenames_rejected(fname):
+    assert is_unsafe_repo_filename(fname) is True
+
+
+@pytest.mark.parametrize(
+    "fname",
+    [
+        "config.json",
+        "model-00001-of-00002.safetensors",
+        "sub/dir/tokenizer.json",
+        "weights..half.bin",       # '..' inside a NAME is fine
+    ],
+)
+def test_normal_repo_filenames_allowed(fname):
+    assert is_unsafe_repo_filename(fname) is False

@@ -17,7 +17,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Optional, Dict, Any, List
 
 from PyQt6.QtCore import QObject, pyqtSignal
@@ -356,6 +356,24 @@ def mlx_model_exists(model_dir: Path, folder: str) -> bool:
 # Download worker
 # ---------------------------------------------------------------------------
 
+def is_unsafe_repo_filename(fname: str) -> bool:
+    """True if a remote-listed repo filename could escape the download dir.
+
+    Checked under BOTH path flavors: PurePosixPath alone would not treat
+    backslashes as separators, so on Windows ``..\\evil`` or ``C:\\...``
+    would slip through a POSIX-only guard.
+    """
+    posix = PurePosixPath(fname)
+    win = PureWindowsPath(fname)
+    return (
+        posix.is_absolute()
+        or win.is_absolute()
+        or bool(win.drive)          # covers drive-relative forms like C:evil
+        or ".." in posix.parts
+        or ".." in win.parts
+    )
+
+
 class _StripAuthOnRedirect(urllib.request.HTTPRedirectHandler):
     """Drop the Authorization header when HF redirects to its CDN.
 
@@ -466,9 +484,9 @@ class ModelDownloadWorker(QObject):
                     self.error.emit("Download cancelled.")
                     return
                 # Defense-in-depth: never let a remote-listed filename escape
-                # the destination folder (absolute path or .. traversal).
-                fparts = PurePosixPath(fname)
-                if fparts.is_absolute() or ".." in fparts.parts:
+                # the destination folder (absolute path, drive prefix, or
+                # .. traversal — in either POSIX or Windows form).
+                if is_unsafe_repo_filename(fname):
                     continue
                 self.progress.emit(
                     f"{self.snapshot_folder}/ — {fname} ({i + 1}/{n})",
