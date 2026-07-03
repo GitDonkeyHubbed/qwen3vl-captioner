@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 
 from engine.base import DEFAULT_SYSTEM_PROMPT, apply_prefix_suffix, clean_caption
@@ -55,18 +55,24 @@ def image_to_data_uri(image_path: Path, max_dim: int = 1280) -> str:
         A data URI string like 'data:image/png;base64,...'
     """
     # Open inside a context manager so the source file handle is released
-    # deterministically — convert() forces the pixel load, so the detached
-    # RGB copy needs no further access to the file. (Prevents a descriptor
-    # leak / Windows file lock during batch runs.)
+    # deterministically — exif_transpose + convert() force the pixel load, so
+    # the detached RGB copy needs no further access to the file. (Prevents a
+    # descriptor leak / Windows file lock during batch runs.)
+    #
+    # exif_transpose applies the EXIF Orientation tag (3/6/8 — ubiquitous in
+    # phone/camera JPEGs). Without it the model receives sideways pixels and
+    # captions a rotated scene — invisibly, because the Qt preview applies
+    # orientation on its own.
     with Image.open(image_path) as src:
-        img = src.convert("RGB")
+        img = ImageOps.exif_transpose(src).convert("RGB")
 
-    # Resize if any dimension exceeds max_dim
+    # Resize if any dimension exceeds max_dim. Clamp to >=1 px so an extreme
+    # aspect ratio (e.g. 10000x1) can't scale a side to zero and crash resize.
     w, h = img.size
     if w > max_dim or h > max_dim:
         scale = max_dim / max(w, h)
-        new_w = int(w * scale)
-        new_h = int(h * scale)
+        new_w = max(1, int(w * scale))
+        new_h = max(1, int(h * scale))
         img = img.resize((new_w, new_h), Image.LANCZOS)
     
     # Convert to PNG bytes then base64
@@ -241,7 +247,7 @@ class Qwen3VLEngine:
                     break
                 
                 choices = chunk.get("choices") or [{}]
-                delta = choices[0].get("delta", {})
+                delta = (choices[0] or {}).get("delta") or {}
                 token_text = delta.get("content", "")
                 if token_text:
                     caption_parts.append(token_text)

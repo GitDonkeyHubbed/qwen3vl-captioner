@@ -51,7 +51,14 @@ def _windows_checks(report: dict, problems: list):
             "Install/update the NVIDIA GPU driver: https://www.nvidia.com/drivers"
         )
 
-    if report["toolkit_version"]:
+    if report["toolkit_version"] and report.get("toolkit_too_old"):
+        print(f"{FAIL} CUDA Toolkit:    v{report['toolkit_version']} is older than the minimum supported 12.4")
+        problems.append(
+            f"CUDA Toolkit v{report['toolkit_version']} is too old for the published "
+            "llama-cpp-python wheels (oldest build is cu124).\n"
+            "         Upgrade the toolkit:  winget install Nvidia.CUDA  — then re-run setup.bat"
+        )
+    elif report["toolkit_version"]:
         print(f"{OK} CUDA Toolkit:    v{report['toolkit_version']}  ({report['toolkit_path']})")
     else:
         print(f"{FAIL} CUDA Toolkit:    NOT FOUND (the GPU driver alone is not enough)")
@@ -65,7 +72,11 @@ def _windows_checks(report: dict, problems: list):
     wheel_tag = report["wheel_cuda_tag"]
     rec_tag = report["recommended_tag"]
     if wheel_tag:
-        if report["tags_match"] is False:
+        if report.get("toolkit_too_old"):
+            # tags_match compares against the cu124 fallback, which a too-old
+            # toolkit cannot run — an "OK match" here would be a lie.
+            print(f"{FAIL} Wheel/CUDA match: wheel '{wheel_tag}' cannot run on toolkit v{report['toolkit_version']} (needs 12.4+)")
+        elif report["tags_match"] is False:
             print(f"{FAIL} Wheel/CUDA match: wheel is '{wheel_tag}' but your toolkit needs '{rec_tag}'")
             problems.append(
                 f"Re-run setup.bat — it will replace the {wheel_tag} wheel with the {rec_tag} build"
@@ -94,11 +105,11 @@ def _macos_checks(report: dict, problems: list):
             mlx_ver = version("mlx-vlm")
             print(f"{OK} MLX backend:     mlx-vlm {mlx_ver} installed")
         except Exception:
+            # Optional backend — print the suggestion inline rather than
+            # appending to `problems`, so a healthy Metal-only setup doesn't
+            # exit 1 / print "PROBLEMS FOUND" over a missing optional extra.
             print(f"{WARN} MLX backend:     mlx-vlm not installed (optional — MLX models hidden)")
-            problems.append(
-                "Optional: install the MLX backend with ./setup.sh "
-                "(or: .venv/bin/pip install mlx-vlm)"
-            )
+            print(f"{INFO}                  to enable: ./setup.sh  (or: .venv/bin/pip install mlx-vlm)")
 
 
 def main() -> int:
@@ -136,4 +147,12 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # Exit codes: 0 = healthy, 1 = problems found (expected on e.g. GPU-less
+    # CI runners), 2 = doctor itself crashed. CI normalizes only 1, so a
+    # genuine crash in the diagnostics still fails the workflow.
+    try:
+        sys.exit(main())
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        sys.exit(2)
