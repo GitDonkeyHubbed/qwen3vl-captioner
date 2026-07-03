@@ -57,8 +57,16 @@ def main():
     app.setApplicationVersion(APP_VERSION)
     app.setOrganizationName("Qwen3VL-Captioner")
 
-    # Apply dark theme
-    app.setStyleSheet(get_stylesheet())
+    # Apply the SAVED theme (the stylesheet default is dark, so without this
+    # a user's persisted light-mode choice was ignored on every launch)
+    from gui.config import get_theme
+    from gui.theme import set_theme, apply_placeholder_palette
+    theme_mode = get_theme()
+    set_theme(theme_mode)
+    app.setStyleSheet(get_stylesheet(theme_mode))
+    # Placeholder color must go through the palette — Qt Style Sheets have no
+    # ::placeholder sub-control (the old QSS rule was silently ignored).
+    apply_placeholder_palette(app)
 
     # Set default font
     font = QFont("Segoe UI", 10)

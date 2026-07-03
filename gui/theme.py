@@ -36,6 +36,10 @@ _DARK_COLORS: Dict[str, str] = {
     "text_secondary": "#a1a1aa",   # zinc-400
     "text_dim":       "#71717a",   # zinc-500
     "text_muted":     "#52525b",   # zinc-600
+    # Translucent surfaces (previously hardcoded dark rgba in the QSS, which
+    # made these panels near-unreadable in light mode)
+    "surface_translucent": "rgba(24, 24, 27, 0.5)",
+    "hover_translucent":   "rgba(39, 39, 42, 0.5)",
 
     # Accent — blue-600
     "accent":         "#2563eb",
@@ -84,6 +88,8 @@ _LIGHT_COLORS: Dict[str, str] = {
     "text_secondary": "#52525b",   # zinc-600
     "text_dim":       "#71717a",   # zinc-500
     "text_muted":     "#a1a1aa",   # zinc-400
+    "surface_translucent": "rgba(244, 244, 245, 0.6)",
+    "hover_translucent":   "rgba(228, 228, 231, 0.6)",
 
     # Accent — blue-600 (same)
     "accent":         "#2563eb",
@@ -126,6 +132,19 @@ def set_theme(mode: str = "dark"):
     COLORS.update(source)
 
 
+def apply_placeholder_palette(app):
+    """Set the input-placeholder text color via QPalette.
+
+    Qt Style Sheets have no ``::placeholder`` sub-control, so this is the only
+    supported way to color placeholder text. Call after set_theme()/
+    setStyleSheet() — at startup and on every theme switch.
+    """
+    from PyQt6.QtGui import QPalette, QColor
+    pal = app.palette()
+    pal.setColor(QPalette.ColorRole.PlaceholderText, QColor(COLORS["text_muted"]))
+    app.setPalette(pal)
+
+
 # ---------------------------------------------------------------------------
 # Stylesheet generator
 # ---------------------------------------------------------------------------
@@ -162,22 +181,17 @@ def get_stylesheet(mode: str = "dark") -> str:
         color: {c['text_dim']};
         font-size: 10px;
         font-weight: 700;
-        letter-spacing: 1.5px;
-        text-transform: uppercase;
         padding: 8px 0 4px 0;
     }}
     QLabel[class="brand-title"] {{
         color: {c['text_primary']};
         font-size: 13px;
         font-weight: 700;
-        letter-spacing: -0.3px;
     }}
     QLabel[class="brand-subtitle"] {{
         color: {c['text_dim']};
         font-size: 10px;
         font-family: 'Consolas', 'Courier New', monospace;
-        letter-spacing: -0.5px;
-        text-transform: uppercase;
     }}
     QLabel[class="version-label"] {{
         color: {c['text_dim']};
@@ -196,8 +210,6 @@ def get_stylesheet(mode: str = "dark") -> str:
         color: {c['text_dim']};
         font-size: 10px;
         font-weight: 700;
-        letter-spacing: -0.3px;
-        text-transform: uppercase;
     }}
     QLabel[class="status-dot-green"] {{
         color: {c['success']};
@@ -213,15 +225,11 @@ def get_stylesheet(mode: str = "dark") -> str:
         color: {c['success']};
         font-size: 10px;
         font-weight: 500;
-        letter-spacing: 0.5px;
-        text-transform: uppercase;
     }}
     QLabel[class="info-label"] {{
         color: {c['accent_text']};
         font-size: 10px;
         font-weight: 700;
-        letter-spacing: 0.5px;
-        text-transform: uppercase;
     }}
 
     /* === BUTTONS === */
@@ -351,19 +359,15 @@ def get_stylesheet(mode: str = "dark") -> str:
     QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {{
         border-color: {c['accent']};
     }}
-    QLineEdit::placeholder {{
-        color: {c['text_muted']};
-    }}
 
     /* Monospace caption editor */
     QTextEdit[class="caption-editor"] {{
-        background-color: rgba(24, 24, 27, 0.5);
+        background-color: {c['surface_translucent']};
         border: 1px solid {c['border']};
         border-radius: 8px;
         padding: 12px;
         font-family: 'Consolas', 'Courier New', monospace;
         font-size: 13px;
-        line-height: 1.6;
     }}
     QTextEdit[class="caption-editor"]:focus {{
         border-color: rgba(37, 99, 235, 0.5);
@@ -427,7 +431,7 @@ def get_stylesheet(mode: str = "dark") -> str:
     }}
     QCheckBox:hover {{
         color: {c['text_secondary']};
-        background-color: rgba(39, 39, 42, 0.5);
+        background-color: {c['hover_translucent']};
     }}
     QCheckBox::indicator {{
         width: 14px;
@@ -535,7 +539,6 @@ def get_stylesheet(mode: str = "dark") -> str:
         color: {c['text_dim']};
         font-size: 10px;
         font-weight: 700;
-        letter-spacing: 1px;
     }}
 
     /* === STATUS BAR === */
@@ -597,12 +600,12 @@ def get_stylesheet(mode: str = "dark") -> str:
         padding: 12px;
     }}
     QFrame[class="extra-options-container"] {{
-        background-color: rgba(24, 24, 27, 0.5);
+        background-color: {c['surface_translucent']};
         border: 1px solid {c['border']};
         border-radius: 6px;
     }}
     QFrame[class="gpu-pill"] {{
-        background-color: rgba(24, 24, 27, 0.5);
+        background-color: {c['surface_translucent']};
         border: 1px solid {c['border']};
         border-radius: 14px;
         padding: 4px 12px;
