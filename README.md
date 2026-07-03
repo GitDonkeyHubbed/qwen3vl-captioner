@@ -41,15 +41,18 @@
 
 ---
 
-## 🩺 What's New in V1.4.3 — Health-Check Fixes
+## 🩺 What's New in V1.4.3 — Health-Check & Deep-QC Fixes
 
-No new features — a sweep of bug and consistency fixes from a full repository health check.
+No new models — two full audit passes over the codebase (85 verified findings fixed in total), plus quality-of-life upgrades.
 
-- **No more phantom "update available" popup** — the in-app version was stuck at 1.4.1 and now matches the build.
-- **The window no longer freezes** while downloading a model's vision encoder — it runs in the background behind a progress dialog instead of going *Not Responding*.
-- **Safer downloads & settings** — an interrupted download can no longer be finalized as a corrupt model, downloads check free disk space first, and `config.json` is written atomically so a crash can't wipe your token/settings.
-- **Preset fix** — turning a preset off now restores *your* prefix/suffix instead of leaving the preset's tags applied.
-- Plus smaller robustness fixes (caption edge cases, deterministic encoder pick, a `diagnose.bat` bug, and doc corrections).
+- **Your captions can no longer cross-save.** Clicking another image while a caption was generating could silently overwrite that image's `.txt` with the wrong caption — fixed at the root.
+- **Phone photos caption correctly now.** EXIF rotation is applied before inference, so sideways camera JPEGs no longer produce captions describing a rotated scene.
+- **No more phantom "update available" popup**, no more window freeze during vision-encoder downloads, and your saved **light/dark theme actually applies at startup**.
+- **Downloads got smarter**: live **speed + ETA**, free-disk-space pre-flight, corruption-proof resume (including partials from older versions), and your HF token is stored `0600` and never sent over plain HTTP.
+- **Faster & smoother**: thumbnails decode at thumbnail size (no more UI stalls on big imports), **keyboard shortcuts** (Ctrl+S save, Ctrl+G generate, Ctrl+←/→ navigate), **drag & drop anywhere**, batch ETA, and a download offer right in the "model not downloaded" dialog.
+- Test suite grew to **113 tests**; CI now HEAD-checks the pinned wheel URLs so a deleted release breaks CI, not your install.
+
+See [CHANGELOG.md](CHANGELOG.md) for the complete list.
 
 ---
 

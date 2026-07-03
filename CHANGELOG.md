@@ -6,8 +6,76 @@ git tags (`V1.x.x`).
 
 ## [1.4.3] — Unreleased
 
-Maintenance release from a full repository health check (every finding
-adversarially verified against the source). No new features.
+Maintenance release from a full repository health check, followed by a second
+deep QC audit of the entire codebase (56 findings, each adversarially
+verified against the source — several reproduced empirically against live
+PyQt6 before fixing).
+
+### Fixed (QC audit round 2)
+- **Caption/save misattribution race (data corruption).** A finished caption
+  was cached and auto-saved under whatever image was *selected at completion
+  time*, not the image it was generated for — clicking thumbnail B while A's
+  caption streamed silently overwrote `B.txt` with A's caption. Results are
+  now pinned to the generating worker's own image, and batch items generate
+  the popped queue entry even if the selection changes mid-run.
+- **Sideways captions for phone photos.** The GGUF path never applied the
+  EXIF Orientation tag, so rotated camera JPEGs were captioned as a sideways
+  scene — invisibly, because the Qt preview auto-rotates. Orientation is now
+  applied before encoding; extreme aspect ratios also no longer crash resize
+  with a zero dimension (which aborted the rest of a batch).
+- **Saved theme ignored at startup.** The app always launched dark; the
+  persisted light-mode choice now applies on launch, translucent surfaces got
+  light-theme palette entries (they were hardcoded dark rgba), invalid QSS
+  (`::placeholder`, `letter-spacing`, `text-transform`, `line-height`) was
+  removed, and placeholder text is colored via `QPalette` as Qt requires.
+- **Resume regression from 1.4.3's own sidecar check.** Valid `.part` files
+  from pre-1.4.3 versions (which never had a `.meta` sidecar) were silently
+  discarded — multi-GB downloads restarted from zero on upgrade. Legacy
+  partials are now grandfathered via the old size heuristic and stamped with
+  a sidecar; the HTTP 416 finalize path also falls back to the sidecar's
+  recorded size when the live probe fails, instead of dead-ending.
+- **"Uncancellable" encoder dialog was dismissible with Esc**, silently
+  dropping application modality while the nested event loop still ran. The
+  dialog now genuinely ignores Esc/close until the download finishes.
+- **CUDA 13.x DLL preload was a silent no-op** (only the first `bin` dir was
+  globbed; CUDA 13 keeps its DLLs in `bin\x64`), and `doctor.py` reported a
+  false "[OK] Wheel/CUDA match" for toolkits older than 12.4. Doctor also no
+  longer fails a healthy Mac over the *optional* MLX backend, and exits 2 on
+  an internal crash (CI normalizes only exit 1).
+- **Batch state machine hardening.** Unload is refused during the between-item
+  gap (previously stranded a zombie batch), batch start is re-entrancy-guarded,
+  the batch button no longer re-enables while the last item is in flight,
+  "Clear all" cancels an in-flight generation instead of orphaning it, and the
+  stop-download confirm can no longer cancel a different (chained) download.
+- **hf_token hardening.** `~/.vlcaptioner/` is created `0700` and config.json
+  written `0600`; the download token is now also stripped on same-host
+  HTTPS→HTTP redirect downgrades; the update-check result is HTML-escaped
+  before rendering in a link-enabled label.
+- `pip install .` was broken (setuptools flat-layout refusal) — explicit
+  package discovery added, so the `qwen3vl-captioner` console script installs.
+- Snapshot downloads reject path-traversal filenames (defense-in-depth); the
+  status-bar RAM readout refreshes on the timer instead of only at startup.
+
+### Added (QC audit round 2)
+- **Download speed + ETA** in every download progress message, and a
+  time-remaining estimate in the batch queue label.
+- **Keyboard shortcuts**: Ctrl+S save caption, Ctrl+G generate,
+  Ctrl+←/→ (and PgUp/PgDn) previous/next image.
+- **Drag & drop anywhere** on the window (was: only the file-browser strip).
+- "Model not downloaded" dialog now offers to download the selected registry
+  model directly; the maximize button in the viewer toolbar actually works;
+  import dialogs remember the last-used folder; model-load errors show the
+  message with the traceback tucked into expandable details; a warning is
+  raised when images share a stem (they'd share one `.txt` caption).
+- **20 new tests** (113 total): EXIF/aspect-ratio image prep, `.part`
+  identity-sidecar contract, config save-failure surfacing, last-import-dir,
+  and a real truth-table for `mlx_backend_supported` (the old test re-derived
+  the production expression as its own oracle).
+- **CI hardening**: workflows get least-privilege `permissions` blocks; the
+  Windows smoke test parses the wheel URL from `setup.bat` (single source)
+  and a new job HEAD-checks all five pinned CUDA wheel URLs so a deleted
+  release fails CI instead of user installs; `requirements-dev.txt` is now
+  actually consumed by CI; the `uv` bootstrap installers are version-pinned.
 
 ### Fixed
 - **Version string lag.** `gui/version.py` and `pyproject.toml` were still

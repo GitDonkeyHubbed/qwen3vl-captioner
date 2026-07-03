@@ -6,6 +6,8 @@ encoder), backend routing (``gguf`` vs ``mlx``), the recommended default, and
 the parallel group/label structure that drives the dropdown headers.
 """
 
+import pytest
+
 from gui.model_download_manager import (
     MLX_MODEL_REGISTRY,
     MODEL_REGISTRY,
@@ -109,13 +111,25 @@ def test_display_names_are_known_registry_entries():
         assert name in known
 
 
-def test_mlx_backend_supported_matches_platform():
+@pytest.mark.parametrize(
+    "plat, machine, expected",
+    [
+        ("darwin", "arm64", True),    # Apple Silicon — the only supported combo
+        ("darwin", "x86_64", False),  # Intel Mac
+        ("win32", "AMD64", False),
+        ("linux", "x86_64", False),
+        ("win32", "arm64", False),    # arm64 alone isn't enough
+    ],
+)
+def test_mlx_backend_supported_truth_table(monkeypatch, plat, machine, expected):
+    """Pin concrete rows — re-deriving the production expression as the
+    test's own oracle could never catch a bug in it."""
     import platform
     import sys
 
-    assert mlx_backend_supported() == (
-        sys.platform == "darwin" and platform.machine() == "arm64"
-    )
+    monkeypatch.setattr(sys, "platform", plat)
+    monkeypatch.setattr(platform, "machine", lambda: machine)
+    assert mlx_backend_supported() is expected
 
 
 def test_model_file_exists(tmp_path):
