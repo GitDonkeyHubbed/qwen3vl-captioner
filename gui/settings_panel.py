@@ -1386,8 +1386,13 @@ class SettingsPanel(QFrame):
         self.inference_time_label.setVisible(True)
 
     def set_batch_progress(self, current: int, total: int):
-        """Update batch button text with progress."""
-        if current < total:
+        """Update batch button text with progress.
+
+        (0, 0) resets the button; any total > 0 keeps it disabled — including
+        the final item, whose caption is still generating when current == total
+        (re-enabling there allowed a second batch to start mid-flight).
+        """
+        if total > 0:
             self.batch_btn.setText(f"  Processing {current}/{total}...")
             self.batch_btn.setEnabled(False)
         else:
