@@ -11,12 +11,17 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   smoke:
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -31,23 +36,30 @@ jobs:
       - name: Install dependencies (same set as setup.bat)
         run: pip install -r requirements.txt
 
-      - name: Install llama-cpp-python wheel (cu124, as setup.bat would)
-        run: pip install "https://github.com/JamePeng/llama-cpp-python/releases/download/v0.3.40-cu124-win-20260608/llama_cpp_python-0.3.40%2Bcu124-cp312-cp312-win_amd64.whl"
+      - name: Install llama-cpp-python wheel (cu124, parsed from setup.bat)
+        # Single-source the wheel URL from setup.bat's WHEEL_URL template so
+        # this step can't silently drift from what setup.bat actually installs.
+        run: |
+          $line = Select-String -Path setup.bat -Pattern 'set "WHEEL_URL=(https://[^"]+)"' | Select-Object -First 1
+          if (-not $line) { throw "WHEEL_URL template not found in setup.bat" }
+          $url = $line.Matches[0].Groups[1].Value -replace '!CUDA_WHEEL!','cu124' -replace '%%2B','%2B'
+          echo "Installing $url"
+          pip install $url
 
       - name: Diagnostics report sanity (llama installed, no toolkit found)
         run: python -c "from engine.cuda_setup import diagnose; r = diagnose(); print(r); assert r['llama_cpp_installed'], 'wheel not detected'; assert r['toolkit_version'] is None, 'phantom toolkit found'"
 
       - name: Doctor report (informational — runner has no GPU, problems expected)
-        # doctor.py exits non-zero when it finds problems (always true on a
-        # GPU-less CI runner). In PowerShell, `|| echo ...` still leaves
-        # LASTEXITCODE set, so we explicitly normalize this informational
-        # non-zero exit to success for the workflow.
+        # doctor.py exit codes: 0 = healthy, 1 = problems found (always true
+        # on a GPU-less CI runner — informational, normalize to success),
+        # 2 = doctor itself crashed (a real bug — fail the workflow).
         run: |
           python doctor.py
-          if ($LASTEXITCODE -ne 0) {
+          if ($LASTEXITCODE -eq 1) {
             echo "(doctor reported issues — expected on a GPU-less runner)"
             exit 0
           }
+          exit $LASTEXITCODE
 
       - name: Headless app import (exercises the no-CUDA startup path)
         env:

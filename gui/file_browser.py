@@ -16,7 +16,9 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QPixmap, QPainter, QColor, QPen, QDragEnterEvent, QDropEvent
+from PyQt6.QtGui import (
+    QPixmap, QPainter, QColor, QPen, QDragEnterEvent, QDropEvent, QImageReader,
+)
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QScrollArea, QFrame, QFileDialog,
@@ -113,15 +115,24 @@ class ThumbnailItem(QFrame):
         layout.addLayout(text_layout, 1)
 
     def _load_thumbnail(self):
-        """Load and scale the thumbnail image."""
-        pixmap = QPixmap(str(self.image_path))
-        if not pixmap.isNull():
-            scaled = pixmap.scaled(
-                THUMB_SIZE, THUMB_SIZE,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
+        """Load and scale the thumbnail image.
+
+        Decode via QImageReader with a target size so the JPEG decoder
+        downscales DURING decode — QPixmap(path) decoded every image at full
+        resolution (a 40MP photo → ~160 MB of pixels) just to draw a 56px
+        thumbnail, freezing the UI thread on large imports.
+        """
+        reader = QImageReader(str(self.image_path))
+        reader.setAutoTransform(True)  # honor EXIF orientation like the viewer
+        size = reader.size()
+        if size.isValid():
+            scaled = size.scaled(
+                THUMB_SIZE, THUMB_SIZE, Qt.AspectRatioMode.KeepAspectRatio
             )
-            self.thumb_label.setPixmap(scaled)
+            reader.setScaledSize(scaled)
+        image = reader.read()
+        if not image.isNull():
+            self.thumb_label.setPixmap(QPixmap.fromImage(image))
         else:
             self.thumb_label.setText("?")
 
@@ -213,6 +224,7 @@ class FileBrowserPanel(QFrame):
 
     image_selected = pyqtSignal(Path)
     images_imported = pyqtSignal(list)  # list[Path]
+    stem_collision_detected = pyqtSignal(str)  # warning text for the user
     clear_requested = pyqtSignal()      # emitted when user clicks Clear All
 
     def __init__(self, parent=None):
@@ -296,7 +308,7 @@ class FileBrowserPanel(QFrame):
         # ── Action buttons ──
         btn_frame = QFrame()
         btn_frame.setStyleSheet(
-            f"background: rgba(24, 24, 27, 0.5); "
+            f"background: {COLORS['surface_translucent']}; "
             f"border-top: 1px solid {COLORS['border']};"
         )
         btn_layout = QVBoxLayout(btn_frame)
@@ -433,6 +445,28 @@ class FileBrowserPanel(QFrame):
 
         self.count_label.setText(str(len(self._items)))
 
+        # Warn about stem collisions: photo.jpg and photo.png share ONE
+        # photo.txt sidecar, so captioning both silently overwrites one
+        # caption with the other. Only groups a NEWLY added file participates
+        # in are reported — recomputing over everything would re-fire the same
+        # warning on every later, unrelated import.
+        stems: dict = {}
+        for item in self._items.values():
+            p = item.image_path
+            stems.setdefault(str(p.with_suffix("")), []).append(p.name)
+        new_stems = {str(p.with_suffix("")) for p in new_paths}
+        relevant = [
+            names for stem, names in stems.items()
+            if len(names) > 1 and stem in new_stems
+        ]
+        if relevant:
+            example = " / ".join(sorted(relevant[0]))
+            self.stem_collision_detected.emit(
+                f"{len(relevant)} image(s) share a name with a different "
+                f"extension (e.g. {example}) — they will share ONE .txt "
+                "caption file, overwriting each other."
+            )
+
         if new_paths:
             self.images_imported.emit(new_paths)
 
@@ -482,21 +516,26 @@ class FileBrowserPanel(QFrame):
         self.image_selected.emit(path)
 
     def _on_import_clicked(self):
-        """Open file dialog to import images."""
+        """Open file dialog to import images (remembers the last-used folder)."""
+        from gui.config import get_last_import_dir, set_last_import_dir
         ext_filter = "Images (" + " ".join(f"*{ext}" for ext in IMAGE_EXTENSIONS) + ")"
         paths, _ = QFileDialog.getOpenFileNames(
-            self, "Import Images", "", ext_filter,
+            self, "Import Images", get_last_import_dir(), ext_filter,
         )
         if paths:
+            set_last_import_dir(str(Path(paths[0]).parent))
             self.add_images([Path(p) for p in paths])
 
     def _on_import_folder_clicked(self):
-        """Open folder dialog to import all images from a directory."""
+        """Open folder dialog to import all images from a directory
+        (remembers the last-used folder)."""
+        from gui.config import get_last_import_dir, set_last_import_dir
         dir_path = QFileDialog.getExistingDirectory(
-            self, "Select Image Folder", "",
+            self, "Select Image Folder", get_last_import_dir(),
             QFileDialog.Option.ShowDirsOnly,
         )
         if dir_path:
+            set_last_import_dir(dir_path)
             self.import_directory(Path(dir_path))
 
     def _on_clear_clicked(self):

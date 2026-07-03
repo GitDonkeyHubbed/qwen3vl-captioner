@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from PyQt6.QtCore import Qt, QThread, QEventLoop, pyqtSignal, QObject, QTimer
+from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QSplitter, QStatusBar, QProgressBar, QApplication, QFileDialog,
@@ -83,6 +84,41 @@ class _BlockingDownloadWorker(QObject):
             self.error.emit(str(e))
             return
         self.finished.emit(result)
+
+
+class _UnclosableProgressDialog(QProgressDialog):
+    """A QProgressDialog that ignores Esc and the title-bar close button.
+
+    QProgressDialog hides itself on Esc/close even with no Cancel button,
+    which would silently drop application modality while the nested event
+    loop of _download_mmproj_blocking is still running (leaving an invisible,
+    unstoppable download and a fully interactive main window mid-load).
+    Closing is re-enabled via allow_close() once the worker has finished.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._allow_close = False
+
+    def allow_close(self):
+        self._allow_close = True
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape and not self._allow_close:
+            event.ignore()
+            return
+        super().keyPressEvent(event)
+
+    def reject(self):
+        # Esc reaches the dialog as reject(); swallow it while the worker runs.
+        if self._allow_close:
+            super().reject()
+
+    def closeEvent(self, event):
+        if self._allow_close:
+            super().closeEvent(event)
+        else:
+            event.ignore()
 
 
 # --- Worker for background caption generation ---
@@ -178,6 +214,7 @@ class MainWindow(QMainWindow):
         self._batch_queue: List[Path] = []
         self._batch_index = 0
         self._batch_active = False  # True from batch start until completion/abort
+        self._batch_current_path: Optional[Path] = None  # item pinned for the deferred timer
         self._download_thread: Optional[QThread] = None
         self._download_worker = None  # ModelDownloadWorker (lazy import)
         self._finished_threads: List[QThread] = []  # keep refs until done
@@ -187,10 +224,11 @@ class MainWindow(QMainWindow):
         self._nvml_handle = None
         self._init_nvml()
 
-        # Periodic GPU refresh timer (5 seconds)
+        # Periodic GPU/RAM refresh timer (5 seconds)
         self._gpu_timer = QTimer(self)
         self._gpu_timer.setInterval(5000)
         self._gpu_timer.timeout.connect(self._update_gpu_info)
+        self._gpu_timer.timeout.connect(self._update_ram_info)
 
         # Notification system
         self._notification_store = NotificationStore(self)
@@ -201,6 +239,11 @@ class MainWindow(QMainWindow):
         self._build_main_layout()
         self._build_status_bar()
         self._connect_signals()
+        self._setup_shortcuts()
+
+        # Folders/images can be dropped anywhere on the window, not just on
+        # the narrow file-browser strip (events are delegated to it).
+        self.setAcceptDrops(True)
 
         # Kick off GPU monitoring immediately (don't wait for model load)
         self._update_gpu_info()
@@ -570,6 +613,9 @@ class MainWindow(QMainWindow):
         """Wire up all component signals."""
         # File browser -> display
         self._file_browser.image_selected.connect(self._on_image_selected)
+        self._file_browser.stem_collision_detected.connect(
+            lambda msg: self._notify(msg, "warning")
+        )
         self._file_browser.clear_requested.connect(self._on_clear_all)
 
         # Caption panel
@@ -600,6 +646,39 @@ class MainWindow(QMainWindow):
         # Notification badge updates
         self._notification_store.notification_added.connect(self._update_bell_badge)
 
+    def _setup_shortcuts(self):
+        """Keyboard shortcuts for the core loop: navigate, generate, save.
+
+        Navigation deliberately uses Ctrl+arrows / PageUp+PageDown rather than
+        bare arrows, which must keep working inside the caption text editor.
+        """
+        QShortcut(QKeySequence.StandardKey.Save, self, self._save_current_caption)
+        QShortcut(QKeySequence("Ctrl+G"), self, self._generate_caption)
+        QShortcut(QKeySequence("Ctrl+Right"), self, lambda: self._select_adjacent(1))
+        QShortcut(QKeySequence("Ctrl+Left"), self, lambda: self._select_adjacent(-1))
+        QShortcut(QKeySequence(Qt.Key.Key_PageDown), self, lambda: self._select_adjacent(1))
+        QShortcut(QKeySequence(Qt.Key.Key_PageUp), self, lambda: self._select_adjacent(-1))
+
+    def _select_adjacent(self, delta: int):
+        """Select the next/previous image in the file browser."""
+        paths = self._file_browser.get_all_paths()
+        if not paths:
+            return
+        try:
+            idx = paths.index(self._current_image) + delta
+        except ValueError:
+            idx = 0
+        idx = max(0, min(idx, len(paths) - 1))
+        self._file_browser.select_item(paths[idx])
+
+    # --- Window-level drag & drop (delegated to the file browser) ---
+
+    def dragEnterEvent(self, event):
+        self._file_browser.dragEnterEvent(event)
+
+    def dropEvent(self, event):
+        self._file_browser.dropEvent(event)
+
     # --- Image Selection ---
 
     def _on_image_selected(self, path: Path):
@@ -626,6 +705,11 @@ class MainWindow(QMainWindow):
 
     def _on_clear_all(self):
         """Reset the workspace — clear all images, captions, and viewer state."""
+        # Cancel an in-flight generation first, or an orphan worker keeps
+        # streaming tokens into the freshly cleared panel.
+        if self._caption_worker and self._is_generating:
+            self._caption_worker.cancel()
+
         # Cancel any in-progress batch
         self._batch_queue.clear()
         self._batch_index = 0
@@ -700,6 +784,22 @@ class MainWindow(QMainWindow):
         # Find the model file (GGUF) or folder (MLX)
         model_path = self._find_model_file()
         if not model_path:
+            # For a registry model we know exactly what to fetch — offer to
+            # download it right here instead of pointing at the ⬇ button.
+            kind, value = self._settings_panel.get_selected_model()
+            info = self._selected_registry_info()
+            if kind == "registry" and info:
+                answer = QMessageBox.question(
+                    self, "Model Not Downloaded",
+                    f"'{value}' isn't downloaded yet "
+                    f"(~{info.get('size_gb', 0):.1f} GB).\n\n"
+                    "Download it now?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes,
+                )
+                if answer == QMessageBox.StandardButton.Yes:
+                    self._download_model(value)
+                return
             QMessageBox.warning(
                 self, "Model Not Found",
                 "Could not find the selected model on disk.\n\n"
@@ -763,7 +863,7 @@ class MainWindow(QMainWindow):
         worker = _BlockingDownloadWorker(fn)
         worker.moveToThread(thread)
 
-        dialog = QProgressDialog(
+        dialog = _UnclosableProgressDialog(
             f"{title}\nThis can take a while for large encoders…",
             None, 0, 0, self,   # no Cancel button; 0/0 = indeterminate
         )
@@ -798,6 +898,7 @@ class MainWindow(QMainWindow):
         thread.start()
         dialog.show()
         loop.exec()            # keeps the UI alive until the worker signals done
+        dialog.allow_close()
         dialog.close()
 
         thread.quit()
@@ -954,18 +1055,30 @@ class MainWindow(QMainWindow):
         self._settings_panel.load_model_btn.setEnabled(True)
         self._set_connection_status("error", "Error")
         self._notify(f"Model load failed: {error[:80]}", "error")
-        QMessageBox.critical(self, "Model Load Error", f"Failed to load model:\n\n{error}")
+        # Show the human-readable error up front; tuck the raw traceback into
+        # the expandable details instead of dumping it as the message body.
+        msg, _, tb = error.partition("\nTraceback")
+        box = QMessageBox(
+            QMessageBox.Icon.Critical, "Model Load Error",
+            f"Failed to load model:\n\n{msg.strip()[:600]}", parent=self,
+        )
+        if tb:
+            box.setDetailedText("Traceback" + tb)
+        box.exec()
 
     def _unload_model(self):
         """Unload the current model and reset UI state."""
         if not self._engine.is_loaded:
             return
 
-        # Don't unload while generating
-        if self._is_generating:
+        # Don't unload while generating — including the ~100 ms gap between
+        # batch items, where _is_generating is briefly False but the batch
+        # timer is about to fire on the unloaded engine (zombie batch).
+        if self._is_generating or self._batch_active or self._batch_queue:
             QMessageBox.warning(
                 self, "Cannot Unload",
-                "Please wait for the current generation to finish before unloading."
+                "Please wait for the current generation/batch to finish "
+                "(or cancel it) before unloading."
             )
             return
 
@@ -993,15 +1106,17 @@ class MainWindow(QMainWindow):
         dlg = AppSettingsDialog(self)
         dlg.theme_changed.connect(self._on_theme_changed)
         dlg.exec()
+        dlg.deleteLater()  # don't accumulate a dialog per gear click
 
     def _on_theme_changed(self, mode: str):
         """Handle theme switch from settings dialog."""
-        from gui.theme import set_theme, get_stylesheet
+        from gui.theme import set_theme, get_stylesheet, apply_placeholder_palette
         set_theme(mode)
         from PyQt6.QtWidgets import QApplication
         app_instance = QApplication.instance()
         if app_instance:
             app_instance.setStyleSheet(get_stylesheet(mode))
+            apply_placeholder_palette(app_instance)
 
     # --- Model Downloading ---
 
@@ -1185,6 +1300,12 @@ class MainWindow(QMainWindow):
             self._hide_download_stop_btn()
             return
 
+        # Capture the worker BEFORE the modal dialog: while it is open the
+        # event loop keeps running, so the download can finish and a chained
+        # one (e.g. the auto-mmproj) can start — cancelling the new worker
+        # because of a dialog answered about the old one would be wrong.
+        worker_at_prompt = self._download_worker
+
         answer = QMessageBox.question(
             self, "Stop Download",
             "Stop the current download and delete the partial file?\n\n"
@@ -1194,6 +1315,11 @@ class MainWindow(QMainWindow):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
+        if (
+            worker_at_prompt is not self._download_worker
+            or not (self._download_thread and self._download_thread.isRunning())
+        ):
+            return  # the download the user answered about is already gone
 
         # Don't auto-start the matching mmproj after the model is cancelled
         self._pending_mmproj = None
@@ -1398,13 +1524,20 @@ class MainWindow(QMainWindow):
 
     # --- Caption Generation ---
 
-    def _generate_caption(self):
-        """Generate caption for the current image."""
+    def _generate_caption(self, image_path: Optional[Path] = None):
+        """Generate a caption for *image_path* (default: the current image).
+
+        The target is pinned HERE, at start — everything downstream
+        (_on_caption_finished) attributes the result to the worker's own
+        image_path, never to whatever happens to be selected when the
+        caption completes.
+        """
+        target = image_path or self._current_image
         if not self._engine.is_loaded:
             QMessageBox.warning(self, "Model Required", "Please load the model first.")
             return
 
-        if not self._current_image:
+        if not target:
             QMessageBox.warning(self, "No Image", "Please select an image first.")
             return
 
@@ -1430,7 +1563,7 @@ class MainWindow(QMainWindow):
         self._generation_thread = QThread()
         self._caption_worker = CaptionWorker(
             engine=self._engine,
-            image_path=self._current_image,
+            image_path=target,
             prompt=self._settings_panel.get_prompt(),
             temperature=self._settings_panel.get_temperature(),
             top_p=self._settings_panel.get_top_p(),
@@ -1483,17 +1616,37 @@ class MainWindow(QMainWindow):
             self._caption_panel.show_feedback("Nothing to cancel", is_success=False)
 
     def _on_caption_finished(self, caption: str):
-        """Handle completed caption generation."""
+        """Handle completed caption generation.
+
+        CRITICAL: the result is attributed to the image the WORKER was started
+        for, not to self._current_image — the user may have clicked another
+        thumbnail while the caption streamed, and saving under the selection
+        would silently overwrite that other image's caption file.
+        """
+        worker_path = (
+            self._caption_worker.image_path if self._caption_worker
+            else self._current_image
+        )
+
         self._is_generating = False
         self._caption_panel.set_generating(False)
         self._settings_panel.set_generating(False)
         self._image_viewer.set_processing(False)
 
-        # Cache the caption
-        if self._current_image:
-            self._captions[str(self._current_image)] = caption
-            self._file_browser.set_item_caption(self._current_image, caption)
-            self._file_browser.set_item_status(self._current_image, "done")
+        # Cache the caption under the image it belongs to
+        if worker_path:
+            self._captions[str(worker_path)] = caption
+            self._file_browser.set_item_caption(worker_path, caption)
+            self._file_browser.set_item_status(worker_path, "done")
+
+        # If the selection moved mid-generation, the panel holds the streamed
+        # text of ANOTHER image — restore the selected image's own caption.
+        if worker_path != self._current_image and self._current_image:
+            own = self._captions.get(str(self._current_image))
+            if own:
+                self._caption_panel.set_caption(own)
+            else:
+                self._caption_panel.clear_caption()
 
         # Update inference time
         inf_time = self._engine.last_inference_time
@@ -1508,20 +1661,20 @@ class MainWindow(QMainWindow):
         # caption is in flight. Using the flag ensures the last item is saved
         # silently like the rest and that _on_batch_complete still runs.
         if self._batch_active:
-            self._auto_save_caption(self._current_image, caption)
+            self._auto_save_caption(worker_path, caption)
             self._process_next_batch_item()
         elif self._settings_panel.get_auto_save():
-            self._auto_save_caption(self._current_image, caption)
+            self._auto_save_caption(worker_path, caption)
         else:
             # Single image: ask the user
-            self._prompt_auto_save(caption)
+            self._prompt_auto_save(worker_path, caption)
 
-    def _prompt_auto_save(self, caption: str):
+    def _prompt_auto_save(self, image_path: Optional[Path], caption: str):
         """Show a Yes/No dialog asking whether to auto-save the caption file."""
-        if not self._current_image or not caption:
+        if not image_path or not caption:
             return
 
-        txt_path = self._current_image.with_suffix(".txt")
+        txt_path = image_path.with_suffix(".txt")
         answer = QMessageBox.question(
             self, "Auto Save Caption",
             f"Caption generated!\n\n"
@@ -1532,7 +1685,7 @@ class MainWindow(QMainWindow):
             QMessageBox.StandardButton.Yes,  # default to Yes
         )
         if answer == QMessageBox.StandardButton.Yes:
-            self._auto_save_caption(self._current_image, caption)
+            self._auto_save_caption(image_path, caption)
 
     def _auto_save_caption(self, image_path: Path, caption: str):
         """Silently save a caption as a .txt sidecar file."""
@@ -1608,6 +1761,9 @@ class MainWindow(QMainWindow):
 
     def _batch_caption_all(self):
         """Start batch captioning for all imported images."""
+        if self._batch_active or self._is_generating:
+            return  # re-entrancy guard: a batch or single caption is running
+
         if not self._engine.is_loaded:
             QMessageBox.warning(self, "Model Required", "Please load the model first.")
             return
@@ -1617,6 +1773,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No Images", "Please import images first.")
             return
 
+        self._batch_current_path: Optional[Path] = None
         self._batch_queue = list(all_paths)
         self._batch_index = 0
         self._batch_active = True
@@ -1640,6 +1797,10 @@ class MainWindow(QMainWindow):
 
         path = self._batch_queue.pop(0)
         self._batch_index += 1
+        # Pin the batch target: generation must run on the POPPED item, not on
+        # whatever the selection happens to be when the deferred timer fires —
+        # a user click in the 100 ms gap would otherwise redirect the batch.
+        self._batch_current_path = path
 
         # Update UI
         self._file_browser.set_item_status(path, "processing")
@@ -1648,7 +1809,17 @@ class MainWindow(QMainWindow):
             self._batch_index, self._batch_index + len(self._batch_queue)
         )
         self._progress_bar.setValue(self._batch_index)
-        self._queue_label.setText(f"Queue: {len(self._batch_queue)} remaining")
+        eta_txt = ""
+        inf_t = getattr(self._engine, "last_inference_time", 0) or 0
+        if inf_t > 0:
+            eta_s = (len(self._batch_queue) + 1) * inf_t
+            eta_txt = (
+                f" (~{eta_s:.0f}s left)" if eta_s < 90
+                else f" (~{eta_s / 60:.0f} min left)"
+            )
+        self._queue_label.setText(
+            f"Queue: {len(self._batch_queue)} remaining{eta_txt}"
+        )
 
         # Generate (will call _process_next_batch_item on finish via _on_caption_finished)
         QTimer.singleShot(100, self._start_deferred_batch_caption)
@@ -1662,7 +1833,7 @@ class MainWindow(QMainWindow):
         generation on the last-selected image after cancellation.
         """
         if self._batch_active:
-            self._generate_caption()
+            self._generate_caption(self._batch_current_path)
 
     def _on_batch_complete(self):
         """Handle batch completion."""
@@ -1671,21 +1842,19 @@ class MainWindow(QMainWindow):
         self._batch_index = 0
         self._progress_bar.setVisible(False)
         self._queue_label.setText(f"Batch complete: {total} images captioned")
-        self._settings_panel.set_batch_progress(total, total)
+        # (0, 0) resets the batch button — only now, with no item in flight
+        self._settings_panel.set_batch_progress(0, 0)
         self._caption_panel.show_feedback(f"Batch complete! {total} images captioned.")
         self._notify(f"Batch complete: {total} images captioned", "success")
 
-        # Prompt to auto-save all batch captions
-        answer = QMessageBox.question(
-            self, "Auto Save All Captions",
-            f"Batch captioning complete! ({total} images)\n\n"
-            "All captions were saved during batch processing.\n"
-            "Would you also like to export all captions as .txt files?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
+        # Every caption was already written as a .txt sidecar during the run —
+        # a "would you also like to export .txt files?" question here was a
+        # confusing no-op, so just confirm what happened.
+        QMessageBox.information(
+            self, "Batch Complete",
+            f"Batch complete — {total} captions saved as .txt files "
+            "next to the images.",
         )
-        if answer == QMessageBox.StandardButton.Yes:
-            self._export_all_captions()
 
     # --- Save / Export ---
 

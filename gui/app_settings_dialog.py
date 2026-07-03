@@ -7,6 +7,8 @@ Provides:
   - Persistent storage via gui.config
 """
 
+import html
+
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -266,14 +268,17 @@ class AppSettingsDialog(QDialog):
                     False,
                 )
             elif parse(latest) > parse(APP_VERSION):
+                # html.escape: `latest` is remote-controlled text rendered in a
+                # rich-text label with external links enabled — never
+                # interpolate it unescaped.
                 self._update_check_done.emit(
-                    f"New version available: {latest} — "
+                    f"New version available: {html.escape(latest)} — "
                     f"<a href='https://github.com/{GITHUB_REPO}/releases'>open releases page</a>",
                     True,
                 )
             else:
                 self._update_check_done.emit(
-                    f"You're up to date (latest: {latest}).", False
+                    f"You're up to date (latest: {html.escape(latest)}).", False
                 )
         except Exception as e:
             self._update_check_done.emit(f"Update check failed: {e}", False)

@@ -21,11 +21,20 @@ _DEFAULTS: Dict[str, Any] = {
     # When True, captions are written to .txt sidecars without the
     # per-image confirmation popup
     "auto_save_captions": False,
+    # Folder the import file/folder dialogs open in (last one used)
+    "last_import_dir": "",
 }
 
 
 def _ensure_dir():
+    # The config file can hold the user's HF token — keep the directory
+    # owner-only so other local users can't read it. (chmod covers dirs
+    # created by older versions with default permissions; no-op on Windows.)
     _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(_CONFIG_DIR, 0o700)
+    except OSError:
+        pass
 
 
 def load_config() -> Dict[str, Any]:
@@ -61,7 +70,9 @@ def save_config(cfg: Dict[str, Any]) -> bool:
     try:
         _ensure_dir()
         tmp = _CONFIG_FILE.with_suffix(".json.tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
+        # Owner-only from the first byte — the file can contain the HF token.
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2)
         os.replace(tmp, _CONFIG_FILE)
         return True
@@ -95,6 +106,18 @@ def add_custom_model(path: str):
         models.remove(path)
     models.append(path)
     cfg["custom_models"] = models
+    save_config(cfg)
+
+
+def get_last_import_dir() -> str:
+    """Folder the import dialogs should open in (last one used, or '')."""
+    value = load_config().get("last_import_dir", "")
+    return value if isinstance(value, str) else ""
+
+
+def set_last_import_dir(path: str):
+    cfg = load_config()
+    cfg["last_import_dir"] = str(path)
     save_config(cfg)
 
 

@@ -188,11 +188,13 @@ class ImageViewer(QFrame):
         self.reset_btn.clicked.connect(self._reset_view)
         tb_layout.addWidget(self.reset_btn)
 
-        # Maximize button
+        # Maximize button \u2014 toggles the top-level window between maximized
+        # and normal (was previously an unconnected, dead control)
         self.maximize_btn = QPushButton("\u26F6")  # square with corners
         self.maximize_btn.setProperty("class", "icon-button")
         self.maximize_btn.setFixedSize(28, 28)
-        self.maximize_btn.setToolTip("Maximize")
+        self.maximize_btn.setToolTip("Maximize / restore the window")
+        self.maximize_btn.clicked.connect(self._toggle_window_maximized)
         tb_layout.addWidget(self.maximize_btn)
 
         layout.addWidget(toolbar)
@@ -308,6 +310,14 @@ class ImageViewer(QFrame):
     def _reset_view(self):
         """Reset to fit-to-view zoom level."""
         self._fit_to_view()
+
+    def _toggle_window_maximized(self):
+        """Toggle the top-level window between maximized and normal."""
+        win = self.window()
+        if win.isMaximized():
+            win.showNormal()
+        else:
+            win.showMaximized()
 
     def resizeEvent(self, event):
         """Re-fit image when the viewer is resized and keep overlay sized."""

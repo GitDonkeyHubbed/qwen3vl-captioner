@@ -34,6 +34,11 @@ _WHEEL_TAGS = [
 
 DEFAULT_WHEEL_TAG = "cu124"
 
+# Oldest toolkit any published wheel supports. A detected toolkit below this
+# floor still maps to DEFAULT_WHEEL_TAG (setup scripts parse that contract),
+# but diagnose()/doctor flag it as too old instead of reporting a false match.
+MIN_SUPPORTED_TOOLKIT = (12, 4)
+
 
 def parse_cuda_version(text: str) -> Optional[tuple[int, int]]:
     """Parse 'v12.4', '12.4', or 'v13.0' into a (major, minor) tuple."""
@@ -140,11 +145,15 @@ def setup_cuda_dll_path() -> Optional[Path]:
     import ctypes
 
     bin_dirs: list[Path] = []
+    root_version: dict[Path, tuple[int, int]] = {}
     for root in _cuda_install_roots():
+        ver = parse_cuda_version(root.name) or _version_from_install(root) or (0, 0)
         for sub in ("bin", os.path.join("bin", "x64")):
             path = root / sub
             if path.is_dir():
-                bin_dirs.append(path.resolve())
+                resolved = path.resolve()
+                bin_dirs.append(resolved)
+                root_version[resolved] = ver
 
     for bin_dir in bin_dirs:
         try:
@@ -172,17 +181,30 @@ def setup_cuda_dll_path() -> Optional[Path]:
     if not bin_dirs:
         return None
 
-    # Preload runtime DLLs for whatever CUDA major version is present.
-    cuda_bin = bin_dirs[0]
+    # Preload runtime DLLs for whatever CUDA major version is present. Scan
+    # ALL collected bin dirs, not just the first: CUDA 13.x on Windows moved
+    # cudart64/cublas64 into bin\x64, so globbing only the plain bin dir made
+    # this preload a silent no-op for exactly the cu130+ installs it targets.
+    # Scan newest toolkit first (matching how the wheel is chosen) — the raw
+    # bin_dirs order puts CUDA_PATH first, which may be an OLDER install, and
+    # the per-name dedup must not let its DLLs win over a newer toolkit's.
+    preload_order = sorted(
+        bin_dirs, key=lambda d: root_version.get(d, (0, 0)), reverse=True
+    )
     preload_patterns = ("cudart64_*.dll", "cublas64_*.dll", "cublasLt64_*.dll")
-    for pattern in preload_patterns:
-        for dll_path in sorted(cuda_bin.glob(pattern), reverse=True):
-            try:
-                ctypes.CDLL(str(dll_path), winmode=ctypes.RTLD_GLOBAL)
-            except OSError:
-                pass
+    preloaded: set[str] = set()
+    for bin_dir in preload_order:
+        for pattern in preload_patterns:
+            for dll_path in sorted(bin_dir.glob(pattern), reverse=True):
+                if dll_path.name.lower() in preloaded:
+                    continue  # same DLL name already loaded from a newer root
+                try:
+                    ctypes.CDLL(str(dll_path), winmode=ctypes.RTLD_GLOBAL)
+                    preloaded.add(dll_path.name.lower())
+                except OSError:
+                    pass
 
-    return cuda_bin
+    return bin_dirs[0]
 
 
 def cuda_toolkit_missing_message() -> str:
@@ -238,8 +260,13 @@ def diagnose() -> dict:
         report["toolkit_version"] = f"{ver[0]}.{ver[1]}"
         report["toolkit_path"] = str(root)
         report["recommended_tag"] = recommended_wheel_tag(ver)
+        # A toolkit older than every published wheel floor falls through to
+        # the cu124 default, which such a toolkit cannot actually run — flag
+        # it so doctor.py reports a real failure instead of a false OK match.
+        report["toolkit_too_old"] = ver < MIN_SUPPORTED_TOOLKIT
     else:
         report["recommended_tag"] = DEFAULT_WHEEL_TAG
+        report["toolkit_too_old"] = False
 
     try:
         from importlib.metadata import version

@@ -26,7 +26,9 @@ echo "[1/5] Checking for uv package manager..."
 export PATH="$HOME/.local/bin:$PATH"
 if ! command -v uv >/dev/null 2>&1; then
     echo "      uv not found. Installing..."
-    curl -LsSf https://astral.sh/uv/install.sh | sh
+    # Pinned installer version — a moving `astral.sh/uv/install.sh` would
+    # execute whatever the latest script happens to be at install time.
+    curl -LsSf https://astral.sh/uv/0.11.26/install.sh | sh
     export PATH="$HOME/.local/bin:$PATH"
 fi
 echo "      uv ready."

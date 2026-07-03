@@ -9,11 +9,16 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -23,14 +28,18 @@ jobs:
         run: python -m compileall -q app.py doctor.py engine gui tests
 
       - name: Pyflakes (undefined names, unused imports)
+        # requirements-dev.txt is the single source of dev-tool floors — CI
+        # must consume it or its pins are decorative and drift silently.
         run: |
-          pip install --quiet pyflakes
+          pip install --quiet -r requirements-dev.txt
           pyflakes app.py doctor.py engine/*.py gui/*.py tests/*.py
 
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -42,9 +51,63 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libegl1 libgl1
 
       - name: Install test dependencies
-        run: pip install --quiet pytest "PyQt6>=6.7"
+        run: pip install --quiet -r requirements-dev.txt "PyQt6>=6.7" "Pillow>=12.2.0"
 
       - name: Run pytest (core logic, headless)
         env:
           QT_QPA_PLATFORM: offscreen
         run: python -m pytest tests/ -q
+
+  wheel-urls:
+    # The llama-cpp fork wheels are pinned by release-tag URL in setup.bat.
+    # Release assets can be re-tagged or deleted; a rotted URL would only
+    # surface as a broken install on a user's machine. HEAD-check every CUDA
+    # tag here so it fails CI instead. setup.bat's WHEEL_URL template is the
+    # single source; the smoke workflow parses the same line.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: HEAD-check all pinned wheel URLs
+        run: |
+          python - <<'EOF'
+          import re, sys, time, urllib.request
+
+          template = None
+          for line in open("setup.bat", encoding="utf-8", errors="replace"):
+              m = re.search(r'set "WHEEL_URL=(https://[^"]+)"', line)
+              if m:
+                  template = m.group(1)
+                  break
+          assert template, "WHEEL_URL template not found in setup.bat"
+
+          sys.path.insert(0, ".")
+          from engine.cuda_setup import _WHEEL_TAGS
+
+          failures = []
+          for _, tag in _WHEEL_TAGS:
+              url = template.replace("!CUDA_WHEEL!", tag).replace("%%2B", "%2B")
+              # Retry with backoff so a transient network hiccup / rate limit
+              # doesn't fail CI when the URL hasn't actually rotted.
+              last_exc = None
+              for attempt in range(3):
+                  req = urllib.request.Request(url, method="HEAD")
+                  try:
+                      with urllib.request.urlopen(req, timeout=30) as resp:
+                          print(f"OK   {tag}: {resp.status}")
+                          break
+                  except Exception as exc:
+                      last_exc = exc
+                      time.sleep(5 * (attempt + 1))
+              else:
+                  failures.append(tag)
+                  print(f"FAIL {tag}: {last_exc}\n     {url}")
+          if failures:
+              sys.exit(f"wheel URL(s) no longer published: {', '.join(failures)}")
+          EOF

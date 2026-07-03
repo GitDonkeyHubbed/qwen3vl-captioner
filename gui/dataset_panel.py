@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import List
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtGui import QImageReader
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
@@ -218,10 +218,12 @@ class DatasetPanel(QFrame):
 
     @staticmethod
     def _get_image_dims(path: Path) -> str:
+        # QImageReader.size() reads dimensions from the header only — no pixel
+        # decode. QPixmap(path) fully decoded every image just for this label.
         try:
-            px = QPixmap(str(path))
-            if not px.isNull():
-                return f"{px.width()} x {px.height()}"
+            sz = QImageReader(str(path)).size()
+            if sz.isValid():
+                return f"{sz.width()} x {sz.height()}"
         except Exception:
             pass
         return "--"

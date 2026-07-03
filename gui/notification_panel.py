@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import List
 
 from PyQt6.QtCore import Qt, pyqtSignal, QObject, QPoint
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QWidget, QGraphicsDropShadowEffect,
@@ -169,12 +170,7 @@ class NotificationPanel(QFrame):
         shadow = QGraphicsDropShadowEffect(self)
         shadow.setBlurRadius(24)
         shadow.setOffset(0, 4)
-        shadow.setColor(COLORS["bg_darkest"] if isinstance(COLORS["bg_darkest"], type(shadow.color())) else shadow.color())
-        try:
-            from PyQt6.QtGui import QColor as _QC
-            shadow.setColor(_QC(0, 0, 0, 100))
-        except Exception:
-            pass
+        shadow.setColor(QColor(0, 0, 0, 100))
         self.setGraphicsEffect(shadow)
 
     # -- public --

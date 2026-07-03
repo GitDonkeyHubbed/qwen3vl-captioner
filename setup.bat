@@ -22,7 +22,9 @@ echo [1/6] Checking for uv package manager...
 where uv >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
     echo      uv not found. Installing uv...
-    powershell -ExecutionPolicy Bypass -Command "irm https://astral.sh/uv/install.ps1 | iex"
+    REM Pinned installer version - a moving install.ps1 would execute whatever
+    REM the latest script happens to be at install time.
+    powershell -ExecutionPolicy Bypass -Command "irm https://astral.sh/uv/0.11.26/install.ps1 | iex"
     if %ERRORLEVEL% NEQ 0 (
         echo [ERROR] Failed to install uv. Please install manually from https://astral.sh/uv
         pause

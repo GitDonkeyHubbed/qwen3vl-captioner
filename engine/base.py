@@ -10,7 +10,10 @@ The app supports two inference backends behind one duck-typed interface:
     Apple Silicon only. Models are folders of safetensors — no mmproj.
 
 Every engine implements:
-  load_model(model_path, mmproj_path=None, *, progress_callback=None)
+  load_model(model_path, mmproj_path, *, progress_callback=None)
+    (mmproj_path is REQUIRED by the GGUF engine — pairing a model with a
+    missing/mismatched vision encoder crashes llama.cpp natively — and is
+    accepted-but-ignored by the MLX engine, whose models embed the tower)
   caption_image(image_path, prompt, ..., stream_callback, cancel_check) -> str
   unload()
   get_model_info() -> dict

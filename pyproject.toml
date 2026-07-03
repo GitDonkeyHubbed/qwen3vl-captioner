@@ -2,8 +2,11 @@
 name = "qwen3vl-captioner"
 version = "1.4.3"
 description = "Portable Qwen3-VL image captioning GUI with GGUF inference"
+# <3.13 because the pinned llama-cpp-python fork wheels are cp312-only
 requires-python = ">=3.11,<3.13"
 dependencies = [
+    # PyPI floor is for API compatibility only — GGUF Qwen3-VL captioning
+    # needs JamePeng's fork wheels, installed by setup.bat / setup.sh
     "llama-cpp-python>=0.3.0",
     "PyQt6>=6.7",
     "Pillow>=12.2.0",
@@ -24,3 +27,13 @@ qwen3vl-captioner = "app:main"
 [build-system]
 requires = ["setuptools>=75.0"]
 build-backend = "setuptools.build_meta"
+
+# Explicit discovery: with app.py/doctor.py at the root next to two packages,
+# setuptools' flat-layout auto-detection refuses to build ("multiple top-level
+# packages"), which silently broke `pip install .` and the console script.
+[tool.setuptools]
+packages = ["engine", "gui"]
+py-modules = ["app", "doctor"]
+
+[tool.setuptools.package-data]
+gui = ["*.png"]

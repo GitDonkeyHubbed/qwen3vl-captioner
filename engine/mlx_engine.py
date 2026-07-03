@@ -66,12 +66,12 @@ def _stream_with_sampling(
     """Invoke mlx-vlm's stream_generate across a breaking sampling-API change.
 
     mlx-vlm/mlx-lm dropped the ``temperature``/``top_p`` keyword arguments on
-    ``stream_generate`` in favour of a ``sampler`` callable, and the project
-    pins only ``mlx-vlm>=0.1.0`` (no upper bound) — so a fresh setup.sh install
-    pulls the newer API where the old kwargs raise ``TypeError`` on every
-    caption. Prefer the sampler path; if this build doesn't accept ``sampler``
-    (older 0.1.x), fall back to the legacy kwargs so captioning works on either
-    version.
+    ``stream_generate`` in favour of a ``sampler`` callable. The project's
+    ``mlx`` extra now pins ``mlx-vlm>=0.6`` (sampler API), but setup.sh
+    installs unpinned ``mlx-vlm`` and pre-existing environments may still
+    carry an older 0.1.x build. Prefer the sampler path; if this build doesn't
+    accept ``sampler``, fall back to the legacy kwargs so captioning works on
+    either version.
     """
     if make_sampler == "auto":
         make_sampler = _load_make_sampler()

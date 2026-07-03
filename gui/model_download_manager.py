@@ -17,7 +17,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Optional, Dict, Any, List
 
 from PyQt6.QtCore import QObject, pyqtSignal
@@ -356,6 +356,24 @@ def mlx_model_exists(model_dir: Path, folder: str) -> bool:
 # Download worker
 # ---------------------------------------------------------------------------
 
+def is_unsafe_repo_filename(fname: str) -> bool:
+    """True if a remote-listed repo filename could escape the download dir.
+
+    Checked under BOTH path flavors: PurePosixPath alone would not treat
+    backslashes as separators, so on Windows ``..\\evil`` or ``C:\\...``
+    would slip through a POSIX-only guard.
+    """
+    posix = PurePosixPath(fname)
+    win = PureWindowsPath(fname)
+    return (
+        posix.is_absolute()
+        or win.is_absolute()
+        or bool(win.drive)          # covers drive-relative forms like C:evil
+        or ".." in posix.parts
+        or ".." in win.parts
+    )
+
+
 class _StripAuthOnRedirect(urllib.request.HTTPRedirectHandler):
     """Drop the Authorization header when HF redirects to its CDN.
 
@@ -366,8 +384,11 @@ class _StripAuthOnRedirect(urllib.request.HTTPRedirectHandler):
         new = super().redirect_request(req, fp, code, msg, headers, newurl)
         if new is not None:
             old_host = urllib.parse.urlparse(req.full_url).netloc
-            new_host = urllib.parse.urlparse(newurl).netloc
-            if old_host != new_host:
+            new_url = urllib.parse.urlparse(newurl)
+            # Strip the token on any cross-host hop, and also on a same-host
+            # https->http downgrade — a Bearer token must never travel in
+            # cleartext.
+            if old_host != new_url.netloc or new_url.scheme != "https":
                 new.headers.pop("Authorization", None)
         return new
 
@@ -376,8 +397,9 @@ class ModelDownloadWorker(QObject):
     """Downloads a single GGUF file from HuggingFace with streaming progress.
 
     Downloads to a .part file (resumable via HTTP Range) and renames it on
-    completion, so a cancelled or interrupted download picks up where it
-    left off the next time.
+    completion. An interrupted single-stream download resumes from its .part;
+    a user-cancelled download — and any interrupted parallel download, whose
+    offset-written .part cannot be trusted — discards its partial file.
 
     Signals
     -------
@@ -461,6 +483,11 @@ class ModelDownloadWorker(QObject):
                     _discard_partial()
                     self.error.emit("Download cancelled.")
                     return
+                # Defense-in-depth: never let a remote-listed filename escape
+                # the destination folder (absolute path, drive prefix, or
+                # .. traversal — in either POSIX or Windows form).
+                if is_unsafe_repo_filename(fname):
+                    continue
                 self.progress.emit(
                     f"{self.snapshot_folder}/ — {fname} ({i + 1}/{n})",
                     i / n,
@@ -707,6 +734,7 @@ class ModelDownloadWorker(QObject):
         with concurrent.futures.ThreadPoolExecutor(max_workers=conns) as pool:
             futures = [pool.submit(fetch, s, e) for s, e in ranges]
             last_emit = 0.0
+            prev_t, prev_done = time.monotonic(), 0
             while any(not fut.done() for fut in futures):
                 now = time.monotonic()
                 if now - last_emit >= 0.5:
@@ -714,10 +742,12 @@ class ModelDownloadWorker(QObject):
                     with lock:
                         done = state["done"]
                     fraction = done / total if total else 0.0
+                    rate = self._rate_eta(done - prev_done, now - prev_t, total - done)
+                    prev_t, prev_done = now, done
                     self.progress.emit(
                         f"{self.filename} — {done / 1024**3:.2f} / "
                         f"{total / 1024**3:.2f} GB ({fraction * 100:.0f}%, "
-                        f"{conns} connections)",
+                        f"{conns} connections{rate})",
                         fraction,
                     )
                 time.sleep(0.1)
@@ -790,6 +820,32 @@ class ModelDownloadWorker(QObject):
             return False
         return True
 
+    def _recorded_part_total(self, part: Path) -> int:
+        """Total size recorded in the .part's identity sidecar (0 if unknown
+        or the sidecar belongs to a different repo/file)."""
+        try:
+            data = json.loads(
+                self._part_meta_path(part).read_text(encoding="utf-8")
+            )
+            if (data.get("repo_id") == self.repo_id
+                    and data.get("filename") == self.filename):
+                return int(data.get("total") or 0)
+        except Exception:
+            pass
+        return 0
+
+    @staticmethod
+    def _rate_eta(bytes_delta: float, secs: float, remaining: float) -> str:
+        """Format ', N MB/s, ~M min left' from a progress sample ('' if unknown)."""
+        if secs <= 0 or bytes_delta <= 0:
+            return ""
+        speed = bytes_delta / secs
+        text = f", {speed / 1024**2:.0f} MB/s"
+        if remaining > 0:
+            eta = remaining / speed
+            text += f", ~{eta:.0f}s left" if eta < 90 else f", ~{eta / 60:.0f} min left"
+        return text
+
     def _run_single(self, url, target: Path, part: Path):
         """Download *url* into *part* over a single resumable connection."""
         try:
@@ -801,16 +857,24 @@ class ModelDownloadWorker(QObject):
                 # alone can't prove a partial belongs to this file — a leftover
                 # .part from a *different* file under the same name that is
                 # SMALLER than the new remote file would otherwise be appended
-                # onto, producing a full-size but corrupt result. So discard the
-                # .part unless its identity sidecar matches this exact repo/file
-                # (and recorded size), or if it already exceeds the remote size.
+                # onto, producing a full-size but corrupt result.
                 # (A matching .part exactly == total is kept and the 416 branch
                 # below finalizes it.)
                 probed_total, _ = self._probe(url)
-                if (
-                    not self._part_identity_matches(part, probed_total)
-                    or (probed_total and resume_pos > probed_total)
-                ):
+                if self._part_meta_path(part).exists():
+                    # Sidecar present: it must name this exact repo/file.
+                    keep = self._part_identity_matches(part, probed_total)
+                else:
+                    # Pre-1.4.3 partial — the sidecar scheme didn't exist yet.
+                    # Grandfather it with the old size-only heuristic instead
+                    # of throwing away a multi-GB download on upgrade, and
+                    # stamp a sidecar so future resumes are fully verified.
+                    keep = True
+                if keep and probed_total and resume_pos > probed_total:
+                    keep = False  # larger than the remote file — cannot be ours
+                if keep and not self._part_meta_path(part).exists():
+                    self._write_part_identity(part, probed_total)
+                if not keep:
                     self._safe_unlink(part)
                     self._safe_unlink(self._part_meta_path(part))
                     resume_pos = 0
@@ -828,20 +892,24 @@ class ModelDownloadWorker(QObject):
             except urllib.error.HTTPError as http_err:
                 if http_err.code == 416 and resume_pos:
                     # 416 = requested range unsatisfiable. Only treat the .part
-                    # as complete when its size matches the known remote total —
-                    # a 416 alone doesn't prove completeness (the probe may have
-                    # failed, or the .part may be oversized/corrupt). When we
-                    # can't verify, keep the .part for a future resume rather
-                    # than promoting possibly-corrupt data to the final file.
-                    if probed_total and resume_pos == probed_total:
+                    # as complete when its size matches a known total — from
+                    # the live probe, or (when the probe failed) the total
+                    # recorded in the identity sidecar at download time.
+                    expected = probed_total or self._recorded_part_total(part)
+                    if expected and resume_pos == expected:
                         part.replace(target)
                         self._safe_unlink(self._part_meta_path(part))
                         self.progress.emit("Download complete", 1.0)
                         self.finished.emit(str(target))
                         return
+                    # Unverifiable (or sized beyond EOF): a retry would hit the
+                    # same 416 forever, so discard the partial to break the
+                    # dead-end and let the next attempt start fresh.
+                    self._safe_unlink(part)
+                    self._safe_unlink(self._part_meta_path(part))
                     self.error.emit(
-                        "Could not verify the existing partial download; "
-                        "download again to retry."
+                        "The existing partial download could not be verified "
+                        "and was removed — download again to start fresh."
                     )
                     return
                 raise
@@ -862,6 +930,7 @@ class ModelDownloadWorker(QObject):
 
                 downloaded = resume_pos
                 last_emit = 0.0
+                prev_t, prev_done = time.monotonic(), downloaded
                 self.target_dir.mkdir(parents=True, exist_ok=True)
 
                 if resume_pos == 0:
@@ -886,17 +955,22 @@ class ModelDownloadWorker(QObject):
                         now = time.monotonic()
                         if now - last_emit >= 0.5:
                             last_emit = now
+                            rate = self._rate_eta(
+                                downloaded - prev_done, now - prev_t,
+                                (total - downloaded) if total else 0,
+                            )
+                            prev_t, prev_done = now, downloaded
                             if total:
                                 fraction = downloaded / total
                                 self.progress.emit(
                                     f"{self.filename} — "
                                     f"{downloaded / 1024**3:.2f} / {total / 1024**3:.2f} GB "
-                                    f"({fraction * 100:.0f}%)",
+                                    f"({fraction * 100:.0f}%{rate})",
                                     fraction,
                                 )
                             else:
                                 self.progress.emit(
-                                    f"{self.filename} — {downloaded / 1024**3:.2f} GB...",
+                                    f"{self.filename} — {downloaded / 1024**3:.2f} GB...{rate}",
                                     0.0,
                                 )
 

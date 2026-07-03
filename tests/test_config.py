@@ -85,3 +85,32 @@ def test_theme_and_token_convenience():
     cfg.save_config({"theme": "light", "hf_token": "hf_abc"})
     assert cfg.get_theme() == "light"
     assert cfg.get_hf_token() == "hf_abc"
+
+
+def test_save_config_reports_failure(monkeypatch, _isolated_config):
+    """A failed write must return False (the settings dialog surfaces it)
+    and must not clobber the previously saved file."""
+    assert cfg.save_config({"theme": "light"}) is True
+
+    def boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cfg.os, "replace", boom)
+    assert cfg.save_config({"theme": "dark"}) is False
+    # The atomic write failed at the swap — the old content must survive.
+    assert cfg.load_config()["theme"] == "light"
+
+
+def test_save_config_returns_true_on_success():
+    assert cfg.save_config({"theme": "dark"}) is True
+
+
+def test_last_import_dir_round_trip():
+    assert cfg.get_last_import_dir() == ""
+    cfg.set_last_import_dir("/data/images")
+    assert cfg.get_last_import_dir() == "/data/images"
+
+
+def test_last_import_dir_rejects_non_string():
+    cfg.save_config({"last_import_dir": ["not", "a", "string"]})
+    assert cfg.get_last_import_dir() == ""
