@@ -133,7 +133,21 @@ def installed_wheel_cuda_tag() -> Optional[str]:
     except Exception:
         return None
     m = re.search(r"\+(cu\d+)", ver)
-    return m.group(1) if m else None
+    if m:
+        return m.group(1)
+    # Tag-less metadata (v0.3.40): recover the tag from the install-source
+    # URL that pip/uv record per PEP 610 — setup.bat installs from a URL
+    # whose wheel filename still carries '+cuNNN' ('%2BcuNNN' when encoded).
+    try:
+        from importlib.metadata import distribution
+        direct_url = distribution("llama_cpp_python").read_text("direct_url.json")
+        if direct_url:
+            m = re.search(r"(?:%2B|\+)(cu\d+)", direct_url, re.IGNORECASE)
+            if m:
+                return m.group(1).lower()
+    except Exception:
+        pass
+    return None
 
 
 def _llama_cpp_dll_dirs() -> list[Path]:
@@ -149,9 +163,11 @@ def _llama_cpp_dll_dirs() -> list[Path]:
         if not (spec and spec.origin):
             return []
         pkg_root = Path(spec.origin).resolve().parent
+        return [pkg_root / sub for sub in ("lib", "bin") if (pkg_root / sub).is_dir()]
     except Exception:
+        # A stat failure (e.g. WinError 5 from AV/EDR interference) must
+        # degrade gracefully — this runs at app import time.
         return []
-    return [pkg_root / sub for sub in ("lib", "bin") if (pkg_root / sub).is_dir()]
 
 
 def installed_wheel_is_cuda_build() -> Optional[bool]:
@@ -171,7 +187,10 @@ def installed_wheel_is_cuda_build() -> Optional[bool]:
         except Exception:
             return None
         return False
-    return any((d / "ggml-cuda.dll").is_file() for d in dll_dirs)
+    try:
+        return any((d / "ggml-cuda.dll").is_file() for d in dll_dirs)
+    except OSError:
+        return False
 
 
 # DLL basenames the llama-cpp-python wheels ship. A same-named DLL that
@@ -182,16 +201,32 @@ def installed_wheel_is_cuda_build() -> Optional[bool]:
 _SHADOWABLE_DLL_PREFIXES = ("ggml", "llama", "mtmd", "libomp")
 
 
-def find_shadowing_dlls() -> list[tuple[str, str]]:
+def find_shadowing_dlls() -> list[tuple[str, str, str]]:
     """Scan DLL-resolution directories for llama.cpp-family DLLs that can
     shadow the ones shipped inside the llama-cpp-python wheel.
 
-    Checks the Python executable's directory, the Windows system directory,
-    and every PATH entry — the union of locations that outrank or compete
-    with the wheel's own lib/bin dirs across Windows DLL search modes.
-    Returns (dll_name, directory) pairs, deduplicated, wheel dirs excluded.
+    Returns (dll_name, directory, location_kind) triples, deduplicated,
+    wheel dirs excluded. location_kind ranks how dangerous a hit is:
+
+      'app'    — the Python executable's directory (and the base
+                 interpreter's dir when running through a venv launcher)
+      'system' — System32 / the Windows directory
+      'cwd'    — the process working directory
+      'path'   — an ordinary PATH entry
+
+    'app', 'system', and 'cwd' outrank the wheel's own lib/bin dirs in the
+    legacy dependent-DLL search order the engine load uses, so a hit there
+    genuinely shadows the wheel's copy. Plain 'path' hits normally CANNOT
+    win (setup_cuda_dll_path prepends the wheel dirs to PATH) and are
+    reported for completeness only. Already-loaded same-named modules are
+    inherently invisible to a filesystem scan.
     """
-    wheel_dirs = {d.resolve() for d in _llama_cpp_dll_dirs()}
+    wheel_dirs = set()
+    for d in _llama_cpp_dll_dirs():
+        try:
+            wheel_dirs.add(d.resolve())
+        except OSError:
+            continue
     wheel_dlls: set[str] = set()
     for d in wheel_dirs:
         try:
@@ -201,26 +236,36 @@ def find_shadowing_dlls() -> list[tuple[str, str]]:
     if not wheel_dlls:
         wheel_dlls = {f"{prefix}.dll" for prefix in ("ggml", "ggml-base", "llama")}
 
-    search_dirs: list[Path] = [Path(sys.executable).resolve().parent]
+    search_dirs: list[tuple[Path, str]] = [(Path(sys.executable).parent, "app")]
+    base_exe = getattr(sys, "_base_executable", None)
+    if base_exe:
+        # Under a venv launcher (uv), the loader's application directory is
+        # the base interpreter's dir, not the venv's Scripts dir.
+        search_dirs.append((Path(base_exe).parent, "app"))
     if sys.platform == "win32":
-        windir = os.environ.get("SystemRoot", r"C:\Windows")
-        search_dirs.append(Path(windir) / "System32")
+        windir = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        search_dirs.append((windir / "System32", "system"))
+        search_dirs.append((windir / "System", "system"))
+        search_dirs.append((windir, "system"))
+    try:
+        search_dirs.append((Path.cwd(), "cwd"))
+    except OSError:
+        pass
     for entry in os.environ.get("PATH", "").split(os.pathsep):
         if entry.strip():
-            search_dirs.append(Path(entry.strip()))
+            search_dirs.append((Path(entry.strip()), "path"))
 
-    found: list[tuple[str, str]] = []
+    found: list[tuple[str, str, str]] = []
     seen: set[tuple[str, str]] = set()
     checked: set[Path] = set()
-    for directory in search_dirs:
+    for directory, kind in search_dirs:
+        # One unreadable entry (deny-ACL'd dir, dead share) must not
+        # abort the scan and discard hits already collected.
         try:
             resolved = directory.resolve()
-        except OSError:
-            continue
-        if resolved in checked or resolved in wheel_dirs or not resolved.is_dir():
-            continue
-        checked.add(resolved)
-        try:
+            if resolved in checked or resolved in wheel_dirs or not resolved.is_dir():
+                continue
+            checked.add(resolved)
             names = {p.name.lower() for p in resolved.glob("*.dll")}
         except OSError:
             continue
@@ -230,7 +275,7 @@ def find_shadowing_dlls() -> list[tuple[str, str]]:
             key = (name, str(resolved))
             if key not in seen:
                 seen.add(key)
-                found.append(key)
+                found.append((name, str(resolved), kind))
     return found
 
 
@@ -329,38 +374,52 @@ def wheel_mismatch_message(toolkit_tag: str, wheel_tag: str) -> str:
     )
 
 
-def dll_shadowing_message(shadowing: list[tuple[str, str]]) -> str:
+def dll_shadowing_message(shadowing: list[tuple[str, str, str]]) -> str:
     """User-facing remediation text for a WinError 127 engine-load failure.
 
     WinError 127 ('The specified procedure could not be found') means a DLL
-    the engine depends on WAS found, but it was the wrong version — an
-    incompatible same-named DLL from elsewhere on the system shadowed the
-    copy shipped inside the wheel.
+    the engine depends on WAS found, but the loaded copy was missing a
+    required function — an outdated Microsoft C/OpenMP runtime, or an
+    incompatible same-named DLL loaded instead of the wheel's own copy.
+    Takes the (name, directory, kind) triples from find_shadowing_dlls().
     """
     lines = [
-        "The engine's DLLs failed to load with WinError 127 — an "
-        "incompatible copy of a DLL the engine needs is being picked up "
-        "from somewhere else on your system, shadowing the one that ships "
-        "with llama-cpp-python.",
+        "The engine failed to load with WinError 127: Windows loaded an "
+        "incompatible version of a DLL the engine needs — usually an "
+        "outdated Microsoft Visual C++ runtime, or a same-named DLL from "
+        "another install shadowing the engine's own copy.",
         "",
+        "First, update the Microsoft Visual C++ runtime (most common fix):",
+        "    winget install Microsoft.VCRedist.2015+.x64",
+        "then reboot and run diagnose.bat again.",
     ]
-    if shadowing:
-        lines.append("Conflicting DLLs found on this machine:")
-        lines.extend(f"  - {name}  in  {directory}" for name, directory in shadowing)
+    causal = [s for s in shadowing if s[2] != "path"]
+    on_path = [s for s in shadowing if s[2] == "path"]
+    if causal:
         lines.append("")
         lines.append(
-            "Fix: remove or rename those copies (or remove their directory "
-            "from PATH), then run diagnose.bat again. They usually come from "
-            "another AI app (Ollama, LM Studio, ComfyUI, ...) or an old "
-            "Visual Studio runtime."
+            "These copies are searched BEFORE the app's own DLL folders and "
+            "can shadow them:"
         )
-    else:
+        lines.extend(f"  - {name}  in  {directory}" for name, directory, _ in causal)
+        lines.append("")
         lines.append(
-            "No obvious conflicting copy was found on PATH, so the likely "
-            "culprit is an outdated Microsoft Visual C++ runtime.\n\n"
-            "Fix:\n"
-            "  1. Update it:  winget install Microsoft.VCRedist.2015+.x64\n"
-            "  2. Reboot, then run diagnose.bat again."
+            "If they are leftovers from another app, rename or remove them. "
+            "Do NOT delete files inside the Windows directory (System32) — "
+            "updating the VC++ redistributable replaces those safely."
+        )
+    if on_path:
+        lines.append("")
+        lines.append(
+            "Also found on PATH (less likely the cause — the app searches "
+            "its own DLL folders first):"
+        )
+        lines.extend(f"  - {name}  in  {directory}" for name, directory, _ in on_path)
+        lines.append("")
+        lines.append(
+            "These usually belong to another AI app (Ollama, LM Studio, "
+            "ComfyUI, ...). If the error persists after the runtime update, "
+            "try removing those directories from PATH."
         )
     return "\n".join(lines)
 
