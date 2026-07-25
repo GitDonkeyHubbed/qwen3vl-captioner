@@ -32,13 +32,41 @@ def _check_llama(report: dict, problems: list, setup_cmd: str):
             print(f"{OK} Engine import:   llama_cpp loads successfully")
         else:
             print(f"{FAIL} Engine import:   {report['import_error']}")
-            problems.append(
-                f"llama_cpp failed to load. Re-run {setup_cmd}; if it persists, "
-                "open a GitHub issue with this report."
-            )
+            if "WinError 127" in (report["import_error"] or ""):
+                _report_winerror_127(report, problems)
+            else:
+                problems.append(
+                    f"llama_cpp failed to load. Re-run {setup_cmd}; if it persists, "
+                    "open a GitHub issue with this report."
+                )
     else:
         print(f"{FAIL} llama-cpp-python: NOT INSTALLED")
         problems.append(f"Run {setup_cmd} to install all dependencies")
+
+
+def _report_winerror_127(report: dict, problems: list):
+    """WinError 127 = a dependency DLL was found but had the wrong version:
+    a same-named DLL from outside the wheel shadowed the shipped copy."""
+    shadowing = report.get("shadowing_dlls") or []
+    if shadowing:
+        print(f"{WARN} DLL conflicts:   incompatible same-named DLLs shadow the wheel's copies:")
+        for name, directory in shadowing:
+            print(f"{INFO}                    {name}  in  {directory}")
+        problems.append(
+            "WinError 127 means Windows loaded the WRONG version of a DLL the "
+            "engine needs.\n"
+            "         Remove/rename the conflicting copies listed above (or drop their\n"
+            "         directory from PATH) — they usually come from another AI app\n"
+            "         (Ollama, LM Studio, ComfyUI, ...) — then re-run diagnose.bat"
+        )
+    else:
+        print(f"{WARN} DLL conflicts:   none found on PATH — suspect an outdated MSVC runtime")
+        problems.append(
+            "WinError 127 with no conflicting DLL on PATH usually means the\n"
+            "         Microsoft Visual C++ runtime is too old for this wheel.\n"
+            "         Update it:  winget install Microsoft.VCRedist.2015+.x64\n"
+            "         then reboot and re-run diagnose.bat"
+        )
 
 
 def _windows_checks(report: dict, problems: list):
@@ -85,8 +113,12 @@ def _windows_checks(report: dict, problems: list):
             print(f"{OK} Wheel/CUDA match: wheel '{wheel_tag}' matches toolkit (needs '{rec_tag}')")
         else:
             print(f"{WARN} Wheel/CUDA match: wheel is '{wheel_tag}' but no toolkit found to compare")
+    elif report["llama_cpp_installed"] and report.get("wheel_is_cuda_build"):
+        # v0.3.40 wheels omit the +cuNNN tag from their dist metadata even
+        # for CUDA builds (issue #22) — ggml-cuda.dll is the real signal.
+        print(f"{OK} Wheel build:      CUDA build (ggml-cuda.dll present; wheel version has no CUDA tag)")
     elif report["llama_cpp_installed"]:
-        print(f"{WARN} Wheel build:      CPU build detected (no CUDA tag) — GPU acceleration disabled")
+        print(f"{WARN} Wheel build:      CPU build detected (no ggml-cuda.dll) — GPU acceleration disabled")
 
 
 def _macos_checks(report: dict, problems: list):

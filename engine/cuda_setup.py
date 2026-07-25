@@ -121,7 +121,12 @@ def recommended_wheel_tag(toolkit_version: Optional[tuple[int, int]]) -> str:
 def installed_wheel_cuda_tag() -> Optional[str]:
     """Return the CUDA tag ('cu124', 'cu130', ...) of the installed
     llama-cpp-python wheel, parsed from its version string, or None if
-    llama-cpp-python is missing or is a CPU build."""
+    llama-cpp-python is missing or its version carries no CUDA tag.
+
+    None does NOT mean a CPU build: the v0.3.40 JamePeng wheels keep the
+    +cuNNN tag in the wheel FILENAME but ship plain '0.3.40' in their
+    dist metadata (issue #22), so use installed_wheel_is_cuda_build() to
+    decide CPU vs CUDA and treat this tag as a bonus when present."""
     try:
         from importlib.metadata import version
         ver = version("llama_cpp_python")
@@ -129,6 +134,104 @@ def installed_wheel_cuda_tag() -> Optional[str]:
         return None
     m = re.search(r"\+(cu\d+)", ver)
     return m.group(1) if m else None
+
+
+def _llama_cpp_dll_dirs() -> list[Path]:
+    """Return the installed llama_cpp package's DLL directories.
+
+    Older wheels ship everything in llama_cpp/lib; the v0.3.40 wheels ship
+    both llama_cpp/lib and llama_cpp/bin. Returns only directories that
+    exist, or [] when llama-cpp-python is not installed.
+    """
+    try:
+        import importlib.util
+        spec = importlib.util.find_spec("llama_cpp")
+        if not (spec and spec.origin):
+            return []
+        pkg_root = Path(spec.origin).resolve().parent
+    except Exception:
+        return []
+    return [pkg_root / sub for sub in ("lib", "bin") if (pkg_root / sub).is_dir()]
+
+
+def installed_wheel_is_cuda_build() -> Optional[bool]:
+    """Return True if the installed llama-cpp-python is a CUDA build,
+    False if it is a CPU-only build, None if it is not installed.
+
+    The version tag alone is not reliable (see installed_wheel_cuda_tag),
+    so also check for the ggml-cuda.dll backend the CUDA wheels ship."""
+    if installed_wheel_cuda_tag() is not None:
+        return True
+    dll_dirs = _llama_cpp_dll_dirs()
+    if not dll_dirs:
+        # Distinguish "not installed" from "installed, no DLL dirs found"
+        try:
+            from importlib.metadata import version
+            version("llama_cpp_python")
+        except Exception:
+            return None
+        return False
+    return any((d / "ggml-cuda.dll").is_file() for d in dll_dirs)
+
+
+# DLL basenames the llama-cpp-python wheels ship. A same-named DLL that
+# Windows resolves from ANOTHER directory (System32, the Python dir, or a
+# PATH entry added by other AI apps such as Ollama / LM Studio / ComfyUI)
+# shadows the wheel's copy, and a version mismatch then fails the engine
+# load with WinError 127 "The specified procedure could not be found".
+_SHADOWABLE_DLL_PREFIXES = ("ggml", "llama", "mtmd", "libomp")
+
+
+def find_shadowing_dlls() -> list[tuple[str, str]]:
+    """Scan DLL-resolution directories for llama.cpp-family DLLs that can
+    shadow the ones shipped inside the llama-cpp-python wheel.
+
+    Checks the Python executable's directory, the Windows system directory,
+    and every PATH entry — the union of locations that outrank or compete
+    with the wheel's own lib/bin dirs across Windows DLL search modes.
+    Returns (dll_name, directory) pairs, deduplicated, wheel dirs excluded.
+    """
+    wheel_dirs = {d.resolve() for d in _llama_cpp_dll_dirs()}
+    wheel_dlls: set[str] = set()
+    for d in wheel_dirs:
+        try:
+            wheel_dlls.update(p.name.lower() for p in d.glob("*.dll"))
+        except OSError:
+            continue
+    if not wheel_dlls:
+        wheel_dlls = {f"{prefix}.dll" for prefix in ("ggml", "ggml-base", "llama")}
+
+    search_dirs: list[Path] = [Path(sys.executable).resolve().parent]
+    if sys.platform == "win32":
+        windir = os.environ.get("SystemRoot", r"C:\Windows")
+        search_dirs.append(Path(windir) / "System32")
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if entry.strip():
+            search_dirs.append(Path(entry.strip()))
+
+    found: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    checked: set[Path] = set()
+    for directory in search_dirs:
+        try:
+            resolved = directory.resolve()
+        except OSError:
+            continue
+        if resolved in checked or resolved in wheel_dirs or not resolved.is_dir():
+            continue
+        checked.add(resolved)
+        try:
+            names = {p.name.lower() for p in resolved.glob("*.dll")}
+        except OSError:
+            continue
+        for name in sorted(names & wheel_dlls):
+            if not name.startswith(_SHADOWABLE_DLL_PREFIXES):
+                continue
+            key = (name, str(resolved))
+            if key not in seen:
+                seen.add(key)
+                found.append(key)
+    return found
 
 
 def setup_cuda_dll_path() -> Optional[Path]:
@@ -162,21 +265,15 @@ def setup_cuda_dll_path() -> Optional[Path]:
             pass
         os.environ["PATH"] = str(bin_dir) + os.pathsep + os.environ.get("PATH", "")
 
-    # llama_cpp ships its own lib dir (ggml.dll etc.) — register it too so
-    # dependent DLLs resolve even when the venv isn't on PATH.
-    try:
-        import importlib.util
-        spec = importlib.util.find_spec("llama_cpp")
-        if spec and spec.origin:
-            lib_dir = Path(spec.origin).resolve().parent / "lib"
-            if lib_dir.is_dir():
-                try:
-                    os.add_dll_directory(str(lib_dir))
-                except OSError:
-                    pass
-                os.environ["PATH"] = str(lib_dir) + os.pathsep + os.environ.get("PATH", "")
-    except Exception:
-        pass
+    # llama_cpp ships its own DLL dirs (lib/ on older wheels, lib/ AND bin/
+    # on v0.3.40) — register them too so dependent DLLs resolve even when
+    # the venv isn't on PATH.
+    for dll_dir in _llama_cpp_dll_dirs():
+        try:
+            os.add_dll_directory(str(dll_dir))
+        except OSError:
+            pass
+        os.environ["PATH"] = str(dll_dir) + os.pathsep + os.environ.get("PATH", "")
 
     if not bin_dirs:
         return None
@@ -232,6 +329,42 @@ def wheel_mismatch_message(toolkit_tag: str, wheel_tag: str) -> str:
     )
 
 
+def dll_shadowing_message(shadowing: list[tuple[str, str]]) -> str:
+    """User-facing remediation text for a WinError 127 engine-load failure.
+
+    WinError 127 ('The specified procedure could not be found') means a DLL
+    the engine depends on WAS found, but it was the wrong version — an
+    incompatible same-named DLL from elsewhere on the system shadowed the
+    copy shipped inside the wheel.
+    """
+    lines = [
+        "The engine's DLLs failed to load with WinError 127 — an "
+        "incompatible copy of a DLL the engine needs is being picked up "
+        "from somewhere else on your system, shadowing the one that ships "
+        "with llama-cpp-python.",
+        "",
+    ]
+    if shadowing:
+        lines.append("Conflicting DLLs found on this machine:")
+        lines.extend(f"  - {name}  in  {directory}" for name, directory in shadowing)
+        lines.append("")
+        lines.append(
+            "Fix: remove or rename those copies (or remove their directory "
+            "from PATH), then run diagnose.bat again. They usually come from "
+            "another AI app (Ollama, LM Studio, ComfyUI, ...) or an old "
+            "Visual Studio runtime."
+        )
+    else:
+        lines.append(
+            "No obvious conflicting copy was found on PATH, so the likely "
+            "culprit is an outdated Microsoft Visual C++ runtime.\n\n"
+            "Fix:\n"
+            "  1. Update it:  winget install Microsoft.VCRedist.2015+.x64\n"
+            "  2. Reboot, then run diagnose.bat again."
+        )
+    return "\n".join(lines)
+
+
 def diagnose() -> dict:
     """Collect a structured report of the CUDA / llama-cpp install state.
 
@@ -244,8 +377,10 @@ def diagnose() -> dict:
         "toolkit_version": None,
         "toolkit_path": None,
         "wheel_cuda_tag": None,
+        "wheel_is_cuda_build": None,
         "recommended_tag": None,
         "tags_match": None,
+        "shadowing_dlls": [],
         "llama_cpp_installed": False,
         "llama_cpp_version": None,
         "llama_cpp_importable": False,
@@ -276,6 +411,7 @@ def diagnose() -> dict:
         pass
 
     report["wheel_cuda_tag"] = installed_wheel_cuda_tag()
+    report["wheel_is_cuda_build"] = installed_wheel_is_cuda_build()
     if report["wheel_cuda_tag"] and toolkit:
         report["tags_match"] = report["wheel_cuda_tag"] == report["recommended_tag"]
 
@@ -287,6 +423,11 @@ def diagnose() -> dict:
             report["llama_cpp_importable"] = True
         except Exception as e:
             report["import_error"] = str(e)
+        if sys.platform == "win32" and not report["llama_cpp_importable"]:
+            try:
+                report["shadowing_dlls"] = find_shadowing_dlls()
+            except Exception:
+                pass
 
     # GPU info via NVML if available (best effort)
     try:
@@ -333,6 +474,18 @@ def startup_failure_advice(error_text: str) -> str:
         return wheel_mismatch_message(
             report["recommended_tag"], report["wheel_cuda_tag"]
         )
+
+    combined_error = f"{error_text} {report.get('import_error') or ''}"
+    if "WinError 127" in combined_error:
+        shadowing = report.get("shadowing_dlls") or []
+        if not shadowing:
+            # diagnose() only scans when its own import fails; the engine
+            # can still hit WinError 127 later (e.g. at model load).
+            try:
+                shadowing = find_shadowing_dlls()
+            except Exception:
+                shadowing = []
+        return dll_shadowing_message(shadowing)
 
     return (
         "llama-cpp-python failed to initialize.\n\n"
