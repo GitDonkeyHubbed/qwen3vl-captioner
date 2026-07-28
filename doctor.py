@@ -74,7 +74,7 @@ def _report_winerror_127(report: dict, problems: list):
             "Conflicting DLL copies override the app's own (see the list above).\n"
             "         If they are leftovers from another app, rename or remove them —\n"
             "         but do NOT delete files inside the Windows directory (System32);\n"
-            "         the VC++ redistributable update replaces those safely."
+            "         rename them (add .bak) from an administrator prompt instead."
         )
     elif on_path:
         problems.append(

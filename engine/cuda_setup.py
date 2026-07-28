@@ -405,8 +405,9 @@ def dll_shadowing_message(shadowing: list[tuple[str, str, str]]) -> str:
         lines.append("")
         lines.append(
             "If they are leftovers from another app, rename or remove them. "
-            "Do NOT delete files inside the Windows directory (System32) — "
-            "updating the VC++ redistributable replaces those safely."
+            "For files inside the Windows directory (System32), do NOT "
+            "delete — rename them (add .bak) from an administrator prompt "
+            "so the change is reversible."
         )
     if on_path:
         lines.append("")
