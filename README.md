@@ -50,7 +50,8 @@ No new models — two full audit passes over the codebase (85 verified findings 
 - **No more phantom "update available" popup**, no more window freeze during vision-encoder downloads, and your saved **light/dark theme actually applies at startup**.
 - **Downloads got smarter**: live **speed + ETA**, free-disk-space pre-flight, corruption-proof resume (including partials from older versions), and your HF token is stored `0600` and never sent over plain HTTP.
 - **Faster & smoother**: thumbnails decode at thumbnail size (no more UI stalls on big imports), **keyboard shortcuts** (Ctrl+S save, Ctrl+G generate, Ctrl+←/→ navigate), **drag & drop anywhere**, batch ETA, and a download offer right in the "model not downloaded" dialog.
-- Test suite grew to **113 tests**; CI now HEAD-checks the pinned wheel URLs so a deleted release breaks CI, not your install.
+- **The install doctor got real diagnostic teeth.** The false "CPU build detected" warning on healthy GPU installs is gone, and `diagnose.bat` now pinpoints the exact conflicting DLL (System32, PATH, another AI app) behind `WinError 127` startup failures — with safe, reversible fix steps.
+- Test suite grew to **139 tests**; CI now HEAD-checks the pinned wheel URLs so a deleted release breaks CI (not your install), and every release tag is verified against the in-app version before it publishes.
 
 See [CHANGELOG.md](CHANGELOG.md) for the complete list.
 

@@ -1,0 +1,87 @@
+name: Release
+
+# Pushing a version tag (e.g. V1.4.3) publishes the GitHub release — but
+# only after proving the tag matches every in-repo statement of the
+# version (gui/version.py, pyproject.toml, README title + badge, newest
+# CHANGELOG entry). The v1.4.2 release shipped with the in-app version
+# still reading 1.4.1; this gate makes that class of mismatch impossible
+# to release again. Release notes are extracted from CHANGELOG.md.
+
+on:
+  push:
+    tags: ["V*.*.*", "v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify tag matches every in-repo version
+        run: |
+          python3 - "$GITHUB_REF_NAME" <<'EOF'
+          import re, sys, tomllib
+
+          tag = sys.argv[1].lstrip("Vv")
+          app = re.search(
+              r'APP_VERSION\s*=\s*"([^"]+)"', open("gui/version.py").read()
+          ).group(1)
+          proj = tomllib.load(open("pyproject.toml", "rb"))["project"]["version"]
+          readme = open("README.md").read()
+          badge = re.search(
+              r"img\.shields\.io/badge/version-([\d.]+)-", readme
+          ).group(1)
+          newest = re.search(
+              r"^## \[([\d.]+)\]", open("CHANGELOG.md").read(), re.M
+          ).group(1)
+
+          rows = {
+              "git tag": tag,
+              "gui/version.py": app,
+              "pyproject.toml": proj,
+              "README badge": badge,
+              "CHANGELOG newest": newest,
+          }
+          for name, value in rows.items():
+              print(f"  {name:18} {value}")
+          # Check the <h1> specifically — "V<tag>" appears in What's New
+          # headings too, which would mask a stale title.
+          title = re.search(r"<h1[^>]*>([^<]*)</h1>", readme)
+          title_ok = bool(title) and f"V{tag}" in title.group(1)
+          print(f"  {'README <h1> title':18} {title.group(1).strip() if title else 'NOT FOUND'}")
+
+          if len(set(rows.values())) != 1 or not title_ok:
+              # Workflow commands are parsed from stdout; a sys.exit message
+              # goes to stderr and the annotation would be lost.
+              print(
+                  "::error::Version mismatch — refusing to publish. "
+                  "Sync every location above to the tag, re-tag, and push again."
+              )
+              sys.exit(1)
+          print("All version statements agree — publishing.")
+          EOF
+
+      - name: Extract this version's CHANGELOG section as release notes
+        run: |
+          python3 - <<'EOF'
+          import re
+
+          text = open("CHANGELOG.md").read()
+          m = re.search(r"^## \[[\d.]+\][^\n]*\n(.*?)(?=^## \[|\Z)", text, re.M | re.S)
+          notes = m.group(1).strip() + "\n"
+          open("RELEASE_NOTES.md", "w").write(notes)
+          print(notes)
+          EOF
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Qwen3-VL Captioner $GITHUB_REF_NAME" \
+            --notes-file RELEASE_NOTES.md \
+            --verify-tag
