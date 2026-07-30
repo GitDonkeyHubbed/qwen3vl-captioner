@@ -6,6 +6,8 @@ wheel tag, and toolkit version comparison must be numeric (so 12.10 ranks
 above 12.8, not below it as a string compare would).
 """
 
+import os
+
 import pytest
 
 from engine import cuda_setup
@@ -13,7 +15,10 @@ from engine.cuda_setup import (
     DEFAULT_WHEEL_TAG,
     cuda_toolkit_missing_message,
     detect_cuda_toolkit,
+    dll_shadowing_message,
+    find_shadowing_dlls,
     installed_wheel_cuda_tag,
+    installed_wheel_is_cuda_build,
     parse_cuda_version,
     recommended_wheel_tag,
     wheel_mismatch_message,
@@ -120,3 +125,187 @@ def test_detect_cuda_toolkit_none_when_no_install(tmp_path, monkeypatch):
     monkeypatch.delenv("CUDA_PATH", raising=False)
     monkeypatch.setattr(cuda_setup, "_TOOLKIT_ROOT", tmp_path / "does-not-exist")
     assert detect_cuda_toolkit() is None
+
+
+# --- CUDA-build detection (issue #22) -------------------------------------
+# The v0.3.40 wheels keep +cuNNN only in the wheel FILENAME; the installed
+# dist metadata reports plain '0.3.40'. Detection must fall back to the
+# ggml-cuda.dll the CUDA builds ship, or every healthy CUDA install gets a
+# false "CPU build detected" warning.
+
+
+def test_is_cuda_build_true_when_version_has_tag(monkeypatch):
+    monkeypatch.setattr(cuda_setup, "installed_wheel_cuda_tag", lambda: "cu131")
+    assert installed_wheel_is_cuda_build() is True
+
+
+def test_is_cuda_build_true_via_ggml_cuda_dll(tmp_path, monkeypatch):
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    (lib / "ggml-cuda.dll").touch()
+    monkeypatch.setattr(cuda_setup, "installed_wheel_cuda_tag", lambda: None)
+    monkeypatch.setattr(cuda_setup, "_llama_cpp_dll_dirs", lambda: [lib])
+    assert installed_wheel_is_cuda_build() is True
+
+
+def test_is_cuda_build_false_without_ggml_cuda_dll(tmp_path, monkeypatch):
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    (lib / "ggml.dll").touch()
+    monkeypatch.setattr(cuda_setup, "installed_wheel_cuda_tag", lambda: None)
+    monkeypatch.setattr(cuda_setup, "_llama_cpp_dll_dirs", lambda: [lib])
+    assert installed_wheel_is_cuda_build() is False
+
+
+def test_is_cuda_build_none_when_not_installed(monkeypatch):
+    import importlib.metadata
+
+    def raise_missing(_name):
+        raise importlib.metadata.PackageNotFoundError
+
+    monkeypatch.setattr(cuda_setup, "installed_wheel_cuda_tag", lambda: None)
+    monkeypatch.setattr(cuda_setup, "_llama_cpp_dll_dirs", lambda: [])
+    monkeypatch.setattr(importlib.metadata, "version", raise_missing)
+    assert installed_wheel_is_cuda_build() is None
+
+
+# --- DLL shadowing scan (WinError 127 diagnostics) ------------------------
+
+
+def test_find_shadowing_dlls_flags_rogue_copy(tmp_path, monkeypatch):
+    wheel = tmp_path / "wheel-lib"
+    wheel.mkdir()
+    # unrelated.dll ships in the wheel too, so only the family-prefix
+    # filter (not the wheel-name intersection) can exclude the rogue copy.
+    for name in ("ggml.dll", "ggml-base.dll", "ggml-cuda.dll", "unrelated.dll"):
+        (wheel / name).touch()
+
+    rogue = tmp_path / "other-app"
+    rogue.mkdir()
+    (rogue / "ggml-base.dll").touch()
+    (rogue / "unrelated.dll").touch()  # not llama.cpp-family: never flagged
+
+    monkeypatch.setattr(cuda_setup, "_llama_cpp_dll_dirs", lambda: [wheel])
+    monkeypatch.setenv("PATH", str(rogue))
+
+    found = find_shadowing_dlls()
+    assert ("ggml-base.dll", str(rogue.resolve()), "path") in found
+    assert all(name != "unrelated.dll" for name, _, _ in found)
+
+
+def test_find_shadowing_dlls_excludes_wheel_own_dirs(tmp_path, monkeypatch):
+    wheel = tmp_path / "wheel-lib"
+    wheel.mkdir()
+    (wheel / "ggml.dll").touch()
+
+    monkeypatch.setattr(cuda_setup, "_llama_cpp_dll_dirs", lambda: [wheel])
+    # The wheel's own dir on PATH (setup_cuda_dll_path puts it there) must
+    # not be reported as a conflict with itself.
+    monkeypatch.setenv("PATH", str(wheel))
+
+    assert all(
+        directory != str(wheel.resolve())
+        for _, directory, _ in find_shadowing_dlls()
+    )
+
+
+def test_find_shadowing_dlls_flags_cwd_copy(tmp_path, monkeypatch):
+    # CWD outranks PATH (and the wheel dirs) in the legacy dependent-DLL
+    # search order the engine load uses — a rogue copy there must be found
+    # and ranked as causal, not as an ordinary PATH hit.
+    wheel = tmp_path / "wheel-lib"
+    wheel.mkdir()
+    (wheel / "ggml.dll").touch()
+
+    cwd = tmp_path / "launch-dir"
+    cwd.mkdir()
+    (cwd / "ggml.dll").touch()
+
+    monkeypatch.setattr(cuda_setup, "_llama_cpp_dll_dirs", lambda: [wheel])
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.chdir(cwd)
+
+    assert ("ggml.dll", str(cwd.resolve()), "cwd") in find_shadowing_dlls()
+
+
+def test_find_shadowing_dlls_survives_bad_path_entries(tmp_path, monkeypatch):
+    # Nonexistent dirs and file-as-dir PATH entries must be skipped without
+    # aborting the scan or discarding hits from other entries.
+    wheel = tmp_path / "wheel-lib"
+    wheel.mkdir()
+    (wheel / "ggml.dll").touch()
+
+    rogue = tmp_path / "other-app"
+    rogue.mkdir()
+    (rogue / "ggml.dll").touch()
+
+    not_a_dir = tmp_path / "actually-a-file"
+    not_a_dir.touch()
+
+    monkeypatch.setattr(cuda_setup, "_llama_cpp_dll_dirs", lambda: [wheel])
+    path = os.pathsep.join(
+        [str(tmp_path / "does-not-exist"), str(not_a_dir), str(rogue)]
+    )
+    monkeypatch.setenv("PATH", path)
+
+    assert ("ggml.dll", str(rogue.resolve()), "path") in find_shadowing_dlls()
+
+
+def test_dll_shadowing_message_lists_conflicts_and_always_suggests_vcredist():
+    # The MSVC-runtime advice must not be suppressed by conflict hits: a
+    # PATH hit is often innocent while the stale runtime is the real cause.
+    msg = dll_shadowing_message([("ggml-base.dll", r"C:\SomeApp", "path")])
+    assert "WinError 127" in msg
+    assert "ggml-base.dll" in msg
+    assert r"C:\SomeApp" in msg
+    assert "VCRedist" in msg
+
+
+def test_dll_shadowing_message_ranks_causal_hits_with_system32_caution():
+    msg = dll_shadowing_message(
+        [("libomp140.x86_64.dll", r"C:\Windows\System32", "system")]
+    )
+    assert "libomp140.x86_64.dll" in msg
+    assert "BEFORE" in msg
+    assert "NOT delete" in msg
+    assert "VCRedist" in msg
+
+
+def test_dll_shadowing_message_without_conflicts_suggests_vcredist():
+    msg = dll_shadowing_message([])
+    assert "Visual C++" in msg
+    assert "VCRedist" in msg
+
+
+# --- CUDA tag recovery from PEP 610 direct_url.json -----------------------
+
+
+def test_installed_wheel_cuda_tag_recovered_from_direct_url(monkeypatch):
+    # v0.3.40 metadata is tag-less, but setup.bat installs from a URL whose
+    # wheel filename carries '%2BcuNNN' — recorded in direct_url.json.
+    import importlib.metadata
+
+    class FakeDist:
+        def read_text(self, name):
+            assert name == "direct_url.json"
+            return (
+                '{"url": "https://github.com/JamePeng/llama-cpp-python/'
+                "releases/download/v0.3.40-cu131-win-20260608/"
+                'llama_cpp_python-0.3.40%2Bcu131-cp312-cp312-win_amd64.whl"}'
+            )
+
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: "0.3.40")
+    monkeypatch.setattr(importlib.metadata, "distribution", lambda name: FakeDist())
+    assert installed_wheel_cuda_tag() == "cu131"
+
+
+def test_installed_wheel_cuda_tag_none_without_direct_url(monkeypatch):
+    import importlib.metadata
+
+    class FakeDist:
+        def read_text(self, name):
+            return None  # importlib returns None when the file is absent
+
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: "0.3.40")
+    monkeypatch.setattr(importlib.metadata, "distribution", lambda name: FakeDist())
+    assert installed_wheel_cuda_tag() is None

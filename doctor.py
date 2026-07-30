@@ -32,13 +32,56 @@ def _check_llama(report: dict, problems: list, setup_cmd: str):
             print(f"{OK} Engine import:   llama_cpp loads successfully")
         else:
             print(f"{FAIL} Engine import:   {report['import_error']}")
-            problems.append(
-                f"llama_cpp failed to load. Re-run {setup_cmd}; if it persists, "
-                "open a GitHub issue with this report."
-            )
+            if "WinError 127" in (report["import_error"] or ""):
+                _report_winerror_127(report, problems)
+            else:
+                problems.append(
+                    f"llama_cpp failed to load. Re-run {setup_cmd}; if it persists, "
+                    "open a GitHub issue with this report."
+                )
     else:
         print(f"{FAIL} llama-cpp-python: NOT INSTALLED")
         problems.append(f"Run {setup_cmd} to install all dependencies")
+
+
+def _report_winerror_127(report: dict, problems: list):
+    """WinError 127 = a dependency DLL was found but the loaded copy was
+    missing a required function: an outdated MSVC/OpenMP runtime, or a
+    same-named DLL loaded instead of the wheel's own copy."""
+    shadowing = report.get("shadowing_dlls") or []
+    causal = [s for s in shadowing if s[2] != "path"]
+    on_path = [s for s in shadowing if s[2] == "path"]
+
+    if causal:
+        print(f"{WARN} DLL conflicts:   copies that OVERRIDE the app's DLL folders:")
+        for name, directory, _ in causal:
+            print(f"{INFO}                    {name}  in  {directory}")
+    if on_path:
+        print(f"{WARN} DLL conflicts:   same-named DLLs on PATH (less likely the cause):")
+        for name, directory, _ in on_path:
+            print(f"{INFO}                    {name}  in  {directory}")
+    if not shadowing:
+        print(f"{INFO} DLL conflicts:   none found in the scanned DLL search locations")
+
+    problems.append(
+        "WinError 127 means Windows loaded an incompatible version of a DLL\n"
+        "         the engine needs. Most common fix: update the MSVC runtime with\n"
+        "         winget install Microsoft.VCRedist.2015+.x64  — then reboot and\n"
+        "         re-run diagnose.bat"
+    )
+    if causal:
+        problems.append(
+            "Conflicting DLL copies override the app's own (see the list above).\n"
+            "         If they are leftovers from another app, rename or remove them —\n"
+            "         but do NOT delete files inside the Windows directory (System32);\n"
+            "         rename them (add .bak) from an administrator prompt instead."
+        )
+    elif on_path:
+        problems.append(
+            "The same-named DLLs on PATH (list above) usually belong to another\n"
+            "         AI app (Ollama, LM Studio, ComfyUI, ...). If the error persists\n"
+            "         after the runtime update, try removing their directory from PATH."
+        )
 
 
 def _windows_checks(report: dict, problems: list):
@@ -85,8 +128,13 @@ def _windows_checks(report: dict, problems: list):
             print(f"{OK} Wheel/CUDA match: wheel '{wheel_tag}' matches toolkit (needs '{rec_tag}')")
         else:
             print(f"{WARN} Wheel/CUDA match: wheel is '{wheel_tag}' but no toolkit found to compare")
+    elif report["llama_cpp_installed"] and report.get("wheel_is_cuda_build"):
+        # v0.3.40 wheels omit the +cuNNN tag from their dist metadata even
+        # for CUDA builds (issue #22) — ggml-cuda.dll is the real signal.
+        # Neutral, not OK: without a tag the toolkit match can't be verified.
+        print(f"{INFO} Wheel build:      CUDA build (ggml-cuda.dll present; variant unknown — cannot verify toolkit match)")
     elif report["llama_cpp_installed"]:
-        print(f"{WARN} Wheel build:      CPU build detected (no CUDA tag) — GPU acceleration disabled")
+        print(f"{WARN} Wheel build:      CPU build detected (no ggml-cuda.dll) — GPU acceleration disabled")
 
 
 def _macos_checks(report: dict, problems: list):
