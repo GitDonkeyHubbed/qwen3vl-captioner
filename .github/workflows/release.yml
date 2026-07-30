@@ -10,6 +10,11 @@ name: Release
 on:
   push:
     tags: ["V*.*.*", "v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create and publish (e.g. V1.4.3) — must match the in-repo version"
+        required: true
 
 permissions:
   contents: write
@@ -21,9 +26,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Resolve and validate the tag name
+        env:
+          # github.event.inputs is safe to reference on every event type;
+          # the bare `inputs` context is not defined for tag-push runs.
+          TAG_INPUT: ${{ github.event.inputs.tag }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="$TAG_INPUT"
+          else
+            TAG="$GITHUB_REF_NAME"
+          fi
+          # Strict shape check before the value goes anywhere (GITHUB_ENV,
+          # git, gh): rejects option-like names, newlines, and junk tags.
+          if [[ ! "$TAG" =~ ^[Vv][0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$TAG' is not a V<major>.<minor>.<patch> version tag"
+            exit 1
+          fi
+          echo "TAG_NAME=$TAG" >> "$GITHUB_ENV"
+
       - name: Verify tag matches every in-repo version
         run: |
-          python3 - "$GITHUB_REF_NAME" <<'EOF'
+          python3 - "$TAG_NAME" <<'EOF'
           import re, sys, tomllib
 
           tag = sys.argv[1].lstrip("Vv")
@@ -77,11 +101,19 @@ jobs:
           print(notes)
           EOF
 
+      - name: Create and push the tag (manual dispatch only)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -- "$TAG_NAME"
+          git push origin "refs/tags/$TAG_NAME"
+
       - name: Publish the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --title "Qwen3-VL Captioner $GITHUB_REF_NAME" \
+          gh release create "$TAG_NAME" \
+            --title "Qwen3-VL Captioner $TAG_NAME" \
             --notes-file RELEASE_NOTES.md \
             --verify-tag
