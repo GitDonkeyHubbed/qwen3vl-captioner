@@ -26,15 +26,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Resolve tag name
+      - name: Resolve and validate the tag name
         env:
-          TAG_INPUT: ${{ inputs.tag }}
+          # github.event.inputs is safe to reference on every event type;
+          # the bare `inputs` context is not defined for tag-push runs.
+          TAG_INPUT: ${{ github.event.inputs.tag }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "TAG_NAME=$TAG_INPUT" >> "$GITHUB_ENV"
+            TAG="$TAG_INPUT"
           else
-            echo "TAG_NAME=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
+            TAG="$GITHUB_REF_NAME"
           fi
+          # Strict shape check before the value goes anywhere (GITHUB_ENV,
+          # git, gh): rejects option-like names, newlines, and junk tags.
+          if [[ ! "$TAG" =~ ^[Vv][0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$TAG' is not a V<major>.<minor>.<patch> version tag"
+            exit 1
+          fi
+          echo "TAG_NAME=$TAG" >> "$GITHUB_ENV"
 
       - name: Verify tag matches every in-repo version
         run: |
@@ -97,8 +106,8 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag "$TAG_NAME"
-          git push origin "$TAG_NAME"
+          git tag -- "$TAG_NAME"
+          git push origin "refs/tags/$TAG_NAME"
 
       - name: Publish the GitHub release
         env:
