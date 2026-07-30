@@ -4,12 +4,44 @@ All notable changes to this project are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versions correspond to
 git tags (`V1.x.x`).
 
-## [1.4.3] — Unreleased
+## [1.4.3] — 2026-07-30
 
 Maintenance release from a full repository health check, followed by a second
 deep QC audit of the entire codebase (56 findings, each adversarially
 verified against the source — several reproduced empirically against live
-PyQt6 before fixing).
+PyQt6 before fixing), plus a rework of the Windows install diagnostics
+driven by a live support case (issue #22).
+
+### Fixed (install diagnostics — issue #22)
+- **False "CPU build detected" warning on healthy CUDA installs.** The
+  v0.3.40 wheels carry the `+cuNNN` CUDA tag only in the wheel filename —
+  the installed metadata reports plain `0.3.40` — so `doctor.py` warned
+  "CPU build" on every correct GPU install and the wheel/toolkit match
+  check silently disabled itself. CUDA builds are now detected by the
+  `ggml-cuda.dll` they ship, and the `+cuNNN` tag is recovered from the
+  PEP 610 `direct_url.json` that pip/uv record, restoring the match check.
+- **`WinError 127` engine-load failures are now diagnosed, not shrugged
+  at.** `diagnose.bat` scans the DLL search locations that outrank the
+  app's own folders (python dir, System32, Windows dir, CWD) plus PATH,
+  and prints every conflicting llama.cpp-family DLL ranked by whether it
+  can actually shadow the wheel's copy. Remediation always leads with the
+  MSVC-runtime update and warns against deleting System32 files (rename
+  reversibly instead). Confirmed live on issue #22: a stale
+  `libomp140.x86_64.dll` in System32.
+- `llama_cpp/bin` (new in the v0.3.40 wheel layout) is registered on the
+  DLL search path alongside `lib`, and all diagnostic stat/scan calls
+  degrade gracefully on unreadable directories instead of crashing app
+  startup or the doctor.
+
+### Added (release process)
+- **Version-sync guard test**: `gui/version.py`, `pyproject.toml`, the
+  README title/badge, and the newest CHANGELOG entry must all agree on the
+  version — any drift fails CI on every PR.
+- **Tag-verified automatic releases**: pushing a `V*` tag now runs a
+  workflow that verifies the tag matches every in-repo version and only
+  then creates the GitHub release with notes extracted from this file —
+  a tag/file mismatch (the v1.4.2 ZIP shipped showing "1.4.1" in-app)
+  can no longer become a release.
 
 ### Fixed (QC audit round 2)
 - **Caption/save misattribution race (data corruption).** A finished caption
