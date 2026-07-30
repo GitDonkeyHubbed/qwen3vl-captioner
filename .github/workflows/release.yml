@@ -10,6 +10,11 @@ name: Release
 on:
   push:
     tags: ["V*.*.*", "v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create and publish (e.g. V1.4.3) — must match the in-repo version"
+        required: true
 
 permissions:
   contents: write
@@ -21,9 +26,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Resolve tag name
+        env:
+          TAG_INPUT: ${{ inputs.tag }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "TAG_NAME=$TAG_INPUT" >> "$GITHUB_ENV"
+          else
+            echo "TAG_NAME=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
+          fi
+
       - name: Verify tag matches every in-repo version
         run: |
-          python3 - "$GITHUB_REF_NAME" <<'EOF'
+          python3 - "$TAG_NAME" <<'EOF'
           import re, sys, tomllib
 
           tag = sys.argv[1].lstrip("Vv")
@@ -77,11 +92,19 @@ jobs:
           print(notes)
           EOF
 
+      - name: Create and push the tag (manual dispatch only)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "$TAG_NAME"
+          git push origin "$TAG_NAME"
+
       - name: Publish the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --title "Qwen3-VL Captioner $GITHUB_REF_NAME" \
+          gh release create "$TAG_NAME" \
+            --title "Qwen3-VL Captioner $TAG_NAME" \
             --notes-file RELEASE_NOTES.md \
             --verify-tag
