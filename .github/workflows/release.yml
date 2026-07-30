@@ -48,14 +48,20 @@ jobs:
           }
           for name, value in rows.items():
               print(f"  {name:18} {value}")
-          title_ok = f"V{tag}" in readme
-          print(f"  {'README title':18} {'contains V' + tag if title_ok else 'MISSING V' + tag}")
+          # Check the <h1> specifically — "V<tag>" appears in What's New
+          # headings too, which would mask a stale title.
+          title = re.search(r"<h1[^>]*>([^<]*)</h1>", readme)
+          title_ok = bool(title) and f"V{tag}" in title.group(1)
+          print(f"  {'README <h1> title':18} {title.group(1).strip() if title else 'NOT FOUND'}")
 
           if len(set(rows.values())) != 1 or not title_ok:
-              sys.exit(
+              # Workflow commands are parsed from stdout; a sys.exit message
+              # goes to stderr and the annotation would be lost.
+              print(
                   "::error::Version mismatch — refusing to publish. "
                   "Sync every location above to the tag, re-tag, and push again."
               )
+              sys.exit(1)
           print("All version statements agree — publishing.")
           EOF
 

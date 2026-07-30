@@ -20,7 +20,7 @@ REPO = Path(__file__).resolve().parent.parent
 
 def app_version() -> str:
     text = (REPO / "gui" / "version.py").read_text(encoding="utf-8")
-    m = re.search(r'APP_VERSION\s*=\s*"([^"]+)"', text)
+    m = re.search(r"""APP_VERSION\s*=\s*['"]([^'"]+)['"]""", text)
     assert m, "APP_VERSION not found in gui/version.py"
     return m.group(1)
 
