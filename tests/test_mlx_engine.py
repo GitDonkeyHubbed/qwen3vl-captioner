@@ -328,6 +328,69 @@ def test_caption_video_downscales_staged_frames(tmp_path, monkeypatch):
     assert sizes == [(640, 360), (640, 360)]
 
 
+def test_caption_video_stages_frames_in_temporal_order(tmp_path, monkeypatch):
+    # _solid_frames encodes the sample index in the red channel (i*30), so
+    # reading the staged PNGs back reveals which source frame landed in
+    # frame_000.png, frame_001.png, ... — they must stay in temporal order.
+    monkeypatch.setattr(
+        engine.video, "sample_frames", lambda path, n: _solid_frames(4)
+    )
+
+    recorded = []
+
+    def fake_stream_generate(model, processor, prompt, **kwargs):
+        # A real generator: the staged PNGs are opened at iteration time,
+        # inside the token loop, not when the stream is constructed.
+        for p in kwargs["image"]:
+            with Image.open(p) as im:
+                recorded.append(im.getpixel((0, 0))[0])
+        yield types.SimpleNamespace(text="ok")
+
+    _install_fake_mlx_vlm(
+        monkeypatch,
+        fake_stream_generate,
+        lambda processor, config, messages, num_images: "formatted",
+    )
+
+    caption = _loaded_engine().caption_video(_make_clip(tmp_path), "Describe.")
+
+    assert caption == "ok"
+    # frame_00i.png must hold frame i's color: strictly increasing red.
+    assert recorded == [0, 30, 60, 90]
+
+
+def test_caption_video_keeps_frames_alive_through_streaming(tmp_path, monkeypatch):
+    # The temp dir must survive until the token loop finishes — mlx-vlm only
+    # reads the staged PNGs while generating. The fake generator re-checks
+    # every staged path before each yield, so any premature cleanup (e.g.
+    # between stream construction and the first token) fails loudly.
+    monkeypatch.setattr(
+        engine.video, "sample_frames", lambda path, n: _solid_frames(2)
+    )
+
+    staged = {}
+
+    def fake_stream_generate(model, processor, prompt, **kwargs):
+        staged["paths"] = list(kwargs["image"])
+        for token in ("A dog", " runs."):
+            missing = [p for p in staged["paths"] if not Path(p).exists()]
+            assert not missing, f"staged frames vanished mid-stream: {missing}"
+            yield types.SimpleNamespace(text=token)
+
+    _install_fake_mlx_vlm(
+        monkeypatch,
+        fake_stream_generate,
+        lambda processor, config, messages, num_images: "formatted",
+    )
+
+    caption = _loaded_engine().caption_video(_make_clip(tmp_path), "Describe.")
+
+    assert caption == "A dog runs."
+    # ...but after the call the temp dir (and every frame) is cleaned up.
+    assert staged["paths"]
+    assert all(not Path(p).exists() for p in staged["paths"])
+
+
 def test_caption_video_cancel_mid_stream_returns_partial(tmp_path, monkeypatch):
     monkeypatch.setattr(
         engine.video, "sample_frames", lambda path, n: _solid_frames(2)

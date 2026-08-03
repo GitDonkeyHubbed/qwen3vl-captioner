@@ -155,6 +155,61 @@ def test_context_budget_overflow_raises(monkeypatch, tmp_path):
     assert eng.model.calls == []  # refused before touching the model
 
 
+def test_context_budget_counts_vision_tokens(monkeypatch, tmp_path):
+    # 8 frames at 640x360 (already at VIDEO_FRAME_MAX_DIM, so no resize):
+    # estimate_vision_tokens gives 20*12 = 240 each -> 1920 total, and
+    # ceil(1.15 * 1920) = 2208. With max_tokens=1024, ~41 fallback prompt
+    # tokens (the fake model has no tokenize) and the 128-token scaffold,
+    # needed ~= 3401 > 2500 -> refuse. Were the vision tokens dropped from
+    # the sum, the same call would fit (~1193 < 2500) and reach the model.
+    _install_fake_video(monkeypatch, frame_size=(640, 360))
+    eng = _make_engine(response=_CANNED_RESPONSE, n_ctx=2500)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        eng.caption_video(_video_file(tmp_path), "p", num_frames=8)
+
+    assert "8 video frames" in str(excinfo.value)
+    assert "2500" in str(excinfo.value)
+    assert 'Lower "Frames per video"' in str(excinfo.value)
+    assert eng.model.calls == []  # refused before touching the model
+
+
+def test_context_budget_allows_vision_tokens_that_fit(monkeypatch, tmp_path):
+    # Same 8x 640x360 frames (~3401 tokens needed) with room to spare.
+    _install_fake_video(monkeypatch, frame_size=(640, 360))
+    eng = _make_engine(response=_CANNED_RESPONSE, n_ctx=4096)
+
+    caption = eng.caption_video(_video_file(tmp_path), "p", num_frames=8)
+
+    assert caption == "a cat walks by"
+    assert len(eng.model.calls) == 1
+
+
+def test_context_budget_counts_prompt_tokens(monkeypatch, tmp_path):
+    # 2 tiny 64x64 frames are ~10 vision tokens after overhead — negligible.
+    # A ~5800-char prompt hits the fallback estimate (len//3 + 16 ~= 1974),
+    # so 10 + 512 + ~2015 + 128 overflows n_ctx=2048. A flat text allowance
+    # instead of measuring the prompt would let this call through.
+    _install_fake_video(monkeypatch, frame_size=(64, 64))
+    eng = _make_engine(response=_CANNED_RESPONSE, n_ctx=2048)
+    long_prompt = "describe the scene in detail " * 200
+
+    with pytest.raises(RuntimeError) as excinfo:
+        eng.caption_video(
+            _video_file(tmp_path), long_prompt, max_tokens=512, num_frames=2
+        )
+
+    assert "2048" in str(excinfo.value)
+    assert eng.model.calls == []
+
+    # The identical call with a short prompt fits comfortably.
+    caption = eng.caption_video(
+        _video_file(tmp_path), "p", max_tokens=512, num_frames=2
+    )
+    assert caption == "a cat walks by"
+    assert len(eng.model.calls) == 1
+
+
 def test_streaming_concatenates_tokens(monkeypatch, tmp_path):
     _install_fake_video(monkeypatch)
     eng = _make_engine(stream_chunks=_STREAM_CHUNKS)
@@ -259,3 +314,79 @@ def test_handler_resolution_falls_back_in_order(monkeypatch):
     ns = types.SimpleNamespace(Qwen25VLChatHandler=_Qwen25Handler)
     monkeypatch.setattr(inference, "llama_chat_format", ns, raising=False)
     assert inference._resolve_chat_handler_cls("qwen3vl") is _Qwen25Handler
+
+
+class _RecordingLlama:
+    """Stands in for llama_cpp.Llama during load_model tests."""
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+
+
+def _install_fake_llama_cpp(monkeypatch, instantiated):
+    """Fake out llama-cpp-python so load_model runs without the real wheel.
+
+    Each fake handler class records ``(class name, clip_model_path)`` into
+    ``instantiated`` on construction, so tests can assert which family's
+    handler load_model actually built.
+    """
+
+    class _RecordingHandler:
+        def __init__(self, clip_model_path, verbose=False):
+            instantiated.append((type(self).__name__, clip_model_path))
+
+    class Gemma4ChatHandler(_RecordingHandler):
+        pass
+
+    class Qwen3VLChatHandler(_RecordingHandler):
+        pass
+
+    class Qwen25VLChatHandler(_RecordingHandler):
+        pass
+
+    ns = types.SimpleNamespace(
+        Gemma4ChatHandler=Gemma4ChatHandler,
+        Qwen3VLChatHandler=Qwen3VLChatHandler,
+        Qwen25VLChatHandler=Qwen25VLChatHandler,
+    )
+    monkeypatch.setattr(inference, "LLAMA_CPP_AVAILABLE", True)
+    monkeypatch.setattr(inference, "Llama", _RecordingLlama, raising=False)
+    monkeypatch.setattr(inference, "llama_chat_format", ns, raising=False)
+    monkeypatch.setattr(
+        inference, "Qwen25VLChatHandler", Qwen25VLChatHandler, raising=False
+    )
+
+
+def _model_files(tmp_path):
+    # Filename-inference on this model name yields 'qwen3vl'.
+    model = tmp_path / "Qwen3-VL-8B-Instruct.Q4_K_M.gguf"
+    mmproj = tmp_path / "mmproj-F16.gguf"
+    model.write_bytes(b"\x00")
+    mmproj.write_bytes(b"\x00")
+    return model, mmproj
+
+
+def test_load_model_explicit_chat_family_wins_over_filename(monkeypatch, tmp_path):
+    instantiated = []
+    _install_fake_llama_cpp(monkeypatch, instantiated)
+    model, mmproj = _model_files(tmp_path)
+
+    eng = Qwen3VLEngine()
+    eng.load_model(model, mmproj, chat_family="gemma4")
+
+    # The explicit family must be used, not the filename-inferred 'qwen3vl'.
+    assert eng.chat_family == "gemma4"
+    assert instantiated == [("Gemma4ChatHandler", str(mmproj))]
+    assert eng.model.kwargs["model_path"] == str(model)
+
+
+def test_load_model_infers_chat_family_when_omitted(monkeypatch, tmp_path):
+    instantiated = []
+    _install_fake_llama_cpp(monkeypatch, instantiated)
+    model, mmproj = _model_files(tmp_path)
+
+    eng = Qwen3VLEngine()
+    eng.load_model(model, mmproj)
+
+    assert eng.chat_family == "qwen3vl"
+    assert instantiated == [("Qwen3VLChatHandler", str(mmproj))]

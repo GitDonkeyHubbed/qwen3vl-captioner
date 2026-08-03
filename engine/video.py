@@ -53,7 +53,12 @@ def _sample_by_index(cv2, cap, total: int, num_frames: int) -> list[Image.Image]
 
     frames: list[Image.Image] = []
     for idx in indices:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        if not cap.set(cv2.CAP_PROP_POS_FRAMES, idx):
+            # This container can't seek — reads after a failed seek would
+            # just decode consecutive frames from wherever the decoder sits,
+            # silently losing temporal coverage. Let the caller fall back to
+            # the sequential pass instead.
+            return []
         ok, frame = cap.read()
         if ok and frame is not None:
             frames.append(_to_pil(cv2, frame))
@@ -123,6 +128,17 @@ def sample_frames(
             frames = _sample_sequential(cv2, cap, num_frames)
     finally:
         cap.release()
+
+    if not frames and total > 0:
+        # The header claimed frames but seeking/decoding produced none
+        # (lying header, unseekable container). One sequential pass on a
+        # fresh capture is the decoder of last resort.
+        cap = cv2.VideoCapture(str(video_path))
+        if cap.isOpened():
+            try:
+                frames = _sample_sequential(cv2, cap, num_frames)
+            finally:
+                cap.release()
 
     if not frames:
         raise RuntimeError(f"Could not decode any frames from: {video_path}")

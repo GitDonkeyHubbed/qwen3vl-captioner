@@ -51,7 +51,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libegl1 libgl1
 
       - name: Install test dependencies
-        run: pip install --quiet -r requirements-dev.txt "PyQt6>=6.7" "Pillow>=12.2.0"
+        # opencv + numpy so tests/test_video.py actually runs instead of
+        # module-skipping — engine/video.py would otherwise ship untested.
+        run: pip install --quiet -r requirements-dev.txt "PyQt6>=6.7" "Pillow>=12.2.0" "opencv-python-headless>=4.9" "numpy>=1.26"
 
       - name: Run pytest (core logic, headless)
         env:

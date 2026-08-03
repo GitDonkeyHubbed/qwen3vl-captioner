@@ -847,13 +847,15 @@ class MainWindow(QMainWindow):
                 return  # cancelled or download failed (status already set)
 
         # Registry entries carry the chat-template family (qwen3vl/qwen35/
-        # gemma4); local/browsed models pass None and the engine infers it
-        # from the filename.
-        self._start_model_load(
-            model_path,
-            mmproj_path,
-            chat_family=info.get("chat_family") if info else None,
-        )
+        # gemma4) — but only trust it when the resolved file really IS the
+        # registry entry's file. _find_model_file can fall back to any local
+        # GGUF, and stamping e.g. 'gemma4' onto a Qwen3-VL file would load
+        # the wrong chat template. Otherwise pass None so the engine infers
+        # the family from the actual filename.
+        chat_family = None
+        if info and model_path.name == info.get("filename"):
+            chat_family = info.get("chat_family")
+        self._start_model_load(model_path, mmproj_path, chat_family=chat_family)
 
     def _selected_registry_info(self):
         """Registry info dict for the currently selected model, or None for a

@@ -51,6 +51,7 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".tif", "
 CHAT_FAMILY_HANDLERS = {
     "qwen3vl": "Qwen3VLChatHandler",
     "qwen35": "Qwen35ChatHandler",
+    "qwen25vl": "Qwen25VLChatHandler",
     "gemma4": "Gemma4ChatHandler",
     "gemma3": "Gemma3ChatHandler",
 }
@@ -65,8 +66,8 @@ def infer_chat_family(model_path: str | Path) -> str:
     """
     Infer the chat-template family from a GGUF filename.
 
-    Returns 'qwen3vl', 'qwen35', 'gemma4', or 'gemma3'. Anything not
-    recognized falls back to 'qwen3vl' (the app's primary model line).
+    Returns 'qwen3vl', 'qwen35', 'qwen25vl', 'gemma4', or 'gemma3'. Anything
+    not recognized falls back to 'qwen3vl' (the app's primary model line).
     """
     name = Path(model_path).name.lower()
     if "gemma-4" in name or "gemma4" in name:
@@ -76,6 +77,9 @@ def infer_chat_family(model_path: str | Path) -> str:
     # The Qwen35 handler covers both the 3.5 and 3.6 model lines.
     if any(tag in name for tag in ("qwen3.5", "qwen3_5", "qwen35", "qwen3.6", "qwen3_6")):
         return "qwen35"
+    # Browsed legacy Qwen2.5-VL files keep their original handler.
+    if any(tag in name for tag in ("qwen2.5", "qwen2_5", "qwen25")):
+        return "qwen25vl"
     return "qwen3vl"
 
 
@@ -388,14 +392,18 @@ class Qwen3VLEngine:
 
         # Preflight the context budget: Qwen3-VL's M-RoPE cannot context-shift,
         # so overflowing n_ctx would be a hard crash mid-generation — refuse up
-        # front instead. 1.15x covers vision-encoder/template overhead; 256
-        # covers the text prompt and chat scaffolding.
-        needed = math.ceil(1.15 * vision_tokens) + max_tokens + 256
+        # front instead. 1.15x covers vision-encoder/template overhead; the
+        # text prompts are measured (they are user-editable and unbounded, so
+        # a flat allowance would let a long prompt slip past the check); 128
+        # covers chat scaffolding.
+        text_tokens = self._count_text_tokens(system_prompt + "\n" + prompt)
+        needed = math.ceil(1.15 * vision_tokens) + max_tokens + text_tokens + 128
         if needed > self._n_ctx:
             raise RuntimeError(
-                f"{num_frames} video frames need ~{needed} context tokens "
-                f"(vision + {max_tokens} generation), but the context window "
-                f"is only {self._n_ctx}. Lower \"Frames per video\" and try again."
+                f"{len(image_parts)} video frames need ~{needed} context "
+                f"tokens (vision + {text_tokens} prompt + {max_tokens} "
+                f"generation), but the context window is only {self._n_ctx}. "
+                f"Lower \"Frames per video\" and try again."
             )
 
         messages = [
@@ -411,6 +419,15 @@ class Qwen3VLEngine:
             messages, temperature, top_p, max_tokens,
             stream_callback, cancel_check, prefix, suffix,
         )
+
+    def _count_text_tokens(self, text: str) -> int:
+        """Count tokens for prompt text via the loaded model's tokenizer,
+        falling back to a conservative character-based estimate."""
+        try:
+            return len(self.model.tokenize(text.encode("utf-8"), special=True))
+        except Exception:
+            # ~3 chars/token is conservative for English prose.
+            return len(text) // 3 + 16
 
     def _generate(
         self,

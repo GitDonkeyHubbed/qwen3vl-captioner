@@ -77,6 +77,18 @@ def test_sample_frames_temporal_order(video_path):
     assert all(b > a for a, b in zip(indices, indices[1:]))
 
 
+def test_sample_frames_midpoint_spacing(video_path):
+    """3 of 30 frames must land mid-span (~5, 15, 25), not start-anchored."""
+    frames = sample_frames(video_path, num_frames=3)
+    assert len(frames) == 3
+    indices = [_frame_index(f) for f in frames]
+    for got, expected in zip(indices, (5, 15, 25)):
+        assert got == pytest.approx(expected, abs=2)
+    # Start-anchored sampling (round(i*total/n)) would pick {0, 10, 20};
+    # the midpoint of the first span never touches the intro frames.
+    assert indices[0] >= 3
+
+
 def test_sample_frames_more_than_total(video_path):
     frames = sample_frames(video_path, num_frames=100)
     assert 1 <= len(frames) <= TOTAL_FRAMES
