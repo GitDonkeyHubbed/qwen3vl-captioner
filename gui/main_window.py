@@ -40,19 +40,27 @@ class ModelLoadWorker(QObject):
     finished = pyqtSignal()
     error = pyqtSignal(str)
 
-    def __init__(self, engine: Qwen3VLEngine, model_path: Path, mmproj_path: Path):
+    def __init__(
+        self,
+        engine: Qwen3VLEngine,
+        model_path: Path,
+        mmproj_path: Path,
+        chat_family: Optional[str] = None,
+    ):
         super().__init__()
         self.engine = engine
         self.model_path = model_path
         self.mmproj_path = mmproj_path
+        self.chat_family = chat_family
 
     def run(self):
         try:
-            self.engine.load_model(
-                self.model_path,
-                self.mmproj_path,
-                progress_callback=lambda msg: self.progress.emit(msg),
-            )
+            kwargs = {"progress_callback": lambda msg: self.progress.emit(msg)}
+            # Only the GGUF engine takes chat_family; MLX loads pass None and
+            # must not receive the kwarg (its load_model doesn't accept it).
+            if self.chat_family:
+                kwargs["chat_family"] = self.chat_family
+            self.engine.load_model(self.model_path, self.mmproj_path, **kwargs)
             self.finished.emit()
         except Exception as e:
             self.error.emit(f"{e}\n{traceback.format_exc()}")
@@ -838,7 +846,14 @@ class MainWindow(QMainWindow):
             if mmproj_path is None:
                 return  # cancelled or download failed (status already set)
 
-        self._start_model_load(model_path, mmproj_path)
+        # Registry entries carry the chat-template family (qwen3vl/qwen35/
+        # gemma4); local/browsed models pass None and the engine infers it
+        # from the filename.
+        self._start_model_load(
+            model_path,
+            mmproj_path,
+            chat_family=info.get("chat_family") if info else None,
+        )
 
     def _selected_registry_info(self):
         """Registry info dict for the currently selected model, or None for a
@@ -1008,7 +1023,12 @@ class MainWindow(QMainWindow):
         self._settings_panel.set_model_status("Load cancelled")
         return None
 
-    def _start_model_load(self, model_path: Path, mmproj_path: Optional[Path]):
+    def _start_model_load(
+        self,
+        model_path: Path,
+        mmproj_path: Optional[Path],
+        chat_family: Optional[str] = None,
+    ):
         """Kick off the background model-load thread (both backends)."""
         self._settings_panel.set_model_status("Loading model...")
         self._settings_panel.load_model_btn.setEnabled(False)
@@ -1016,7 +1036,9 @@ class MainWindow(QMainWindow):
 
         # Store as instance attrs to prevent garbage collection (QThread crash fix)
         self._model_load_thread = QThread()
-        self._model_load_worker = ModelLoadWorker(self._engine, model_path, mmproj_path)
+        self._model_load_worker = ModelLoadWorker(
+            self._engine, model_path, mmproj_path, chat_family
+        )
         self._model_load_worker.moveToThread(self._model_load_thread)
 
         self._model_load_thread.started.connect(self._model_load_worker.run)

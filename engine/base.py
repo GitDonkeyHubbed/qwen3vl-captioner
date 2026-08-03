@@ -25,6 +25,14 @@ DEFAULT_SYSTEM_PROMPT = (
     "You are a helpful assistant that describes images accurately and in detail."
 )
 
+# Video captioning limits shared by both engines so they sample and downscale
+# identically. Frames are encoded smaller than single images (640 vs 1280)
+# because N frames share one context window / unified-memory budget and
+# vision tokens grow with pixel area.
+VIDEO_FRAME_MAX_DIM = 640
+DEFAULT_VIDEO_FRAMES = 8
+MAX_VIDEO_FRAMES = 16
+
 # VLMs often prepend formatting noise like ":", "Answer:", "Caption:", etc.
 _STRIP_PREFIXES = [
     "answer:", "caption:", "description:", "response:",
