@@ -90,11 +90,11 @@ def download_mmproj(
     """
     try:
         from huggingface_hub import hf_hub_download
-    except ImportError:
+    except ImportError as exc:
         raise RuntimeError(
             "huggingface-hub is not installed. Run:\n"
             "  pip install huggingface-hub"
-        )
+        ) from exc
     
     target_dir = Path(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -149,10 +149,10 @@ def download_named_mmproj(
     """
     try:
         from huggingface_hub import hf_hub_download
-    except ImportError:
+    except ImportError as exc:
         raise RuntimeError(
             "huggingface-hub is not installed. Run: pip install huggingface-hub"
-        )
+        ) from exc
 
     target_dir = Path(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)

@@ -1,0 +1,56 @@
+name: PR Checks
+
+# Pull-request-only gates that run alongside the existing CI:
+#   - PR-Agent Pro reviews the diff for security leaks / code issues and posts
+#     inline suggestion comments (needs pull-requests: write + a checkout).
+#   - Require PR Test Plan fails the check unless the PR body contains a
+#     "## Test plan" heading. It reads the event payload only — no checkout —
+#     and re-runs on `edited` so fixing the description turns it green without
+#     a new commit. To block merging on it, add "Require test plan" as a
+#     required status check in a branch ruleset.
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ai-review:
+    name: AI PR review & security audit
+    # Skip re-running the AI review when only the PR description changed.
+    if: github.event.action != 'edited'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: PR-Agent Pro — Automated AI PR Reviewer & Security Auditor
+        uses: meanusarcanus/ai-pr-reviewer-action@v1.0.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          severity_threshold: "Medium"
+
+  require-test-plan:
+    # This job name is the status-check name GitHub shows; keep it stable so
+    # rulesets that require it keep matching.
+    name: Require test plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+      checks: write
+    steps:
+      - name: Require PR Test Plan
+        uses: YourFam/require-pr-test-plan@v1.0.6
