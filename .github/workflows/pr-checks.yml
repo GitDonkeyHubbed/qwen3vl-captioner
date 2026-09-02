@@ -13,8 +13,11 @@ on:
   pull_request:
     types: [opened, edited, synchronize, reopened]
 
+# Bots (CodeRabbit, Cursor) edit the PR body seconds after it opens, firing
+# `edited` events. Keep those in their own concurrency lane so a description
+# edit can never cancel the code-triggered run that carries the AI review.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}-${{ github.event.action == 'edited' && 'edited' || 'code' }}
   cancel-in-progress: true
 
 permissions:
