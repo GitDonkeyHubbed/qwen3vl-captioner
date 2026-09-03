@@ -1,15 +1,24 @@
-"""Tests for MLX model-folder detection (engine.mlx_engine).
+"""Tests for MLX model-folder detection and video captioning (engine.mlx_engine).
 
 An MLX model is a directory holding ``config.json`` plus at least one
 ``*.safetensors`` shard (the vision tower is embedded — no mmproj file).
+
+The caption_video tests fake the ``mlx_vlm`` modules in ``sys.modules`` and
+monkeypatch ``engine.video.sample_frames``, so they run without mlx or cv2.
 """
 
 import sys
+import types
+from pathlib import Path
 
 import pytest
+from PIL import Image
 
+import engine.video
+from engine.base import DEFAULT_SYSTEM_PROMPT
 from engine.mlx_engine import (
     MLX_SUPPORTED,
+    MlxVlmEngine,
     _load_make_sampler,
     _stream_with_sampling,
     is_mlx_model_dir,
@@ -207,3 +216,287 @@ def test_stream_with_sampling_propagates_make_sampler_error():
             make_sampler=fake_make_sampler,
         )
     assert legacy_called["hit"] is False
+
+
+# --- caption_video: frame staging, num_images invariant, cleanup -------------
+
+
+def _solid_frames(n, size=(64, 48)):
+    return [Image.new("RGB", size, (i * 30 % 256, 0, 0)) for i in range(n)]
+
+
+def _loaded_engine():
+    """An MlxVlmEngine faked into the loaded state (no real mlx-vlm)."""
+    eng = MlxVlmEngine()
+    eng.model = object()
+    eng.processor = object()
+    eng.config = {}
+    eng._is_loaded = True
+    return eng
+
+
+def _install_fake_mlx_vlm(monkeypatch, stream_generate, apply_chat_template):
+    """Register fake mlx_vlm modules so caption_video's lazy imports resolve."""
+    root = types.ModuleType("mlx_vlm")
+    root.stream_generate = stream_generate
+    prompt_utils = types.ModuleType("mlx_vlm.prompt_utils")
+    prompt_utils.apply_chat_template = apply_chat_template
+    root.prompt_utils = prompt_utils
+    monkeypatch.setitem(sys.modules, "mlx_vlm", root)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.prompt_utils", prompt_utils)
+
+
+def _make_clip(tmp_path):
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"\x00")
+    return clip
+
+
+def test_caption_video_stages_frames_and_matches_num_images(tmp_path, monkeypatch):
+    captured = {}
+
+    # 3 frames despite the default request of 8 — as if decoding dropped some.
+    monkeypatch.setattr(
+        engine.video, "sample_frames", lambda path, n: _solid_frames(3)
+    )
+
+    def fake_apply_chat_template(processor, config, messages, num_images):
+        captured["messages"] = messages
+        captured["num_images"] = num_images
+        return "formatted"
+
+    def fake_stream_generate(model, processor, prompt, **kwargs):
+        captured["prompt"] = prompt
+        captured["kwargs"] = kwargs
+        # The staged PNGs must exist while generation runs.
+        captured["existed_during_call"] = [
+            Path(p).is_file() for p in kwargs["image"]
+        ]
+        return iter([types.SimpleNamespace(text="A cat runs.")])
+
+    _install_fake_mlx_vlm(monkeypatch, fake_stream_generate, fake_apply_chat_template)
+
+    caption = _loaded_engine().caption_video(
+        _make_clip(tmp_path), "Describe the video."
+    )
+
+    assert caption == "A cat runs."
+    assert captured["prompt"] == "formatted"
+    assert captured["messages"] == [
+        {"role": "system", "content": DEFAULT_SYSTEM_PROMPT},
+        {"role": "user", "content": "Describe the video."},
+    ]
+
+    paths = captured["kwargs"]["image"]
+    assert isinstance(paths, list)
+    assert all(isinstance(p, str) for p in paths)
+    # Staged in temporal order under zero-padded names.
+    assert [Path(p).name for p in paths] == [
+        "frame_000.png", "frame_001.png", "frame_002.png",
+    ]
+    # num_images must equal the number of images actually passed.
+    assert captured["num_images"] == len(paths) == 3
+    assert captured["existed_during_call"] == [True, True, True]
+    # The temp dir (and every staged frame) is gone after the call.
+    assert all(not Path(p).exists() for p in paths)
+
+
+def test_caption_video_downscales_staged_frames(tmp_path, monkeypatch):
+    sizes = []
+
+    monkeypatch.setattr(
+        engine.video,
+        "sample_frames",
+        lambda path, n: [Image.new("RGB", (1280, 720), "red") for _ in range(2)],
+    )
+
+    def fake_stream_generate(model, processor, prompt, **kwargs):
+        for p in kwargs["image"]:
+            with Image.open(p) as im:
+                sizes.append(im.size)
+        return iter([types.SimpleNamespace(text="ok")])
+
+    _install_fake_mlx_vlm(
+        monkeypatch,
+        fake_stream_generate,
+        lambda processor, config, messages, num_images: "formatted",
+    )
+
+    _loaded_engine().caption_video(_make_clip(tmp_path), "Describe.")
+
+    # 1280x720 thumbnails to 640x360 (max dim 640, aspect preserved).
+    assert sizes == [(640, 360), (640, 360)]
+
+
+def test_caption_video_stages_frames_in_temporal_order(tmp_path, monkeypatch):
+    # _solid_frames encodes the sample index in the red channel (i*30), so
+    # reading the staged PNGs back reveals which source frame landed in
+    # frame_000.png, frame_001.png, ... — they must stay in temporal order.
+    monkeypatch.setattr(
+        engine.video, "sample_frames", lambda path, n: _solid_frames(4)
+    )
+
+    recorded = []
+
+    def fake_stream_generate(model, processor, prompt, **kwargs):
+        # A real generator: the staged PNGs are opened at iteration time,
+        # inside the token loop, not when the stream is constructed.
+        for p in kwargs["image"]:
+            with Image.open(p) as im:
+                recorded.append(im.getpixel((0, 0))[0])
+        yield types.SimpleNamespace(text="ok")
+
+    _install_fake_mlx_vlm(
+        monkeypatch,
+        fake_stream_generate,
+        lambda processor, config, messages, num_images: "formatted",
+    )
+
+    caption = _loaded_engine().caption_video(_make_clip(tmp_path), "Describe.")
+
+    assert caption == "ok"
+    # frame_00i.png must hold frame i's color: strictly increasing red.
+    assert recorded == [0, 30, 60, 90]
+
+
+def test_caption_video_keeps_frames_alive_through_streaming(tmp_path, monkeypatch):
+    # The temp dir must survive until the token loop finishes — mlx-vlm only
+    # reads the staged PNGs while generating. The fake generator re-checks
+    # every staged path before each yield, so any premature cleanup (e.g.
+    # between stream construction and the first token) fails loudly.
+    monkeypatch.setattr(
+        engine.video, "sample_frames", lambda path, n: _solid_frames(2)
+    )
+
+    staged = {}
+
+    def fake_stream_generate(model, processor, prompt, **kwargs):
+        staged["paths"] = list(kwargs["image"])
+        for token in ("A dog", " runs."):
+            missing = [p for p in staged["paths"] if not Path(p).exists()]
+            assert not missing, f"staged frames vanished mid-stream: {missing}"
+            yield types.SimpleNamespace(text=token)
+
+    _install_fake_mlx_vlm(
+        monkeypatch,
+        fake_stream_generate,
+        lambda processor, config, messages, num_images: "formatted",
+    )
+
+    caption = _loaded_engine().caption_video(_make_clip(tmp_path), "Describe.")
+
+    assert caption == "A dog runs."
+    # ...but after the call the temp dir (and every frame) is cleaned up.
+    assert staged["paths"]
+    assert all(not Path(p).exists() for p in staged["paths"])
+
+
+def test_caption_video_cancel_mid_stream_returns_partial(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        engine.video, "sample_frames", lambda path, n: _solid_frames(2)
+    )
+
+    staged = {}
+
+    def fake_stream_generate(model, processor, prompt, **kwargs):
+        staged["paths"] = list(kwargs["image"])
+        return iter([
+            types.SimpleNamespace(text="A dog"),
+            types.SimpleNamespace(text=" jumps"),
+            types.SimpleNamespace(text=" high."),
+        ])
+
+    _install_fake_mlx_vlm(
+        monkeypatch,
+        fake_stream_generate,
+        lambda processor, config, messages, num_images: "formatted",
+    )
+
+    seen = []
+    caption = _loaded_engine().caption_video(
+        _make_clip(tmp_path),
+        "Describe.",
+        stream_callback=seen.append,
+        cancel_check=lambda: len(seen) >= 1,
+    )
+
+    # Cancelled after the first token: partial caption, no crash.
+    assert caption == "A dog"
+    assert seen == ["A dog"]
+    assert all(not Path(p).exists() for p in staged["paths"])
+
+
+def test_caption_video_cleans_up_temp_frames_on_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        engine.video, "sample_frames", lambda path, n: _solid_frames(2)
+    )
+
+    staged = {}
+
+    def fake_stream_generate(model, processor, prompt, **kwargs):
+        staged["paths"] = list(kwargs["image"])
+        raise RuntimeError("Metal ran out of memory")
+
+    _install_fake_mlx_vlm(
+        monkeypatch,
+        fake_stream_generate,
+        lambda processor, config, messages, num_images: "formatted",
+    )
+
+    with pytest.raises(RuntimeError, match="out of memory"):
+        _loaded_engine().caption_video(_make_clip(tmp_path), "Describe.")
+
+    assert staged["paths"]  # frames were staged before the failure
+    assert all(not Path(p).exists() for p in staged["paths"])
+
+
+@pytest.mark.parametrize(
+    ("requested", "expected"),
+    [(0, 2), (1, 2), (8, 8), (16, 16), (99, 16)],
+)
+def test_caption_video_clamps_num_frames(tmp_path, monkeypatch, requested, expected):
+    asked = {}
+
+    def fake_sample_frames(path, num_frames):
+        asked["num_frames"] = num_frames
+        return _solid_frames(2)
+
+    monkeypatch.setattr(engine.video, "sample_frames", fake_sample_frames)
+    _install_fake_mlx_vlm(
+        monkeypatch,
+        lambda *args, **kwargs: iter([types.SimpleNamespace(text="ok")]),
+        lambda processor, config, messages, num_images: "formatted",
+    )
+
+    _loaded_engine().caption_video(
+        _make_clip(tmp_path), "Describe.", num_frames=requested
+    )
+
+    assert asked["num_frames"] == expected
+
+
+def test_caption_video_applies_prefix_suffix(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        engine.video, "sample_frames", lambda path, n: _solid_frames(2)
+    )
+    _install_fake_mlx_vlm(
+        monkeypatch,
+        lambda *args, **kwargs: iter([types.SimpleNamespace(text="A cat runs.")]),
+        lambda processor, config, messages, num_images: "formatted",
+    )
+
+    caption = _loaded_engine().caption_video(
+        _make_clip(tmp_path), "Describe.", prefix="Video:", suffix="[end]"
+    )
+
+    assert caption == "Video: A cat runs. [end]"
+
+
+def test_caption_video_requires_loaded_model(tmp_path):
+    with pytest.raises(RuntimeError, match="not loaded"):
+        MlxVlmEngine().caption_video(_make_clip(tmp_path), "Describe.")
+
+
+def test_caption_video_missing_file_raises(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        _loaded_engine().caption_video(tmp_path / "missing.mp4", "Describe.")

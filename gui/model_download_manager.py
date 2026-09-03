@@ -49,8 +49,12 @@ def _gguf_family(
     label: str, repo_id: str, stem: str, mmproj: str,
     quants: Dict[str, float], recommended: bool = False,
     quant_template: str = "{stem}.{quant}.gguf",
+    chat_family: str = "qwen3vl",
 ) -> Dict[str, Dict[str, Any]]:
-    """Build registry entries for one GGUF model family."""
+    """Build registry entries for one GGUF model family.
+
+    ``chat_family`` selects the chat template the engine applies at load
+    time ("qwen3vl", "qwen35", "gemma4", ...)."""
     entries: Dict[str, Dict[str, Any]] = {}
     for quant, size_gb in quants.items():
         entries[f"{label} — {quant} ({size_gb:.2f} GB)"] = {
@@ -60,6 +64,7 @@ def _gguf_family(
             "size_gb": size_gb,
             "gated": False,
             "recommended": recommended,
+            "chat_family": chat_family,
         }
     return entries
 
@@ -97,6 +102,28 @@ _HUIHUI = _gguf_family(
     quant_template="{stem}-{quant}.gguf",
 )
 
+# ── Community uncensored fine-tunes (HauhauCS) — non-Qwen3-VL chat
+#    templates, so each carries its own chat_family ──────────────────
+_HAUHAU_QWEN35 = _gguf_family(
+    "HauhauCS Qwen3.5 9B Uncensored",
+    "HauhauCS/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive",
+    "Qwen3.5-9B-Uncensored-HauhauCS-Aggressive",
+    "mmproj-Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-BF16.gguf",
+    {"Q4_K_M": 5.6, "Q6_K": 7.4, "Q8_0": 9.5},
+    quant_template="{stem}-{quant}.gguf",
+    chat_family="qwen35",
+)
+
+_HAUHAU_GEMMA4 = _gguf_family(
+    "HauhauCS Gemma-4 E4B Uncensored",
+    "HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive",
+    "Gemma-4-E4B-Uncensored-HauhauCS-Aggressive",
+    "mmproj-Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-f16.gguf",
+    {"Q4_K_M": 5.3, "Q6_K_P": 6.2, "Q8_K_P": 8.1},
+    quant_template="{stem}-{quant}.gguf",
+    chat_family="gemma4",
+)
+
 # ── Legacy v1 (kept for existing installs; other quants still load
 #    via the local-file scan if already on disk) ──────────────────────
 _V1 = _gguf_family(
@@ -113,13 +140,16 @@ _V1 = {
     "Qwen3-VL 8B ABL — Q8_0 (8.71 GB)": _V1["Qwen3-VL 8B ABL — Q8_0 (8.71 GB)"],
 }
 
-MODEL_REGISTRY: Dict[str, Dict[str, Any]] = {**_V2, **_CAPTION_IT, **_HUIHUI, **_V1}
+MODEL_REGISTRY: Dict[str, Dict[str, Any]] = {
+    **_V2, **_CAPTION_IT, **_HUIHUI, **_HAUHAU_QWEN35, **_HAUHAU_GEMMA4, **_V1,
+}
 
 # Dropdown groups (separator drawn between groups)
 _GGUF_GROUPS: List[List[str]] = [
     list(_V2.keys()),
     list(_CAPTION_IT.keys()),
     list(_HUIHUI.keys()),
+    list(_HAUHAU_QWEN35.keys()) + list(_HAUHAU_GEMMA4.keys()),
     list(_V1.keys()),
 ]
 
@@ -296,6 +326,7 @@ _GGUF_GROUP_LABELS = [
     "★ Recommended — Abliterated v2",
     "Captioning-tuned",
     "Huihui abliterated",
+    "Community Uncensored (HauhauCS)",
     "Legacy v1",
 ]
 _MLX_GROUP_LABELS = [
@@ -330,10 +361,12 @@ def get_model_group_labels() -> List[str]:
 def get_model_info(combo_text: str) -> Optional[Dict[str, Any]]:
     """Return registry entry for *combo_text*, or None if not downloadable.
 
-    Entries carry a "backend" key: "gguf" (default) or "mlx"."""
+    Entries carry a "backend" key: "gguf" (default) or "mlx". GGUF entries
+    always carry a "chat_family" key (defaulted here so callers never need
+    a .get guard)."""
     info = MODEL_REGISTRY.get(combo_text)
     if info is not None:
-        return {**info, "backend": "gguf"}
+        return {"chat_family": "qwen3vl", **info, "backend": "gguf"}
     return MLX_MODEL_REGISTRY.get(combo_text)
 
 

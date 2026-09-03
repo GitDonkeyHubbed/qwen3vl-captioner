@@ -8,3 +8,4 @@ hf_xet>=1.0  # Rust Xet client; high-performance hf_hub_download/snapshot_downlo
 numpy>=1.26
 nvidia-ml-py>=12.0  # official NVML bindings; provides the `pynvml` module without the deprecated-package FutureWarning
 psutil>=5.9
+opencv-python-headless>=4.9  # video frame extraction (bundled ffmpeg on all platforms)

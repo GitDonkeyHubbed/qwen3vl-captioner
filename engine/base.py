@@ -13,8 +13,14 @@ Every engine implements:
   load_model(model_path, mmproj_path, *, progress_callback=None)
     (mmproj_path is REQUIRED by the GGUF engine — pairing a model with a
     missing/mismatched vision encoder crashes llama.cpp natively — and is
-    accepted-but-ignored by the MLX engine, whose models embed the tower)
+    accepted-but-ignored by the MLX engine, whose models embed the tower.
+    The GGUF engine additionally accepts chat_family= to pick the chat
+    template handler; the MLX engine does NOT take it, so callers must
+    only pass it to GGUF loads — see ModelLoadWorker in gui/main_window.)
   caption_image(image_path, prompt, ..., stream_callback, cancel_check) -> str
+  caption_video(video_path, prompt, ..., num_frames=DEFAULT_VIDEO_FRAMES) -> str
+    (samples evenly-spaced frames and captions the clip in one multi-image
+    turn; frame limits below are shared so both backends behave identically)
   unload()
   get_model_info() -> dict
   is_loaded -> bool          (property)
@@ -24,6 +30,14 @@ Every engine implements:
 DEFAULT_SYSTEM_PROMPT = (
     "You are a helpful assistant that describes images accurately and in detail."
 )
+
+# Video captioning limits shared by both engines so they sample and downscale
+# identically. Frames are encoded smaller than single images (640 vs 1280)
+# because N frames share one context window / unified-memory budget and
+# vision tokens grow with pixel area.
+VIDEO_FRAME_MAX_DIM = 640
+DEFAULT_VIDEO_FRAMES = 8
+MAX_VIDEO_FRAMES = 16
 
 # VLMs often prepend formatting noise like ":", "Answer:", "Caption:", etc.
 _STRIP_PREFIXES = [
