@@ -56,7 +56,7 @@ jobs:
       TESTINGBOT_SECRET: ${{ secrets.TESTINGBOT_SECRET }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
