@@ -37,3 +37,25 @@ py-modules = ["app", "doctor"]
 
 [tool.setuptools.package-data]
 gui = ["*.png"]
+
+[tool.ruff]
+# Ruff replaces pyflakes in CI (see .github/workflows/lint.yml). Rule groups
+# are enabled only once the codebase is clean under them, so CI never goes red
+# on a lint upgrade. Candidates to grow into (run `ruff check --select <X>` to
+# see the work involved): I (import order), UP (modern syntax), SIM, PERF, S.
+target-version = "py311"
+extend-exclude = ["build", "qwen3vl_captioner.egg-info"]
+
+[tool.ruff.lint]
+select = [
+    "E4", "E7", "E9",  # pycodestyle errors (imports, statements, syntax)
+    "F",               # pyflakes — the previous CI linter, 1:1
+    "B",               # bugbear — likely bugs (mutable defaults, bare raise-in-except…)
+    "PLE",             # pylint errors
+]
+
+[tool.ruff.lint.per-file-ignores]
+# app.py must initialise the GPU runtime (setup_cuda_dll_path, llama.cpp
+# backend) BEFORE importing PyQt6 — see the comment block in app.py — so its
+# late imports are deliberate, not an oversight.
+"app.py" = ["E402"]

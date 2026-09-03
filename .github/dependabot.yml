@@ -1,0 +1,20 @@
+version: 2
+updates:
+  # Python deps: requirements.txt / requirements-dev.txt / pyproject.toml.
+  # llama-cpp-python is installed from pinned fork wheels by setup.bat/setup.sh,
+  # so bumps to its PyPI floor here are informational — check the wheel first.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      dev-tools:
+        patterns: ["pytest*", "ruff", "numpy"]
+
+  # Keep the GitHub Actions used by CI (actions/checkout, etc.) up to date.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5

@@ -1,0 +1,91 @@
+name: TestingBot Maestro
+
+# Runs Maestro UI flows against a mobile app build on TestingBot real
+# devices / emulators / simulators. https://github.com/testingbot/maestro-action
+#
+# To activate, three things are needed (the job stays skipped/green until then):
+#   1. Repo secrets  TESTINGBOT_KEY and TESTINGBOT_SECRET
+#      (https://testingbot.com/members/user/edit).
+#   2. Maestro flows under .maestro/ (or point `workspace` elsewhere).
+#   3. An app under test (.apk / .ipa / .app / .zip): set the repo variable
+#      TESTINGBOT_APP_FILE to its path for PR runs, or pass `app-file` when
+#      dispatching manually. Add a build step above the Maestro step if the
+#      binary must be produced in CI first.
+
+on:
+  pull_request:
+    paths:
+      - ".maestro/**"
+      - ".github/workflows/testingbot-maestro.yml"
+  workflow_dispatch:
+    inputs:
+      app-file:
+        description: "Path to the app under test (.apk, .ipa, .app or .zip)"
+        required: true
+      workspace:
+        description: "Maestro flows directory, file or glob"
+        required: false
+        default: ".maestro"
+      device:
+        description: "Device name, e.g. Pixel 9 or iPhone 16 (blank = any suitable device)"
+        required: false
+      real-device:
+        description: "Run on a real device instead of an emulator/simulator"
+        type: boolean
+        required: false
+        default: false
+      dry-run:
+        description: "Validate and print the request without uploading or running"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  maestro:
+    name: Maestro flows on TestingBot
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    # Manual runs always go; PR runs need the app path configured as a repo
+    # variable so an unconfigured repo never gets a red X.
+    if: github.event_name == 'workflow_dispatch' || vars.TESTINGBOT_APP_FILE != ''
+    env:
+      TESTINGBOT_KEY: ${{ secrets.TESTINGBOT_KEY }}
+      TESTINGBOT_SECRET: ${{ secrets.TESTINGBOT_SECRET }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Check TestingBot credentials
+        if: env.TESTINGBOT_KEY == '' || env.TESTINGBOT_SECRET == ''
+        run: |
+          echo "::warning::TESTINGBOT_KEY / TESTINGBOT_SECRET secrets are not set; skipping the Maestro run."
+
+      - name: TestingBot Maestro
+        id: maestro
+        if: env.TESTINGBOT_KEY != '' && env.TESTINGBOT_SECRET != ''
+        uses: testingbot/maestro-action@v1.0.0
+        with:
+          api-key: ${{ secrets.TESTINGBOT_KEY }}
+          api-secret: ${{ secrets.TESTINGBOT_SECRET }}
+          app-file: ${{ github.event.inputs.app-file || vars.TESTINGBOT_APP_FILE }}
+          workspace: ${{ github.event.inputs.workspace || '.maestro' }}
+          device: ${{ github.event.inputs.device }}
+          real-device: ${{ github.event.inputs.real-device || 'false' }}
+          dry-run: ${{ github.event.inputs.dry-run || 'false' }}
+          report: junit
+          download-artifacts: failed
+
+      - name: Upload Maestro reports and failure artifacts
+        if: always() && steps.maestro.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: testingbot-maestro-results
+          path: |
+            testingbot-reports
+            testingbot-artifacts
+          if-no-files-found: ignore

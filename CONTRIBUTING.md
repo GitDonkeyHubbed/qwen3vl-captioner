@@ -44,7 +44,7 @@ This creates `.venv/` with the app and the correct GPU engine. Launch with
 ### Running the tests
 
 ```bash
-uv pip install -r requirements-dev.txt          # pytest + pyflakes
+uv pip install -r requirements-dev.txt          # pytest + ruff
 python -m pytest tests/ -q                        # core-logic unit tests
 ```
 
@@ -57,12 +57,13 @@ CI runs **Lint & Test** on every PR. Match it locally:
 
 ```bash
 python -m compileall -q app.py doctor.py engine gui tests   # syntax
-pyflakes app.py doctor.py engine/*.py gui/*.py tests/*.py    # dead/undefined names
+ruff check app.py doctor.py engine gui tests                  # lint (rules in pyproject.toml)
 python -m pytest tests/ -q                                    # tests
 ```
 
-Keep the codebase **pyflakes-clean** (it does not honor `# noqa`, so remove
-unused imports rather than suppressing them).
+Keep the codebase **ruff-clean**. Prefer removing an unused import over
+suppressing it; if a suppression is genuinely needed, use a targeted
+`# noqa: <RULE>` so the reason stays visible.
 
 ## Adding a model to the registry
 

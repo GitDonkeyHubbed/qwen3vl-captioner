@@ -559,6 +559,6 @@ class FileBrowserPanel(QFrame):
     def _filter_items(self, text: str):
         """Filter visible thumbnails based on search text."""
         text_lower = text.lower()
-        for key, item in self._items.items():
+        for item in self._items.values():
             visible = text_lower in item.image_path.name.lower() if text_lower else True
             item.setVisible(visible)
