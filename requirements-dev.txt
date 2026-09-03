@@ -2,5 +2,5 @@
 # Install with:  uv pip install -r requirements-dev.txt
 # Run tests:     python -m pytest tests/ -q
 
-pytest>=8.0
-ruff>=0.16
+pytest>=9.1.1
+ruff>=0.16.5
