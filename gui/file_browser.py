@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
 )
 
 from engine.inference import IMAGE_EXTENSIONS
+from gui.caption_io import read_caption
 from gui.theme import COLORS
 
 
@@ -62,7 +63,7 @@ class ThumbnailItem(QFrame):
         self.image_path = image_path
         self._is_selected = False
         self._caption_preview = ""
-        self._status = "idle"  # idle, queued, processing, done
+        self._status = "idle"  # idle, queued, processing, generated, done
 
         self.setProperty("class", "thumbnail-item")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -153,7 +154,12 @@ class ThumbnailItem(QFrame):
         )
 
     def set_status(self, status: str):
-        """Set the status badge (idle, queued, processing, done)."""
+        """Set the status badge (idle, queued, processing, generated, done).
+
+        "generated" and "done" look the same except for the check overlay:
+        the check means "written to disk", so a caption the user has not
+        saved yet must not wear it.
+        """
         self._status = status
 
         # Show/hide check overlay
@@ -176,7 +182,7 @@ class ThumbnailItem(QFrame):
             self.preview_label.setStyleSheet(
                 f"font-size: 10px; color: {COLORS['accent_text']};"
             )
-        elif status == "done":
+        elif status in ("done", "generated"):
             if self._caption_preview:
                 self.preview_label.setText(
                     self._caption_preview[:40]
@@ -225,6 +231,7 @@ class FileBrowserPanel(QFrame):
     image_selected = pyqtSignal(Path)
     images_imported = pyqtSignal(list)  # list[Path]
     stem_collision_detected = pyqtSignal(str)  # warning text for the user
+    caption_decode_warning = pyqtSignal(str)   # non-UTF-8 sidecars were read lossily
     clear_requested = pyqtSignal()      # emitted when user clicks Clear All
 
     def __init__(self, parent=None):
@@ -424,6 +431,7 @@ class FileBrowserPanel(QFrame):
     def add_images(self, paths: List[Path]):
         """Add images to the file browser."""
         new_paths = []
+        decode_warnings: List[str] = []
         for p in paths:
             key = str(p)
             if key not in self._items:
@@ -434,16 +442,22 @@ class FileBrowserPanel(QFrame):
                 new_paths.append(p)
 
                 # Check for existing caption .txt file
-                txt_path = p.with_suffix(".txt")
-                if txt_path.exists():
-                    try:
-                        caption = txt_path.read_text(encoding="utf-8").strip()
-                        item.set_caption_preview(caption)
-                        item.set_status("done")
-                    except Exception:
-                        pass
+                info = read_caption(p)
+                if info.has_caption:
+                    item.set_caption_preview(info.text)
+                    item.set_status("done")
+                if info.decode_error:
+                    decode_warnings.append(p.name)
 
         self.count_label.setText(str(len(self._items)))
+
+        if decode_warnings:
+            example = ", ".join(sorted(decode_warnings)[:3])
+            self.caption_decode_warning.emit(
+                f"{len(decode_warnings)} caption file(s) are not valid UTF-8 "
+                f"and were read with replacement characters (e.g. {example}). "
+                "Saving over one will rewrite it as UTF-8."
+            )
 
         # Warn about stem collisions: photo.jpg and photo.png share ONE
         # photo.txt sidecar, so captioning both silently overwrites one
@@ -489,17 +503,27 @@ class FileBrowserPanel(QFrame):
         if key in self._items:
             self._items[key].set_status(status)
 
+    def get_item_status(self, path: Path) -> Optional[str]:
+        """Return the status badge of an item, or None if it isn't loaded."""
+        item = self._items.get(str(path))
+        return item._status if item else None
+
     def set_item_caption(self, path: Path, caption: str):
         """Set the caption preview for a specific item."""
         key = str(path)
         if key in self._items:
             self._items[key].set_caption_preview(caption)
 
-    def select_item(self, path: Path):
-        """Programmatically select an item."""
-        self._on_item_clicked(path)
+    def select_item(self, path: Path, emit: bool = True):
+        """Programmatically select an item.
 
-    def _on_item_clicked(self, path: Path):
+        `emit=False` moves the highlight without emitting image_selected —
+        used to restore the previous selection when the user cancels out of
+        an unsaved-caption prompt, which must not re-enter that prompt.
+        """
+        self._on_item_clicked(path, emit=emit)
+
+    def _on_item_clicked(self, path: Path, emit: bool = True):
         """Handle thumbnail click — update selection and emit signal."""
         # Deselect previous
         if self._current_selection:
@@ -513,7 +537,8 @@ class FileBrowserPanel(QFrame):
             self._items[key].set_selected(True)
 
         self._current_selection = path
-        self.image_selected.emit(path)
+        if emit:
+            self.image_selected.emit(path)
 
     def _on_import_clicked(self):
         """Open file dialog to import images (remembers the last-used folder)."""
@@ -539,10 +564,15 @@ class FileBrowserPanel(QFrame):
             self.import_directory(Path(dir_path))
 
     def _on_clear_clicked(self):
-        """Clear all loaded images and reset for a new dataset."""
+        """Ask the window to clear the workspace.
+
+        The panel deliberately does NOT clear itself here: MainWindow may
+        still prompt about an unsaved caption edit and needs the option to
+        abandon the clear, so it calls back into clear_all() once it has
+        decided.
+        """
         if not self._items:
             return
-        self.clear_all()
         self.clear_requested.emit()
 
     def import_directory(self, dir_path: Path):
