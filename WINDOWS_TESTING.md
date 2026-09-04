@@ -1,26 +1,19 @@
-# 🔥 Windows GPU Burn Test — v1.4.0 (`feature/macos-metal-mlx`)
+# 🔥 Windows GPU Burn Test
 
-> This file lives on the `feature/macos-metal-mlx` branch so it travels to the
-> Windows machine via `git pull`. It is the hands-on test plan for validating
-> v1.4.0 on a **real NVIDIA GPU** before merging to `main`.
+> The hands-on test plan for validating a release on a **real NVIDIA GPU**.
+> Run it from `main` (or from the release branch you are about to ship).
 
 ## Why this test exists
 
-| Branch | Version | State |
-|--------|---------|-------|
-| `main` | **v1.3.0** | Merged & live. CUDA wheel auto-detection (#8/#10), custom model loading (#7), `diagnose.bat`, download resume/cancel, VRAM-aware dropdown, CI green. The community is testing this now. |
-| `feature/macos-metal-mlx` | **v1.4.0** | Pushed, **NOT merged**. Adds macOS Metal (Tier 1) + MLX (Tier 2) backends, the 2026 model refresh (abliterated **v2** default, **Caption-it**, **Huihui/noctrex**), and bumps the Windows wheel **0.3.24 → 0.3.40** (adds Qwen3.5/3.6 support + a new `cu131` tag). |
+CI proves the Windows install *logic* on a real Windows runner, but CI has
+**no GPU**, so actual CUDA model loading and captioning is never exercised
+there. This is that burn test — the only check that the CUDA-matched
+llama-cpp-python wheel loads and that inference is GPU-fast rather than
+silently falling back to the CPU.
 
-**Validated already (on an M4 Mac):** GGUF via Metal, standard MLX, abliterated
-MLX q4, Qwen3.5-4B VLM, offscreen GUI test, pyflakes clean.
-
-**The untested path = this test.** CI proved the Windows install *logic* on a
-real Windows box, but CI has **no GPU**, so actual CUDA model loading +
-captioning has never run. That's the burn test.
-
-**⚠️ Highest-risk change to validate:** the Windows wheel jumps from `0.3.24`
-(community-tested) to **`0.3.40`** (untested on a Windows GPU). Testing this
-branch validates the **new wheel** *and* the **new models** in one pass.
+Run it whenever any of these change: the pinned llama-cpp-python wheel, the
+CUDA toolkit→wheel mapping in `engine/cuda_setup.py`, `setup.bat`, or the
+default model in the registry.
 
 ---
 
@@ -33,29 +26,29 @@ If you already run ComfyUI you almost certainly have these:
   `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\` contains a `v12.x` or
   `v13.x` folder. If it's missing: `winget install Nvidia.CUDA`
   *(the driver alone is not enough — `ggml-cuda.dll` needs the Toolkit's runtime DLLs).*
-- **Git** (to pull the branch). You do **not** need Python pre-installed —
+- **Git** (to get the code). You do **not** need Python pre-installed —
   `setup.bat` installs Python 3.12 itself via `uv`.
 
 ---
 
 ## Steps
 
-### 1. Get the branch
-Pulling is read-only and needs no push credentials:
+### 1. Get the code
+Cloning and pulling are read-only and need no push credentials:
 
 ```bat
 git clone https://github.com/GitDonkeyHubbed/qwen3vl-captioner.git
 cd qwen3vl-captioner
-git checkout feature/macos-metal-mlx
 ```
 
 If you already cloned it:
 
 ```bat
-git fetch origin feature/macos-metal-mlx
-git checkout feature/macos-metal-mlx
+git checkout main
 git pull
 ```
+
+To test an unmerged release branch, substitute its name for `main` above.
 
 ### 2. Run `setup.bat` (double-click) — watch two lines
 - **`[4/6] Detecting CUDA Toolkit`** → should print your version and pick a
@@ -98,41 +91,32 @@ DLLs resolve — prevents the "access violation" failure mode.)
   (`prithivMLmods/Qwen3-VL-8B-Abliterated-Caption-it-GGUF`) and
   **Huihui Qwen3-VL 8B ABL** (`noctrex/Huihui-Qwen3-VL-8B-Instruct-abliterated-GGUF`).
 
-### 6. Specifically watch for (the v1.4.0 risk areas)
-1. Does the **`0.3.40` wheel load cleanly**? (`Engine OK - llama_cpp 0.3.40`)
-2. Does the **new v2 model + mmproj** download and load?
+### 6. Specifically watch for
+1. Does the pinned wheel **load cleanly**? (`Engine OK - llama_cpp 0.3.40`)
+2. Does the default model **and its matching mmproj** download and load?
 3. Is inference **GPU-fast**, not CPU-slow?
 
 ---
 
 ## After the test
 
-### ✅ If it all works — promote to a release
-```bat
-git checkout main
-git merge feature/macos-metal-mlx
-git push
-git tag v1.4.0 && git push origin v1.4.0
-```
-That's a real cross-platform release: Windows + macOS, MLX backend, 2026 model
-lineup, Qwen3.5/3.6 support.
-
-### ⚠️ If the `0.3.40` wheel misbehaves (but everything else is fine)
-
-**Fastest path — a rollback is already pre-staged.** Branch
-`fix/wheel-rollback-0.3.24` is this branch with the wheel reverted to the
-community-tested `0.3.24` (and the `cu131` tag removed), keeping the 2026 model
-refresh + macOS backends. To use it:
+### ✅ If it all works — cut the release
+Make sure every in-repo version agrees (`gui/version.py`, `pyproject.toml`, the
+README title and badge, the newest CHANGELOG entry — `tests/test_version_sync.py`
+checks this), then push the tag:
 
 ```bat
-git checkout fix/wheel-rollback-0.3.24
-setup.bat
+git tag V1.4.3 && git push origin V1.4.3
 ```
 
-You keep the model refresh but lose Qwen3.5/3.6 support until the `0.3.40` wheel
-issue is sorted. Send me the `diagnose.bat` output and I'll pinpoint the cause.
+The release workflow re-verifies the tag against those versions and refuses to
+publish on any mismatch. It can also be run manually from the Actions tab.
 
-<details><summary>Or apply the rollback by hand (two edits)</summary>
+### ⚠️ If the pinned wheel misbehaves (but everything else is fine)
+
+Roll the wheel back by hand — there is no pre-staged rollback branch.
+
+<details><summary>Applying a wheel rollback (two edits)</summary>
 
 Roll the wheel back to the community-tested `0.3.24` while keeping the model
 refresh. Two edits:
@@ -154,16 +138,10 @@ refresh. Two edits:
    box must fall back to `cu130`). Leave the rest of the file alone — in
    particular keep the `pynvml` FutureWarning suppression in `diagnose()`.
 
-> Note: `git checkout main -- setup.bat` cleanly grabs the `0.3.24` `setup.bat`,
-> but do **not** do the same for `engine/cuda_setup.py` — `main`'s copy also
-> lacks the `pynvml` fix, so edit that file by hand (or just use the pre-staged
-> `fix/wheel-rollback-0.3.24` branch above, which already does this correctly).
+> Edit both files by hand and re-run `setup.bat`. Send the `diagnose.bat`
+> output with the report so the cause can be pinned down.
 
 </details>
-
-### 🧹 Optional cleanup
-`fix/cuda-custom-models-qol` is fully merged into `main` — safe to delete once
-`main` looks right: `git branch -d fix/cuda-custom-models-qol` (and delete on GitHub).
 
 ---
 

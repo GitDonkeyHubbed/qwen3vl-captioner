@@ -186,7 +186,8 @@ class MainWindow(QMainWindow):
     def __init__(self, model_dir: Optional[Path] = None):
         super().__init__()
         from gui.version import APP_VERSION
-        self.setWindowTitle(f"QWEN 3 VL ABL Captioner V{APP_VERSION} — GGUF Engine")
+        self._app_title = f"QWEN 3 VL ABL Captioner V{APP_VERSION}"
+        self.setWindowTitle(self._app_title)
         self.setMinimumSize(1000, 650)
 
         # Screen-aware sizing: use 85% of available screen, clamped to minimums
@@ -917,6 +918,11 @@ class MainWindow(QMainWindow):
         else:
             if not isinstance(self._engine, Qwen3VLEngine):
                 self._engine = Qwen3VLEngine()
+        # The title used to hard-code "GGUF Engine" even while an MLX model
+        # was loaded. Name the engine actually in use, or nothing at all.
+        self.setWindowTitle(
+            f"{self._app_title} — {'MLX' if backend == 'mlx' else 'GGUF'} Engine"
+        )
 
     def _load_model(self):
         """Load the selected model, guarding against re-entrant loads.
@@ -1277,6 +1283,7 @@ class MainWindow(QMainWindow):
         self._engine.unload()
 
         # Reset UI state
+        self.setWindowTitle(self._app_title)
         self._settings_panel.set_model_status("Model unloaded", is_loaded=False)
         self._set_connection_status("ready", "Model unloaded")
         self._settings_panel.model_combo.setEnabled(True)
@@ -1656,6 +1663,7 @@ class MainWindow(QMainWindow):
         # the fit hints reflect what's actually usable rather than the full
         # machine RAM.
         vram_gb = None
+        memory_is_shared = False
         if self._nvml_handle is not None and self._pynvml is not None:
             try:
                 mem_info = self._pynvml.nvmlDeviceGetMemoryInfo(self._nvml_handle)
@@ -1666,10 +1674,13 @@ class MainWindow(QMainWindow):
             try:
                 import psutil
                 vram_gb = psutil.virtual_memory().available / (1024 ** 3)
+                memory_is_shared = True
             except Exception:
                 pass
 
-        self._settings_panel.populate_models(local_paths, downloaded, vram_gb)
+        self._settings_panel.populate_models(
+            local_paths, downloaded, vram_gb, memory_is_shared
+        )
 
     def _browse_for_model(self):
         """Let the user pick any GGUF model file from disk (issue #7)."""

@@ -33,14 +33,18 @@ FALLBACK_REPOS = [
         "Qwen3-VL-8B-Instruct-abliterated-v1.mmproj-Q8_0.gguf",
     ),
     (
-        "bartowski/Qwen3-VL-8B-Instruct-GGUF",
-        "Qwen3-VL-8B-Instruct-mmproj-f16.gguf",
-    ),
-    (
         "Qwen/Qwen3-VL-8B-Instruct-GGUF",
         "mmproj-Qwen3VL-8B-Instruct-F16.gguf",
     ),
+    (
+        "Qwen/Qwen3-VL-8B-Instruct-GGUF",
+        "mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf",
+    ),
 ]
+# `bartowski/Qwen3-VL-8B-Instruct-GGUF` used to sit in this list; that repo is
+# not reachable (HTTP 401 unauthenticated), so the entry could never succeed
+# and only delayed the fallback that can. Every entry here is verified to
+# resolve.
 
 
 class MmprojMismatchError(RuntimeError):

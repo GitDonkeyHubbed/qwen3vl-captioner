@@ -43,9 +43,18 @@ This creates `.venv/` with the app and the correct GPU engine. Launch with
 
 ### Running the tests
 
+Use the interpreter inside the `.venv` that setup created — a bare `python`
+is whatever is on your PATH, which is not the environment the app was
+installed into.
+
 ```bash
-uv pip install -r requirements-dev.txt          # pytest + ruff
-python -m pytest tests/ -q                        # core-logic unit tests
+# Windows
+uv pip install --python .venv\Scripts\python.exe -r requirements-dev.txt
+.venv\Scripts\python.exe -m pytest tests/ -q
+
+# macOS / Linux
+uv pip install --python .venv/bin/python -r requirements-dev.txt
+.venv/bin/python -m pytest tests/ -q
 ```
 
 The tests cover the platform-independent logic (CUDA→wheel mapping, the model
@@ -56,8 +65,9 @@ registry, caption cleanup, config). They run headless and need no GPU.
 CI runs **Lint & Test** on every PR. Match it locally:
 
 ```bash
-python -m compileall -q app.py doctor.py engine gui tests   # syntax
-ruff check app.py doctor.py engine gui tests                  # lint (rules in pyproject.toml)
+# macOS / Linux (on Windows use .venv\Scripts\python.exe)
+.venv/bin/python -m compileall -q app.py doctor.py engine gui tests   # syntax
+.venv/bin/python -m ruff check app.py doctor.py engine gui tests      # lint (rules in pyproject.toml)
 python -m pytest tests/ -q                                    # tests
 ```
 

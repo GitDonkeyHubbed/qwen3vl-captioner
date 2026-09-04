@@ -6,6 +6,7 @@ extra captioning options, generation parameters, prompt formatting,
 batch controls, and model status display. Matches the Figma design.
 """
 
+import sys
 from pathlib import Path
 from typing import Optional, Dict, List
 
@@ -1159,6 +1160,7 @@ class SettingsPanel(QFrame):
         local_models: List[Path],
         downloaded_names: set,
         vram_gb: Optional[float] = None,
+        memory_is_shared: Optional[bool] = None,
     ):
         """Rebuild the model dropdown.
 
@@ -1168,7 +1170,19 @@ class SettingsPanel(QFrame):
         User-added local GGUF files are listed after a separator.
         Item data is ("registry", registry_key) or ("local", absolute_path)
         so display text can change without breaking lookups.
+
+        `memory_is_shared` says what `vram_gb` actually measures: dedicated
+        VRAM (NVML total) or currently-free unified memory (Apple Silicon).
+        The tooltip used to say "your GPU has N GB" for both, which on a Mac
+        named a figure that changes run to run.
         """
+        if memory_is_shared is None:
+            memory_is_shared = sys.platform == "darwin"
+        budget_word = "unified memory" if memory_is_shared else "VRAM"
+        have_phrase = (
+            f"~{vram_gb:.0f} GB is free right now" if memory_is_shared
+            else f"your GPU has {vram_gb:.0f} GB"
+        ) if vram_gb else ""
         from gui.model_download_manager import (
             get_model_groups, get_model_group_labels, get_model_info,
         )
@@ -1207,8 +1221,8 @@ class SettingsPanel(QFrame):
                             Qt.ItemDataRole.ForegroundRole,
                         )
                         tooltips.append(
-                            f"Won't fit: needs ~{needs:.0f} GB VRAM, "
-                            f"your GPU has {vram_gb:.0f} GB"
+                            f"Won't fit: needs ~{needs:.0f} GB {budget_word}, "
+                            f"{have_phrase}"
                         )
                     elif vram_gb < needs:
                         self.model_combo.setItemData(
@@ -1216,8 +1230,8 @@ class SettingsPanel(QFrame):
                             Qt.ItemDataRole.ForegroundRole,
                         )
                         tooltips.append(
-                            f"Tight fit: needs ~{needs:.0f} GB VRAM with context, "
-                            f"your GPU has {vram_gb:.0f} GB — close other GPU apps"
+                            f"Tight fit: needs ~{needs:.0f} GB {budget_word} with "
+                            f"context, {have_phrase} — close other apps"
                         )
 
                 if tooltips:
@@ -1450,8 +1464,12 @@ class SettingsPanel(QFrame):
             self.inference_time_label.setVisible(False)
 
     def set_inference_time(self, seconds: float):
-        """Update the inference time display."""
-        self.inference_time_label.setText(f"Average inference time: ~{seconds:.1f}s per image")
+        """Update the inference time display.
+
+        This is the LAST caption's duration, not an average over the session —
+        the label used to claim "Average inference time" for a single sample.
+        """
+        self.inference_time_label.setText(f"Last caption: {seconds:.1f}s")
         self.inference_time_label.setVisible(True)
 
     def set_batch_progress(self, current: int, total: int):
