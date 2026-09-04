@@ -31,7 +31,9 @@ from gui.dataset_panel import DatasetPanel
 from gui.notification_panel import NotificationStore, NotificationPanel
 from gui.theme import COLORS
 from engine.inference import Qwen3VLEngine
-from engine.model_downloader import ensure_mmproj, find_mmproj_file, download_named_mmproj
+from engine.model_downloader import (
+    default_mmproj_fits, download_named_mmproj, ensure_mmproj, find_mmproj_file,
+)
 
 
 # --- Worker for background model loading ---
@@ -984,10 +986,12 @@ class MainWindow(QMainWindow):
             candidate = model_dir / expected_mmproj
             mmproj_path = candidate if candidate.is_file() else None
         else:
-            mmproj_path = find_mmproj_file(model_dir)
+            mmproj_path = find_mmproj_file(model_dir, model_path)
 
         if mmproj_path is None:
-            mmproj_path = self._resolve_missing_mmproj(model_dir, info, expected_mmproj)
+            mmproj_path = self._resolve_missing_mmproj(
+                model_dir, info, expected_mmproj, model_path
+            )
             if mmproj_path is None:
                 return  # cancelled or download failed (status already set)
 
@@ -1068,7 +1072,8 @@ class MainWindow(QMainWindow):
             raise RuntimeError(state["error"])
         return state["result"]
 
-    def _resolve_missing_mmproj(self, model_dir, info, expected_mmproj):
+    def _resolve_missing_mmproj(self, model_dir, info, expected_mmproj,
+                                model_path=None):
         """Obtain a vision encoder when the one matching the model isn't on disk.
 
         For a known registry model, download/browse for ITS specific encoder —
@@ -1080,7 +1085,7 @@ class MainWindow(QMainWindow):
             mismatch_note = (
                 "\n\nA different model's vision encoder is present, but pairing "
                 "mismatched encoders crashes the engine — this model needs its own."
-                if find_mmproj_file(model_dir) is not None else ""
+                if find_mmproj_file(model_dir) is not None else ""  # any encoder at all
             )
             answer = QMessageBox.question(
                 self, "Vision Encoder Needed",
@@ -1124,7 +1129,29 @@ class MainWindow(QMainWindow):
             self._settings_panel.set_model_status("Load cancelled")
             return None
 
-        # Local/unknown model: legacy default-download or browse flow.
+        # Local/unknown model: legacy default-download or browse flow. The
+        # built-in download only ships the Qwen3-VL 8B encoder, so it is
+        # offered only when it can actually pair with this model — handing it
+        # to, say, a 4B model crashes llama.cpp natively on the first caption.
+        if not default_mmproj_fits(model_path):
+            file_path, _ = QFileDialog.getOpenFileName(
+                self, "Select the mmproj (Vision Encoder) for this model",
+                str(model_dir), "GGUF models (*.gguf)"
+            )
+            if not file_path:
+                QMessageBox.warning(
+                    self, "Vision Encoder Needed",
+                    f"No vision encoder matching {Path(model_path).name} was "
+                    "found next to it.\n\n"
+                    "The built-in download only provides the Qwen3-VL 8B "
+                    "encoder, which this model cannot use — download the "
+                    "mmproj published alongside your model and put it in the "
+                    "same folder.",
+                )
+                self._settings_panel.set_model_status("Error: mmproj not found")
+                return None
+            return Path(file_path)
+
         answer = QMessageBox.question(
             self, "Vision Encoder Needed",
             "No mmproj (vision encoder) .gguf found next to this model.\n\n"
@@ -1140,7 +1167,9 @@ class MainWindow(QMainWindow):
             try:
                 return self._download_mmproj_blocking(
                     "Downloading default vision encoder…",
-                    lambda cb: ensure_mmproj(model_dir, progress_callback=cb),
+                    lambda cb: ensure_mmproj(
+                        model_dir, progress_callback=cb, model_path=model_path
+                    ),
                 )
             except Exception as e:
                 QMessageBox.critical(
@@ -1665,7 +1694,15 @@ class MainWindow(QMainWindow):
                 if candidate.is_file():
                     return candidate
 
-        # Fallback: any non-mmproj GGUF file
+        # Fallback: any non-mmproj GGUF file — ONLY for a selection with no
+        # registry entry. For a registry model this fallback silently loaded a
+        # different GGUF off disk, then downloaded that entry's vision encoder
+        # and paired it with the foreign model: exactly the mismatched-mmproj
+        # crash the surrounding code exists to prevent. Returning None instead
+        # lets the "isn't downloaded yet — download it now?" prompt fire.
+        if model_info is not None:
+            return None
+
         for dir_path in search_dirs:
             if not dir_path.is_dir():
                 continue

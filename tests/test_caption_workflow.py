@@ -359,3 +359,40 @@ def test_aborted_batch_clears_queued_and_processing_badges(win, images):
     assert win._file_browser.get_item_status(images[1]) == "idle"
     # ...and the Batch button is usable again.
     assert win._batch_active is False
+
+
+# ── Model resolution ────────────────────────────────────────────────────
+
+def test_registry_selection_never_substitutes_a_foreign_gguf(win, tmp_path, monkeypatch):
+    """A not-yet-downloaded registry model must not load someone else's GGUF.
+
+    The fallback used to return any non-mmproj GGUF on disk, so Load Model
+    silently loaded an unrelated file and then paired it with the selected
+    entry's vision encoder — the mismatched-mmproj crash the surrounding code
+    exists to prevent.
+    """
+    from gui.model_download_manager import MODEL_REGISTRY
+
+    (tmp_path / "SomeOtherModel-Q4_K_M.gguf").write_bytes(b"")
+    label = next(iter(MODEL_REGISTRY))
+
+    monkeypatch.setattr(
+        win._settings_panel, "get_selected_model", lambda: ("registry", label)
+    )
+    monkeypatch.setattr(win, "_model_search_dirs", lambda: [tmp_path])
+
+    assert win._find_model_file() is None
+
+
+def test_unknown_selection_still_falls_back(win, tmp_path, monkeypatch):
+    """A dropdown label with no registry entry keeps the old behaviour."""
+    other = tmp_path / "SomeOtherModel-Q4_K_M.gguf"
+    other.write_bytes(b"")
+
+    monkeypatch.setattr(
+        win._settings_panel, "get_selected_model",
+        lambda: ("registry", "Not A Real Registry Label"),
+    )
+    monkeypatch.setattr(win, "_model_search_dirs", lambda: [tmp_path])
+
+    assert win._find_model_file() == other
