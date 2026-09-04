@@ -12,6 +12,8 @@ Displays the generated caption with:
 Matches the Figma "VL-CAPTIONER Studio Pro" CaptionWorkspace design.
 """
 
+from contextlib import contextmanager
+
 from PyQt6.QtCore import pyqtSignal, QTimer
 from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -29,10 +31,19 @@ class CaptionPanel(QFrame):
 
     regenerate_requested = pyqtSignal()
     save_requested = pyqtSignal()
+    dirty_changed = pyqtSignal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setProperty("class", "caption-area")
+
+        # Dirty tracking. Without it a hand-edit typed into the box was
+        # silently destroyed by the next selection change, regenerate or
+        # Clear All. `_programmatic` is a depth counter rather than a bool so
+        # nested writes (set_caption inside a clear, say) can't leave dirty
+        # tracking switched off.
+        self._dirty = False
+        self._programmatic = 0
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 12, 16, 12)
@@ -86,7 +97,7 @@ class CaptionPanel(QFrame):
         self.caption_text.setMinimumHeight(80)
         self.caption_text.setMaximumHeight(180)
         self.caption_text.setAcceptRichText(False)
-        self.caption_text.textChanged.connect(self._update_counts)
+        self.caption_text.textChanged.connect(self._on_text_changed)
         layout.addWidget(self.caption_text)
 
         # ── Bottom row: format badge + counts | trash + save ──
@@ -103,7 +114,10 @@ class CaptionPanel(QFrame):
         )
         format_row.addWidget(format_dot)
 
-        self.format_badge = QLabel("SDXL FORMAT")
+        # "CUSTOM" until a target preset is actually selected — the badge used
+        # to claim "SDXL FORMAT" at startup, when no preset is active and the
+        # prompt sent is a generic one.
+        self.format_badge = QLabel("CUSTOM FORMAT")
         self.format_badge.setProperty("class", "format-badge")
         format_row.addWidget(self.format_badge)
 
@@ -145,22 +159,35 @@ class CaptionPanel(QFrame):
 
     def set_caption(self, text: str):
         """Set the caption text (replaces current content)."""
-        self.caption_text.setPlainText(text)
+        with self._writing_programmatically():
+            self.caption_text.setPlainText(text)
         self.feedback_label.setText("")
 
     def append_token(self, token: str):
         """Append a streaming token to the caption."""
-        cursor = self.caption_text.textCursor()
-        cursor.movePosition(cursor.MoveOperation.End)
-        cursor.insertText(token)
-        self.caption_text.setTextCursor(cursor)
-        self.caption_text.ensureCursorVisible()
+        with self._writing_programmatically():
+            cursor = self.caption_text.textCursor()
+            cursor.movePosition(cursor.MoveOperation.End)
+            cursor.insertText(token)
+            self.caption_text.setTextCursor(cursor)
+            self.caption_text.ensureCursorVisible()
 
     def clear_caption(self):
         """Clear the caption text."""
-        self.caption_text.clear()
+        with self._writing_programmatically():
+            self.caption_text.clear()
         self.confidence_badge.setVisible(False)
         self.feedback_label.setText("")
+
+    # ─── Dirty state ───
+
+    def is_dirty(self) -> bool:
+        """True when the box holds hand-edits that are not saved to disk."""
+        return self._dirty
+
+    def mark_clean(self):
+        """Record the current text as matching what is stored on disk."""
+        self._set_dirty(False)
 
     def get_caption(self) -> str:
         """Get the current caption text."""
@@ -190,6 +217,28 @@ class CaptionPanel(QFrame):
         self.format_badge.setText(text.upper() + " FORMAT")
 
     # ─── Private ───
+
+    @contextmanager
+    def _writing_programmatically(self):
+        """Suppress dirty tracking for writes the app makes itself."""
+        self._programmatic += 1
+        try:
+            yield
+        finally:
+            self._programmatic -= 1
+            if self._programmatic == 0:
+                self._set_dirty(False)
+
+    def _set_dirty(self, dirty: bool):
+        if dirty != self._dirty:
+            self._dirty = dirty
+            self.dirty_changed.emit(dirty)
+
+    def _on_text_changed(self):
+        """Track edits, then refresh the counters."""
+        if self._programmatic == 0:
+            self._set_dirty(True)
+        self._update_counts()
 
     def _copy_caption(self):
         """Copy caption text to clipboard with animated feedback."""

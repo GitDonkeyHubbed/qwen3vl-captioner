@@ -10,12 +10,13 @@ from pathlib import Path
 from typing import List
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QImageReader
+from PyQt6.QtGui import QColor, QImageReader
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
 )
 
+from .caption_io import read_caption
 from .theme import COLORS
 
 
@@ -24,6 +25,7 @@ class DatasetPanel(QFrame):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._paths: List[Path] = []
         self.setStyleSheet(f"background: {COLORS['bg_dark']};")
 
         layout = QVBoxLayout(self)
@@ -133,8 +135,19 @@ class DatasetPanel(QFrame):
         """Connect the Refresh button to a callback."""
         self._refresh_btn.clicked.connect(callback)
 
+    def refresh_theme(self):
+        """Re-apply palette-dependent colours after a runtime theme switch."""
+        self._empty_label.setStyleSheet(
+            f"color: {COLORS['text_dim']}; font-size: 12px; padding: 40px;"
+        )
+        # The Yes/No foregrounds are set per cell, so the table has to be
+        # rebuilt for them to follow the new palette.
+        if self._paths:
+            self.populate(self._paths)
+
     def populate(self, image_paths: List[Path]):
         """Populate the table with image metadata and caption status."""
+        self._paths = list(image_paths)
         self._table.setRowCount(0)
 
         if not image_paths:
@@ -160,26 +173,31 @@ class DatasetPanel(QFrame):
             size_str = self._format_size(img_path)
             self._table.setItem(row, 2, QTableWidgetItem(size_str))
 
-            # Caption file exists?
-            txt_path = img_path.with_suffix(".txt")
-            has_caption = txt_path.exists()
+            # Caption file present AND non-blank? A sidecar counted purely by
+            # existence reported empty .txt files as captioned, showing "Yes"
+            # with a blank preview and inflating Coverage to 100%. One read
+            # serves both the status and the preview.
+            info = read_caption(img_path)
+            has_caption = info.has_caption
             if has_caption:
                 captioned += 1
             status_item = QTableWidgetItem("Yes" if has_caption else "No")
-            if has_caption:
-                status_item.setForeground(Qt.GlobalColor.green)
-            else:
-                status_item.setForeground(Qt.GlobalColor.red)
+            # COLORS, not Qt.GlobalColor.green (#00ff00), which is 1.08:1 on
+            # the light table background.
+            status_item.setForeground(
+                QColor(COLORS["success"] if has_caption else COLORS["error"])
+            )
             self._table.setItem(row, 3, status_item)
 
             # Caption preview
-            preview = ""
-            if has_caption:
-                try:
-                    text = txt_path.read_text(encoding="utf-8", errors="replace").strip()
-                    preview = text[:120] + ("..." if len(text) > 120 else "")
-                except Exception:
-                    preview = "(read error)"
+            if info.read_error:
+                preview = "(read error)"
+            elif has_caption:
+                preview = info.text[:120] + ("..." if len(info.text) > 120 else "")
+            elif info.exists:
+                preview = "(empty file)"
+            else:
+                preview = ""
             self._table.setItem(row, 4, QTableWidgetItem(preview))
 
         self._update_stats(len(image_paths), captioned)

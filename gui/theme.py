@@ -581,7 +581,7 @@ def get_stylesheet(mode: str = "dark") -> str:
         max-height: 56px;
     }}
     QFrame[class="canvas-toolbar"] {{
-        background-color: rgba(9, 9, 11, 0.5);
+        background-color: {c['surface_translucent']};
         border-bottom: 1px solid {c['border']};
         min-height: 40px;
         max-height: 48px;
@@ -612,6 +612,48 @@ def get_stylesheet(mode: str = "dark") -> str:
     }}
 
     /* Thumbnail items */
+    QLabel[class="viewer-empty"] {{
+        color: {c['text_muted']};
+        font-size: 14px;
+        background: transparent;
+    }}
+    QLabel[class="panel-title"] {{
+        color: {c['text_primary']};
+        font-size: 14px;
+        font-weight: 600;
+        border: none;
+        background: transparent;
+    }}
+
+    /* Thumbnail internals. These were inline styles applied at construction,
+       so a thumbnail imported after a theme switch got the new palette's text
+       on the old palette's frozen background while earlier rows stayed
+       readable. Class rules re-resolve on every setStyleSheet(). */
+    QLabel[class="thumb-image"] {{
+        border-radius: 4px;
+        background: {c['bg_hover']};
+        border: 1px solid {c['border_light']};
+    }}
+    QLabel[class="thumb-name"] {{
+        font-weight: 500;
+        font-size: 12px;
+        color: {c['text_primary']};
+        background: transparent;
+    }}
+    QLabel[class="thumb-preview"] {{
+        font-size: 10px;
+        color: {c['text_dim']};
+        background: transparent;
+    }}
+    QLabel[class="thumb-preview-active"] {{
+        font-size: 10px;
+        color: {c['accent_text']};
+        background: transparent;
+    }}
+    QWidget[class="thumbnail-list"] {{
+        background: {c['bg_darkest']};
+    }}
+
     QFrame[class="thumbnail-item"] {{
         background-color: transparent;
         border-left: 2px solid transparent;

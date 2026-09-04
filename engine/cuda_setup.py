@@ -81,10 +81,43 @@ def _cuda_install_roots() -> list[Path]:
     return unique
 
 
+def cuda_bin_dirs(root: Path) -> list[Path]:
+    """Return the existing binary directories of a toolkit install root.
+
+    CUDA 13.x on Windows moved the runtime DLLs into bin\\x64, so both
+    locations have to be considered everywhere they are searched.
+    """
+    dirs = []
+    for sub in ("bin", os.path.join("bin", "x64")):
+        path = root / sub
+        if path.is_dir():
+            dirs.append(path)
+    return dirs
+
+
+def has_cuda_runtime(root: Path) -> bool:
+    """True if `root` actually ships the CUDA runtime DLLs.
+
+    An uninstalled toolkit commonly leaves its versioned directory behind.
+    Treating that empty shell as an install let a stale v13.0 folder outrank
+    a real v12.4 one: setup.bat then picked the cu130 wheel and doctor.py
+    reported "OK" for a toolkit whose DLLs are not on disk.
+    """
+    for bin_dir in cuda_bin_dirs(root):
+        if any(bin_dir.glob("cudart64_*.dll")):
+            return True
+    return False
+
+
 def detect_cuda_toolkit() -> Optional[tuple[tuple[int, int], Path]]:
-    """Return ((major, minor), install_root) of the newest CUDA Toolkit, or None."""
+    """Return ((major, minor), install_root) of the newest CUDA Toolkit, or None.
+
+    Only roots that actually contain the CUDA runtime DLLs are considered.
+    """
     best: Optional[tuple[tuple[int, int], Path]] = None
     for root in _cuda_install_roots():
+        if not has_cuda_runtime(root):
+            continue
         ver = parse_cuda_version(root.name)
         if ver is None:
             # CUDA_PATH may point at a non-versioned dir; try version.json
@@ -296,12 +329,10 @@ def setup_cuda_dll_path() -> Optional[Path]:
     root_version: dict[Path, tuple[int, int]] = {}
     for root in _cuda_install_roots():
         ver = parse_cuda_version(root.name) or _version_from_install(root) or (0, 0)
-        for sub in ("bin", os.path.join("bin", "x64")):
-            path = root / sub
-            if path.is_dir():
-                resolved = path.resolve()
-                bin_dirs.append(resolved)
-                root_version[resolved] = ver
+        for path in cuda_bin_dirs(root):
+            resolved = path.resolve()
+            bin_dirs.append(resolved)
+            root_version[resolved] = ver
 
     for bin_dir in bin_dirs:
         try:
@@ -447,6 +478,8 @@ def diagnose() -> dict:
         "import_error": None,
         "gpu_name": None,
         "driver_version": None,
+        "nvml_available": False,
+        "gpu_query_error": None,
     }
 
     toolkit = detect_cuda_toolkit()
@@ -489,21 +522,29 @@ def diagnose() -> dict:
             except Exception:
                 pass
 
-    # GPU info via NVML if available (best effort)
+    # GPU info via NVML if available (best effort). The import failing and the
+    # query failing are separate diagnoses: folding a missing `nvidia-ml-py`
+    # package into an empty gpu_name told users to reinstall a driver that was
+    # never the problem.
     try:
         import warnings
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=FutureWarning, module="pynvml")
             import pynvml
-        pynvml.nvmlInit()
-        handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-        name = pynvml.nvmlDeviceGetName(handle)
-        report["gpu_name"] = name.decode() if isinstance(name, bytes) else name
-        drv = pynvml.nvmlSystemGetDriverVersion()
-        report["driver_version"] = drv.decode() if isinstance(drv, bytes) else drv
-        pynvml.nvmlShutdown()
-    except Exception:
-        pass
+    except Exception as e:
+        report["gpu_query_error"] = f"pynvml import failed: {e}"
+    else:
+        report["nvml_available"] = True
+        try:
+            pynvml.nvmlInit()
+            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            name = pynvml.nvmlDeviceGetName(handle)
+            report["gpu_name"] = name.decode() if isinstance(name, bytes) else name
+            drv = pynvml.nvmlSystemGetDriverVersion()
+            report["driver_version"] = drv.decode() if isinstance(drv, bytes) else drv
+            pynvml.nvmlShutdown()
+        except Exception as e:
+            report["gpu_query_error"] = str(e)
 
     return report
 

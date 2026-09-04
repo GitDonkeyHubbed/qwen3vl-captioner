@@ -34,13 +34,23 @@ class NotificationEntry:
     is_read: bool = False
 
 
-# Category -> dot color
-_CATEGORY_COLORS = {
-    "info":     COLORS["accent_text"],
-    "error":    COLORS["error"],
-    "success":  COLORS["success"],
-    "download": COLORS["warning"],
+# Category -> palette key for the dot colour.
+#
+# Deliberately keys, not colour values: a dict of resolved colours is a
+# snapshot of whichever palette was active at import time (always dark, given
+# app.py's import order), so the dots never followed a switch to light mode.
+_CATEGORY_COLOR_KEYS = {
+    "info":     "accent_text",
+    "error":    "error",
+    "success":  "success",
+    "warning":  "warning",
+    "download": "warning",
 }
+
+
+def category_color(category: str) -> str:
+    """Resolve a notification category to a colour in the ACTIVE palette."""
+    return COLORS[_CATEGORY_COLOR_KEYS.get(category, "text_dim")]
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +199,21 @@ class NotificationPanel(QFrame):
 
     # -- internals --
 
+    def refresh_theme(self):
+        """Re-resolve palette colours after a runtime theme switch.
+
+        Only the panel chrome and the rows are redone — _build_ui() installs a
+        layout on `self` and cannot be called twice.
+        """
+        self.setStyleSheet(
+            f"NotificationPanel {{"
+            f"  background-color: {COLORS['bg_darkest']};"
+            f"  border: 1px solid {COLORS['border_light']};"
+            f"  border-radius: 10px;"
+            f"}}"
+        )
+        self._refresh()
+
     def _refresh(self):
         """Rebuild the notification items from the store."""
         # Clear existing items (keep the stretch at the end)
@@ -224,7 +249,7 @@ class NotificationPanel(QFrame):
         layout.setSpacing(10)
 
         # Category dot
-        dot_color = _CATEGORY_COLORS.get(entry.category, COLORS["text_dim"])
+        dot_color = category_color(entry.category)
         dot = QLabel("\u2022")
         dot.setFixedWidth(12)
         dot.setStyleSheet(

@@ -7,6 +7,7 @@ above 12.8, not below it as a string compare would).
 """
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -106,12 +107,25 @@ def test_wheel_mismatch_message_names_both_tags():
     assert "setup.bat" in msg
 
 
+def _make_toolkit(root: Path, name: str, *, with_runtime: bool = True, x64: bool = False):
+    """Create a fake toolkit install directory under `root`.
+
+    `with_runtime=False` models the empty version folder an uninstall leaves
+    behind — no cudart64_*.dll anywhere, so it is not a usable toolkit.
+    """
+    bin_dir = root / name / "bin" / "x64" if x64 else root / name / "bin"
+    bin_dir.mkdir(parents=True)
+    if with_runtime:
+        (bin_dir / "cudart64_12.dll").write_bytes(b"")
+    return root / name
+
+
 def test_detect_cuda_toolkit_picks_newest_numerically(tmp_path, monkeypatch):
     # Three installed toolkits; detection picks v13.0 and ranks v12.10 above
     # v12.4 (numeric, not lexical).
     monkeypatch.delenv("CUDA_PATH", raising=False)
     for name in ("v12.4", "v12.10", "v13.0"):
-        (tmp_path / name).mkdir()
+        _make_toolkit(tmp_path, name)
     monkeypatch.setattr(cuda_setup, "_TOOLKIT_ROOT", tmp_path)
 
     detected = detect_cuda_toolkit()
@@ -119,6 +133,58 @@ def test_detect_cuda_toolkit_picks_newest_numerically(tmp_path, monkeypatch):
     version, root = detected
     assert version == (13, 0)
     assert root.name == "v13.0"
+
+
+def test_detect_cuda_toolkit_ignores_roots_without_runtime_dlls(tmp_path, monkeypatch):
+    # A leftover v13.0 folder from an uninstall must not outrank the real
+    # v12.4 install — otherwise setup.bat picks the cu130 wheel and doctor.py
+    # reports OK for a toolkit whose DLLs are gone.
+    monkeypatch.delenv("CUDA_PATH", raising=False)
+    _make_toolkit(tmp_path, "v13.0", with_runtime=False)
+    _make_toolkit(tmp_path, "v12.4")
+    monkeypatch.setattr(cuda_setup, "_TOOLKIT_ROOT", tmp_path)
+
+    detected = detect_cuda_toolkit()
+    assert detected is not None
+    version, root = detected
+    assert version == (12, 4)
+    assert root.name == "v12.4"
+
+
+def test_detect_cuda_toolkit_accepts_runtime_in_bin_x64(tmp_path, monkeypatch):
+    # CUDA 13.x on Windows ships cudart64 under bin\x64.
+    monkeypatch.delenv("CUDA_PATH", raising=False)
+    _make_toolkit(tmp_path, "v13.0", x64=True)
+    monkeypatch.setattr(cuda_setup, "_TOOLKIT_ROOT", tmp_path)
+
+    detected = detect_cuda_toolkit()
+    assert detected is not None
+    assert detected[0] == (13, 0)
+
+
+def test_detect_cuda_toolkit_none_when_only_empty_shells(tmp_path, monkeypatch):
+    monkeypatch.delenv("CUDA_PATH", raising=False)
+    _make_toolkit(tmp_path, "v12.4", with_runtime=False)
+    monkeypatch.setattr(cuda_setup, "_TOOLKIT_ROOT", tmp_path)
+    assert detect_cuda_toolkit() is None
+
+
+def test_diagnose_distinguishes_missing_nvml_from_missing_driver(monkeypatch):
+    # A missing `nvidia-ml-py` package must not be reported as a missing
+    # NVIDIA driver — the remediation for the two is completely different.
+    import builtins
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "pynvml":
+            raise ImportError("No module named 'pynvml'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    report = cuda_setup.diagnose()
+    assert report["nvml_available"] is False
+    assert report["gpu_name"] is None
+    assert "pynvml import failed" in (report["gpu_query_error"] or "")
 
 
 def test_detect_cuda_toolkit_none_when_no_install(tmp_path, monkeypatch):

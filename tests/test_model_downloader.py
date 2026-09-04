@@ -13,8 +13,11 @@ from pathlib import Path
 import pytest
 
 from engine.model_downloader import (
+    MmprojMismatchError,
+    default_mmproj_fits,
     download_mmproj,
     download_named_mmproj,
+    ensure_mmproj,
     find_mmproj_file,
 )
 
@@ -79,3 +82,87 @@ def test_find_mmproj_file_none_when_absent(tmp_path):
 
 def test_find_mmproj_file_none_for_missing_dir(tmp_path):
     assert find_mmproj_file(tmp_path / "does-not-exist") is None
+
+
+# ── Model-aware mmproj pairing ──────────────────────────────────────────
+#
+# Pairing a model with another model's vision encoder does not fail cleanly:
+# llama.cpp crashes natively on the first caption. Taking any *mmproj*.gguf in
+# the folder made that the default outcome for a browsed model.
+
+def _touch(path: Path):
+    path.write_bytes(b"")
+    return path
+
+
+def test_pairs_encoder_named_after_the_model(tmp_path):
+    model = _touch(tmp_path / "Qwen3-VL-8B-Instruct-abliterated-v2.Q4_K_M.gguf")
+    _touch(tmp_path / "Gliese-Qwen3.5-4B-Abliterated-Caption.mmproj-f16.gguf")
+    match = _touch(tmp_path / "Qwen3-VL-8B-Instruct-abliterated-v2.mmproj-f16.gguf")
+
+    assert find_mmproj_file(tmp_path, model) == match
+
+
+def test_refuses_a_foreign_encoder(tmp_path):
+    # The only encoder present belongs to a different model.
+    model = _touch(tmp_path / "Gliese-Qwen3.5-4B-Abliterated-Caption.Q4_K_M.gguf")
+    _touch(tmp_path / "Qwen3-VL-8B-Instruct-abliterated-v2.mmproj-f16.gguf")
+
+    assert find_mmproj_file(tmp_path, model) is None
+
+
+def test_bare_mmproj_pairs_when_the_folder_holds_one_model(tmp_path):
+    # noctrex-style layout: the encoder is just "mmproj-F16.gguf".
+    model = _touch(tmp_path / "Huihui-Qwen3-VL-8B-Instruct-abliterated-Q4_K_M.gguf")
+    mmproj = _touch(tmp_path / "mmproj-F16.gguf")
+
+    assert find_mmproj_file(tmp_path, model) == mmproj
+
+
+def test_bare_mmproj_is_ambiguous_with_several_models(tmp_path):
+    model = _touch(tmp_path / "Huihui-Qwen3-VL-8B-Instruct-abliterated-Q4_K_M.gguf")
+    _touch(tmp_path / "Gliese-Qwen3.5-4B-Abliterated-Caption.Q4_K_M.gguf")
+    _touch(tmp_path / "mmproj-F16.gguf")
+
+    assert find_mmproj_file(tmp_path, model) is None
+
+
+def test_size_mismatch_is_refused(tmp_path):
+    model = _touch(tmp_path / "Qwen3-VL-4B-Instruct.Q4_K_M.gguf")
+    _touch(tmp_path / "Qwen3-VL-8B-Instruct.mmproj-f16.gguf")
+    _touch(tmp_path / "other-model.gguf")  # keeps the folder ambiguous
+
+    assert find_mmproj_file(tmp_path, model) is None
+
+
+def test_qwen35_size_token_is_not_misread(tmp_path):
+    # "Qwen3.5-2B" must parse as a 2B model, not a 352B one.
+    from engine.model_downloader import _size_tokens
+    assert _size_tokens("Gliese-Qwen3.5-2B-Abliterated-Caption.Q4_K_M.gguf") == {"2"}
+    assert _size_tokens("Qwen3-VL-8B-Instruct-abliterated-v2.Q6_K.gguf") == {"8"}
+
+
+def test_no_model_given_keeps_legacy_behaviour(tmp_path):
+    # Callers that only ask "is there an encoder here at all?" still get one.
+    _touch(tmp_path / "Qwen3-VL-8B-Instruct.mmproj-f16.gguf")
+    assert find_mmproj_file(tmp_path) is not None
+
+
+def test_ensure_mmproj_refuses_the_default_for_a_non_8b_model(tmp_path, stub_hf):
+    model = _touch(tmp_path / "Gliese-Qwen3.5-4B-Abliterated-Caption.Q4_K_M.gguf")
+    with pytest.raises(MmprojMismatchError) as excinfo:
+        ensure_mmproj(tmp_path, model_path=model)
+    assert "Qwen3-VL 8B encoder" in str(excinfo.value)
+
+
+def test_ensure_mmproj_still_downloads_for_a_matching_model(tmp_path, stub_hf):
+    model = _touch(tmp_path / "Qwen3-VL-8B-Instruct-abliterated-v2.Q4_K_M.gguf")
+    result = ensure_mmproj(tmp_path, model_path=model)
+    assert result.name.endswith(".gguf")
+
+
+def test_default_mmproj_fits(tmp_path):
+    assert default_mmproj_fits(None) is True
+    assert default_mmproj_fits(Path("Qwen3-VL-8B-Instruct-abliterated-v2.Q6_K.gguf")) is True
+    assert default_mmproj_fits(Path("Qwen3-VL-4B-Instruct.Q4_K_M.gguf")) is False
+    assert default_mmproj_fits(Path("Gliese-Qwen3.5-8B-Caption.Q4_K_M.gguf")) is False

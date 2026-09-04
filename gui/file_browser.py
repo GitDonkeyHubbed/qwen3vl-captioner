@@ -12,10 +12,13 @@ snippets. Matches the Figma "VL-CAPTIONER Studio Pro" sidebar design:
   - Drag & Drop support for images and folders
 """
 
+import os
+import sys
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QObject, QRunnable, Qt, QThreadPool, pyqtSignal
 from PyQt6.QtGui import (
     QPixmap, QPainter, QColor, QPen, QDragEnterEvent, QDropEvent, QImageReader,
 )
@@ -25,6 +28,7 @@ from PyQt6.QtWidgets import (
 )
 
 from engine.inference import IMAGE_EXTENSIONS
+from gui.caption_io import read_caption
 from gui.theme import COLORS
 
 
@@ -52,6 +56,86 @@ class _CheckCircleOverlay(QWidget):
         painter.end()
 
 
+def is_importable_image(path: Path) -> bool:
+    """True for a real image file the app should import.
+
+    AppleDouble sidecars (`._IMG_0001.jpg`) carry an image extension, sort
+    first in a folder, and are not decodable — importing one aborted the whole
+    batch on item 1. Dot-prefixed files are metadata, never user images.
+    """
+    if path.name.startswith("."):
+        return False
+    return path.suffix.lower() in IMAGE_EXTENSIONS
+
+
+def scan_directory(dir_path: Path) -> List[Path]:
+    """Return the importable images in a directory, sorted. May raise OSError."""
+    return sorted(f for f in dir_path.iterdir() if f.is_file() and is_importable_image(f))
+
+
+def _stem_key(path: Path) -> str:
+    """Collision key for the `.txt` sidecar a file would claim.
+
+    Case-insensitive on Windows and macOS, where `Photo.jpg` and `photo.png`
+    still map to a single sidecar.
+    """
+    stem = str(path.with_suffix(""))
+    stem = os.path.normcase(stem)
+    if sys.platform == "darwin":
+        stem = stem.lower()
+    return stem
+
+
+class _ThumbnailSignals(QObject):
+    """Signal carrier for _ThumbnailTask (QRunnable is not a QObject)."""
+
+    done = pyqtSignal(str, object)  # str(path), QImage or None
+
+
+class _ThumbnailTask(QRunnable):
+    """Decode one thumbnail off the UI thread.
+
+    Every imported image used to be decoded on the UI thread, and the
+    scaled-decode shortcut only helps formats whose decoder supports it (JPEG),
+    so importing a PNG/WebP dataset froze the window for minutes with no
+    progress.
+    """
+
+    def __init__(self, path: Path, signals: "_ThumbnailSignals"):
+        super().__init__()
+        self._path = path
+        self._signals = signals
+        self.setAutoDelete(True)
+
+    def run(self):
+        image = None
+        try:
+            reader = QImageReader(str(self._path))
+            reader.setAutoTransform(True)  # honour EXIF orientation
+            size = reader.size()
+            if size.isValid():
+                # Ask the decoder for a downscaled read where it supports one:
+                # a 40 MP photo is ~160 MB of pixels just to draw 56px.
+                reader.setScaledSize(
+                    size.scaled(
+                        THUMB_SIZE, THUMB_SIZE, Qt.AspectRatioMode.KeepAspectRatio
+                    )
+                )
+            decoded = reader.read()
+            if not decoded.isNull():
+                if decoded.width() > THUMB_SIZE or decoded.height() > THUMB_SIZE:
+                    # Formats without scaled-decode support come back full size.
+                    decoded = decoded.scaled(
+                        THUMB_SIZE, THUMB_SIZE,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                image = decoded
+        except Exception:
+            image = None
+        self._signals.done.emit(str(self._path), image)
+
+
 class ThumbnailItem(QFrame):
     """A single thumbnail entry in the file list."""
 
@@ -62,7 +146,7 @@ class ThumbnailItem(QFrame):
         self.image_path = image_path
         self._is_selected = False
         self._caption_preview = ""
-        self._status = "idle"  # idle, queued, processing, done
+        self._status = "idle"  # idle, queued, processing, generated, done
 
         self.setProperty("class", "thumbnail-item")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -79,12 +163,9 @@ class ThumbnailItem(QFrame):
 
         self.thumb_label = QLabel(thumb_container)
         self.thumb_label.setFixedSize(THUMB_SIZE, THUMB_SIZE)
-        self.thumb_label.setStyleSheet(
-            f"border-radius: 4px; background: {COLORS['bg_hover']}; "
-            f"border: 1px solid {COLORS['border_light']};"
-        )
+        self.thumb_label.setProperty("class", "thumb-image")
         self.thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._load_thumbnail()
+        self._thumb_loaded = False
 
         # Check overlay (hidden by default)
         self._check_overlay = _CheckCircleOverlay(thumb_container)
@@ -99,39 +180,21 @@ class ThumbnailItem(QFrame):
         text_layout.setSpacing(3)
 
         self.name_label = QLabel(image_path.name)
-        self.name_label.setStyleSheet(
-            f"font-weight: 500; font-size: 12px; color: {COLORS['text_primary']};"
-        )
+        self.name_label.setProperty("class", "thumb-name")
         self.name_label.setWordWrap(False)
         text_layout.addWidget(self.name_label)
 
         self.preview_label = QLabel("")
-        self.preview_label.setStyleSheet(
-            f"font-size: 10px; color: {COLORS['text_dim']};"
-        )
+        self.preview_label.setProperty("class", "thumb-preview")
         self.preview_label.setWordWrap(False)
         text_layout.addWidget(self.preview_label)
 
         layout.addLayout(text_layout, 1)
 
-    def _load_thumbnail(self):
-        """Load and scale the thumbnail image.
-
-        Decode via QImageReader with a target size so the JPEG decoder
-        downscales DURING decode — QPixmap(path) decoded every image at full
-        resolution (a 40MP photo → ~160 MB of pixels) just to draw a 56px
-        thumbnail, freezing the UI thread on large imports.
-        """
-        reader = QImageReader(str(self.image_path))
-        reader.setAutoTransform(True)  # honor EXIF orientation like the viewer
-        size = reader.size()
-        if size.isValid():
-            scaled = size.scaled(
-                THUMB_SIZE, THUMB_SIZE, Qt.AspectRatioMode.KeepAspectRatio
-            )
-            reader.setScaledSize(scaled)
-        image = reader.read()
-        if not image.isNull():
+    def apply_thumbnail(self, image):
+        """Install a decoded thumbnail image (called on the UI thread)."""
+        self._thumb_loaded = True
+        if image is not None and not image.isNull():
             self.thumb_label.setPixmap(QPixmap.fromImage(image))
         else:
             self.thumb_label.setText("?")
@@ -146,45 +209,40 @@ class ThumbnailItem(QFrame):
     def set_caption_preview(self, text: str):
         """Show a preview snippet of the caption."""
         self._caption_preview = text
-        preview = text[:40] + "..." if len(text) > 40 else text
-        self.preview_label.setText(preview)
-        self.preview_label.setStyleSheet(
-            f"font-size: 10px; color: {COLORS['text_dim']};"
+        self._set_preview(text)
+
+    def _set_preview(self, text: str, active: bool = False):
+        """Set the preview line, styled by class so it follows the theme."""
+        self.preview_label.setText(
+            text[:40] + "..." if len(text) > 40 else text
         )
+        self.preview_label.setProperty(
+            "class", "thumb-preview-active" if active else "thumb-preview"
+        )
+        self.preview_label.style().unpolish(self.preview_label)
+        self.preview_label.style().polish(self.preview_label)
 
     def set_status(self, status: str):
-        """Set the status badge (idle, queued, processing, done)."""
+        """Set the status badge (idle, queued, processing, generated, done).
+
+        "generated" and "done" look the same except for the check overlay:
+        the check means "written to disk", so a caption the user has not
+        saved yet must not wear it.
+        """
         self._status = status
 
         # Show/hide check overlay
         self._check_overlay.setVisible(status == "done")
 
         if status == "idle" and self._caption_preview:
-            self.preview_label.setText(
-                self._caption_preview[:40] + ("..." if len(self._caption_preview) > 40 else "")
-            )
-            self.preview_label.setStyleSheet(
-                f"font-size: 10px; color: {COLORS['text_dim']};"
-            )
+            self._set_preview(self._caption_preview)
         elif status == "queued":
-            self.preview_label.setText("Queued")
-            self.preview_label.setStyleSheet(
-                f"font-size: 10px; color: {COLORS['text_dim']};"
-            )
+            self._set_preview("Queued")
         elif status == "processing":
-            self.preview_label.setText("Captioning...")
-            self.preview_label.setStyleSheet(
-                f"font-size: 10px; color: {COLORS['accent_text']};"
-            )
-        elif status == "done":
+            self._set_preview("Captioning...", active=True)
+        elif status in ("done", "generated"):
             if self._caption_preview:
-                self.preview_label.setText(
-                    self._caption_preview[:40]
-                    + ("..." if len(self._caption_preview) > 40 else "")
-                )
-                self.preview_label.setStyleSheet(
-                    f"font-size: 10px; color: {COLORS['text_dim']};"
-                )
+                self._set_preview(self._caption_preview)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -197,14 +255,21 @@ class _DropOverlay(QFrame):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        # The overlay must not eat clicks: a drag that entered the window and
+        # left without dropping used to strand it visible, swallowing every
+        # click on thumbnails and buttons underneath.
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setVisible(False)
+        self._label = QLabel("📂  Drop images here", self)
+        self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.refresh_theme()
+
+    def refresh_theme(self):
         self.setStyleSheet(
             f"background: rgba(59, 130, 246, 0.12); "
             f"border: 2px dashed {COLORS['accent']}; "
             f"border-radius: 8px;"
         )
-        self.setVisible(False)
-        self._label = QLabel("📂  Drop images here", self)
-        self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._label.setStyleSheet(
             f"color: {COLORS['accent_text']}; font-size: 14px; font-weight: 600; "
             f"background: transparent; border: none;"
@@ -225,6 +290,8 @@ class FileBrowserPanel(QFrame):
     image_selected = pyqtSignal(Path)
     images_imported = pyqtSignal(list)  # list[Path]
     stem_collision_detected = pyqtSignal(str)  # warning text for the user
+    import_failed = pyqtSignal(str)            # a path could not be scanned
+    caption_decode_warning = pyqtSignal(str)   # non-UTF-8 sidecars were read lossily
     clear_requested = pyqtSignal()      # emitted when user clicks Clear All
 
     def __init__(self, parent=None):
@@ -296,7 +363,7 @@ class FileBrowserPanel(QFrame):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         self._list_widget = QWidget()
-        self._list_widget.setStyleSheet(f"background: {COLORS['bg_darkest']};")
+        self._list_widget.setProperty("class", "thumbnail-list")
         self._list_layout = QVBoxLayout(self._list_widget)
         self._list_layout.setContentsMargins(0, 4, 0, 4)
         self._list_layout.setSpacing(0)
@@ -307,9 +374,14 @@ class FileBrowserPanel(QFrame):
 
         # ── Action buttons ──
         btn_frame = QFrame()
+        # Scoped to QFrame: an unselectored `background:` here cascades onto
+        # every child, overriding the accent-button rule and rendering the
+        # primary "Open Folder" button white-on-white in light mode.
+        btn_frame.setObjectName("browserActions")
+        self._btn_frame = btn_frame
         btn_frame.setStyleSheet(
-            f"background: {COLORS['surface_translucent']}; "
-            f"border-top: 1px solid {COLORS['border']};"
+            f"QFrame#browserActions {{ background: {COLORS['surface_translucent']}; "
+            f"border-top: 1px solid {COLORS['border']}; }}"
         )
         btn_layout = QVBoxLayout(btn_frame)
         btn_layout.setContentsMargins(12, 10, 12, 10)
@@ -366,6 +438,17 @@ class FileBrowserPanel(QFrame):
         # ── Drop overlay (shown during drag) ──
         self._drop_overlay = _DropOverlay(self)
 
+        # Thumbnail decoding runs off the UI thread. The pool is capped well
+        # below the CPU count: thumbnails are I/O plus a short decode, and
+        # saturating every core just starves the UI thread that has to paint
+        # the results.
+        self._thumb_pool = QThreadPool(self)
+        self._thumb_pool.setMaxThreadCount(
+            max(2, min(4, QThreadPool.globalInstance().maxThreadCount()))
+        )
+        self._thumb_signals = _ThumbnailSignals(self)
+        self._thumb_signals.done.connect(self._on_thumbnail_ready)
+
     # ─── Drag & Drop ──────────────────────────────────────────
 
     def dragEnterEvent(self, event: QDragEnterEvent):
@@ -374,10 +457,15 @@ class FileBrowserPanel(QFrame):
             # Check if any URL is an image or directory
             has_valid = False
             for url in event.mimeData().urls():
+                if not url.isLocalFile():
+                    continue
                 path = Path(url.toLocalFile())
-                if path.is_dir() or (path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS):
-                    has_valid = True
-                    break
+                try:
+                    if path.is_dir() or (path.is_file() and is_importable_image(path)):
+                        has_valid = True
+                        break
+                except OSError:
+                    continue
             if has_valid:
                 event.acceptProposedAction()
                 self._drop_overlay.setGeometry(0, 0, self.width(), self.height())
@@ -397,15 +485,29 @@ class FileBrowserPanel(QFrame):
             return
 
         image_paths: List[Path] = []
+        failed: List[str] = []
         for url in event.mimeData().urls():
+            # Skip non-file URLs. Path(url.toLocalFile()) for, say, an image
+            # dragged out of a browser tab is Path(""), whose is_dir() is True
+            # for the process working directory — so the drop imported every
+            # image in it.
+            if not url.isLocalFile():
+                continue
             path = Path(url.toLocalFile())
-            if path.is_dir():
-                # Import all images from the dropped directory
-                for f in sorted(path.iterdir()):
-                    if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS:
-                        image_paths.append(f)
-            elif path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS:
-                image_paths.append(path)
+            try:
+                if path.is_dir():
+                    image_paths.extend(scan_directory(path))
+                elif path.is_file() and is_importable_image(path):
+                    image_paths.append(path)
+            except OSError as e:
+                # A permission-denied or dropped network share raised out of a
+                # Qt slot, which aborts the whole PyQt6 process.
+                failed.append(f"{path.name}: {e}")
+
+        if failed:
+            self.import_failed.emit(
+                f"{len(failed)} item(s) could not be read: " + "; ".join(failed[:3])
+            )
 
         if image_paths:
             self.add_images(image_paths)
@@ -422,11 +524,20 @@ class FileBrowserPanel(QFrame):
     # ─── Public API ───────────────────────────────────────────
 
     def add_images(self, paths: List[Path]):
-        """Add images to the file browser."""
+        """Add images to the file browser.
+
+        Rows appear immediately with an empty thumbnail; the decodes are
+        queued on a thread pool and filled in as they land.
+        """
         new_paths = []
-        for p in paths:
-            key = str(p)
-            if key not in self._items:
+        decode_warnings: List[str] = []
+        # One relayout for the whole import instead of one per row: adding to
+        # a live layout re-activates it over every existing row.
+        with self._batched_layout():
+            for p in paths:
+                key = str(p)
+                if key in self._items:
+                    continue
                 item = ThumbnailItem(p)
                 item.clicked.connect(self._on_item_clicked)
                 self._list_layout.addWidget(item)
@@ -434,16 +545,25 @@ class FileBrowserPanel(QFrame):
                 new_paths.append(p)
 
                 # Check for existing caption .txt file
-                txt_path = p.with_suffix(".txt")
-                if txt_path.exists():
-                    try:
-                        caption = txt_path.read_text(encoding="utf-8").strip()
-                        item.set_caption_preview(caption)
-                        item.set_status("done")
-                    except Exception:
-                        pass
+                info = read_caption(p)
+                if info.has_caption:
+                    item.set_caption_preview(info.text)
+                    item.set_status("done")
+                if info.decode_error:
+                    decode_warnings.append(p.name)
+
+        for p in new_paths:
+            self._thumb_pool.start(_ThumbnailTask(p, self._thumb_signals))
 
         self.count_label.setText(str(len(self._items)))
+
+        if decode_warnings:
+            example = ", ".join(sorted(decode_warnings)[:3])
+            self.caption_decode_warning.emit(
+                f"{len(decode_warnings)} caption file(s) are not valid UTF-8 "
+                f"and were read with replacement characters (e.g. {example}). "
+                "Saving over one will rewrite it as UTF-8."
+            )
 
         # Warn about stem collisions: photo.jpg and photo.png share ONE
         # photo.txt sidecar, so captioning both silently overwrites one
@@ -453,8 +573,8 @@ class FileBrowserPanel(QFrame):
         stems: dict = {}
         for item in self._items.values():
             p = item.image_path
-            stems.setdefault(str(p.with_suffix("")), []).append(p.name)
-        new_stems = {str(p.with_suffix("")) for p in new_paths}
+            stems.setdefault(_stem_key(p), []).append(p.name)
+        new_stems = {_stem_key(p) for p in new_paths}
         relevant = [
             names for stem, names in stems.items()
             if len(names) > 1 and stem in new_stems
@@ -470,8 +590,34 @@ class FileBrowserPanel(QFrame):
         if new_paths:
             self.images_imported.emit(new_paths)
 
+    @contextmanager
+    def _batched_layout(self):
+        """Suspend layout activation around a bulk change to the item list."""
+        self._list_widget.setUpdatesEnabled(False)
+        try:
+            yield
+        finally:
+            self._list_widget.setUpdatesEnabled(True)
+            self._list_layout.activate()
+
+    def _on_thumbnail_ready(self, path_str: str, image):
+        """Install a decoded thumbnail, if its row still exists."""
+        item = self._items.get(path_str)
+        if item is not None:
+            item.apply_thumbnail(image)
+
+    def refresh_theme(self):
+        """Re-resolve colours set inline, after a runtime theme switch."""
+        self._btn_frame.setStyleSheet(
+            f"QFrame#browserActions {{ background: {COLORS['surface_translucent']}; "
+            f"border-top: 1px solid {COLORS['border']}; }}"
+        )
+        self._drop_overlay.refresh_theme()
+
     def clear_all(self):
         """Remove all items from the file browser."""
+        # Drop queued decodes for rows that are about to disappear.
+        self._thumb_pool.clear()
         for item in self._items.values():
             item.setParent(None)
             item.deleteLater()
@@ -489,17 +635,27 @@ class FileBrowserPanel(QFrame):
         if key in self._items:
             self._items[key].set_status(status)
 
+    def get_item_status(self, path: Path) -> Optional[str]:
+        """Return the status badge of an item, or None if it isn't loaded."""
+        item = self._items.get(str(path))
+        return item._status if item else None
+
     def set_item_caption(self, path: Path, caption: str):
         """Set the caption preview for a specific item."""
         key = str(path)
         if key in self._items:
             self._items[key].set_caption_preview(caption)
 
-    def select_item(self, path: Path):
-        """Programmatically select an item."""
-        self._on_item_clicked(path)
+    def select_item(self, path: Path, emit: bool = True):
+        """Programmatically select an item.
 
-    def _on_item_clicked(self, path: Path):
+        `emit=False` moves the highlight without emitting image_selected —
+        used to restore the previous selection when the user cancels out of
+        an unsaved-caption prompt, which must not re-enter that prompt.
+        """
+        self._on_item_clicked(path, emit=emit)
+
+    def _on_item_clicked(self, path: Path, emit: bool = True):
         """Handle thumbnail click — update selection and emit signal."""
         # Deselect previous
         if self._current_selection:
@@ -513,7 +669,8 @@ class FileBrowserPanel(QFrame):
             self._items[key].set_selected(True)
 
         self._current_selection = path
-        self.image_selected.emit(path)
+        if emit:
+            self.image_selected.emit(path)
 
     def _on_import_clicked(self):
         """Open file dialog to import images (remembers the last-used folder)."""
@@ -539,26 +696,42 @@ class FileBrowserPanel(QFrame):
             self.import_directory(Path(dir_path))
 
     def _on_clear_clicked(self):
-        """Clear all loaded images and reset for a new dataset."""
+        """Ask the window to clear the workspace.
+
+        The panel deliberately does NOT clear itself here: MainWindow may
+        still prompt about an unsaved caption edit and needs the option to
+        abandon the clear, so it calls back into clear_all() once it has
+        decided.
+        """
         if not self._items:
             return
-        self.clear_all()
         self.clear_requested.emit()
 
     def import_directory(self, dir_path: Path):
         """Import all images from a directory."""
-        if not dir_path.is_dir():
+        try:
+            if not dir_path.is_dir():
+                return
+            image_paths = scan_directory(dir_path)
+        except OSError as e:
+            # Unhandled inside a Qt slot, an OSError here (permission denied, a
+            # network share dropping mid-scan) aborts the whole PyQt6 process.
+            self.import_failed.emit(f"Could not read {dir_path}: {e}")
             return
-
-        image_paths = sorted([
-            f for f in dir_path.iterdir()
-            if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS
-        ])
         self.add_images(image_paths)
 
     def _filter_items(self, text: str):
-        """Filter visible thumbnails based on search text."""
+        """Filter visible thumbnails based on search text.
+
+        The show/hide loop runs with the list detached from layout updates:
+        each setVisible() otherwise re-activates the layout across every row,
+        making a single keystroke O(n²) — seconds to tens of seconds on a
+        few-thousand-image list.
+        """
         text_lower = text.lower()
-        for item in self._items.values():
-            visible = text_lower in item.image_path.name.lower() if text_lower else True
-            item.setVisible(visible)
+        with self._batched_layout():
+            for item in self._items.values():
+                visible = (
+                    text_lower in item.image_path.name.lower() if text_lower else True
+                )
+                item.setVisible(visible)

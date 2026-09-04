@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QMessageBox, QSizePolicy, QStackedWidget, QProgressDialog,
 )
 
+from gui.caption_io import caption_path, read_caption, write_caption
 from gui.file_browser import FileBrowserPanel
 from gui.image_viewer import ImageViewer
 from gui.caption_panel import CaptionPanel
@@ -30,7 +31,9 @@ from gui.dataset_panel import DatasetPanel
 from gui.notification_panel import NotificationStore, NotificationPanel
 from gui.theme import COLORS
 from engine.inference import Qwen3VLEngine
-from engine.model_downloader import ensure_mmproj, find_mmproj_file, download_named_mmproj
+from engine.model_downloader import (
+    default_mmproj_fits, download_named_mmproj, ensure_mmproj, find_mmproj_file,
+)
 
 
 # --- Worker for background model loading ---
@@ -183,7 +186,8 @@ class MainWindow(QMainWindow):
     def __init__(self, model_dir: Optional[Path] = None):
         super().__init__()
         from gui.version import APP_VERSION
-        self.setWindowTitle(f"QWEN 3 VL ABL Captioner V{APP_VERSION} — GGUF Engine")
+        self._app_title = f"QWEN 3 VL ABL Captioner V{APP_VERSION}"
+        self.setWindowTitle(self._app_title)
         self.setMinimumSize(1000, 650)
 
         # Screen-aware sizing: use 85% of available screen, clamped to minimums
@@ -202,7 +206,18 @@ class MainWindow(QMainWindow):
         self._engine = Qwen3VLEngine()
         self._model_dir = model_dir
         self._current_image: Optional[Path] = None
+        # Caption cache. `_captions` holds the text; `_caption_mtimes` records
+        # the sidecar mtime each cached entry was read from or written to, so a
+        # file edited outside the app is re-read instead of served stale; and
+        # `_unsaved` marks generated captions the user has NOT accepted, which
+        # must never be pushed to disk by Export.
         self._captions: Dict[str, str] = {}  # str(path) -> caption
+        self._caption_mtimes: Dict[str, Optional[float]] = {}
+        self._unsaved: set[str] = set()
+        # Partial text of the in-flight generation, so switching away from and
+        # back to the generating image restores the stream instead of leaving
+        # a stale caption that later tokens append to.
+        self._stream_buffer = ""
 
         # Thread references — MUST be stored as instance attrs to prevent GC
         self._model_load_thread: Optional[QThread] = None
@@ -214,6 +229,9 @@ class MainWindow(QMainWindow):
         self._batch_queue: List[Path] = []
         self._batch_index = 0
         self._batch_active = False  # True from batch start until completion/abort
+        self._batch_total = 0
+        self._batch_saved = 0
+        self._batch_failed = 0
         self._batch_current_path: Optional[Path] = None  # item pinned for the deferred timer
         self._download_thread: Optional[QThread] = None
         self._download_worker = None  # ModelDownloadWorker (lazy import)
@@ -285,9 +303,11 @@ class MainWindow(QMainWindow):
 
         brand_title = QLabel("QWEN 3 VL ABL Captioner")
         brand_title.setProperty("class", "brand-title")
+        # No inline `color:` — the brand-title rule supplies it, so the title
+        # follows a runtime theme switch instead of staying zinc-100 on a
+        # light nav bar (1.15:1).
         brand_title.setStyleSheet(
-            f"color: {COLORS['text_primary']}; font-size: 13px; font-weight: 700; "
-            f"letter-spacing: 0.5px; padding: 0; margin: 0; background: transparent;"
+            "letter-spacing: 0.5px; padding: 0; margin: 0; background: transparent;"
         )
         brand_block.addWidget(brand_title)
 
@@ -616,6 +636,12 @@ class MainWindow(QMainWindow):
         self._file_browser.stem_collision_detected.connect(
             lambda msg: self._notify(msg, "warning")
         )
+        self._file_browser.caption_decode_warning.connect(
+            lambda msg: self._notify(msg, "warning")
+        )
+        self._file_browser.import_failed.connect(
+            lambda msg: self._notify(msg, "error")
+        )
         self._file_browser.clear_requested.connect(self._on_clear_all)
 
         # Caption panel
@@ -676,47 +702,161 @@ class MainWindow(QMainWindow):
     def dragEnterEvent(self, event):
         self._file_browser.dragEnterEvent(event)
 
+    def dragLeaveEvent(self, event):
+        # Without this the "Drop images here" overlay stayed visible after a
+        # drag left the window without dropping.
+        self._file_browser.dragLeaveEvent(event)
+
     def dropEvent(self, event):
         self._file_browser.dropEvent(event)
 
     # --- Image Selection ---
 
+    # --- Caption cache ---
+
+    def _cache_caption(self, path: Path, caption: str, *, saved: bool,
+                       mtime: Optional[float] = None):
+        """Record a caption in the cache.
+
+        `saved=False` marks it as generated-but-not-accepted, which keeps
+        Export from writing it over a good file on disk.
+        """
+        key = str(path)
+        self._captions[key] = caption
+        if saved:
+            self._unsaved.discard(key)
+            self._caption_mtimes[key] = (
+                mtime if mtime is not None else read_caption(path).mtime
+            )
+        else:
+            self._unsaved.add(key)
+            self._caption_mtimes[key] = None
+
+    def _load_caption(self, path: Path) -> str:
+        """Return the caption to show for *path*, re-reading a changed sidecar.
+
+        The cache used to be write-once: once an entry existed the `.txt` was
+        never read again, so an edit made outside the app was invisible and
+        the panel could show text that no longer matched the file.
+        """
+        key = str(path)
+        if key in self._unsaved:
+            # Not on disk yet — the cache is the only copy.
+            return self._captions.get(key, "")
+
+        info = read_caption(path)
+        if key in self._captions and info.mtime == self._caption_mtimes.get(key):
+            return self._captions[key]
+
+        if info.read_error:
+            self._notify(
+                f"Could not read {caption_path(path).name}: {info.read_error}",
+                "error",
+            )
+            self._captions.pop(key, None)
+            self._caption_mtimes.pop(key, None)
+            return ""
+
+        if not info.exists:
+            self._captions.pop(key, None)
+            self._caption_mtimes.pop(key, None)
+            return ""
+
+        if info.decode_error:
+            self._notify(
+                f"{caption_path(path).name} is not valid UTF-8 — shown with "
+                "replacement characters; saving will rewrite it as UTF-8.",
+                "warning",
+            )
+        self._captions[key] = info.text
+        self._caption_mtimes[key] = info.mtime
+        return info.text
+
+    def _confirm_discard_caption_edit(self) -> bool:
+        """Offer to save an unsaved hand-edit. False means "abandon the action"."""
+        if not self._caption_panel.is_dirty():
+            return True
+        if not self._current_image:
+            self._caption_panel.mark_clean()
+            return True
+
+        answer = QMessageBox.question(
+            self, "Unsaved Caption",
+            f"The caption for {self._current_image.name} has unsaved edits.\n\n"
+            "Save it before continuing?",
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Save,
+        )
+        if answer == QMessageBox.StandardButton.Cancel:
+            return False
+        if answer == QMessageBox.StandardButton.Save:
+            # A failed write must not be treated as "saved" — keep the edit
+            # and let the user deal with the error.
+            if not self._save_current_caption():
+                return False
+            return True
+        self._caption_panel.mark_clean()
+        return True
+
+    # --- Image Selection ---
+
     def _on_image_selected(self, path: Path):
         """Handle image selection from the file browser."""
+        if (
+            self._current_image is not None
+            and path != self._current_image
+            and not self._batch_active
+            and not self._confirm_discard_caption_edit()
+        ):
+            # Put the highlight back without re-entering this handler.
+            self._file_browser.select_item(self._current_image, emit=False)
+            return
+
         self._current_image = path
         self._image_viewer.set_image(path)
 
-        # Show existing caption if available
-        key = str(path)
-        if key in self._captions:
-            self._caption_panel.set_caption(self._captions[key])
+        # A generation in flight on this very image: restore the partial
+        # stream, not the (older) cached caption the tokens would append to.
+        if (
+            self._is_generating
+            and self._caption_worker is not None
+            and self._caption_worker.image_path == path
+        ):
+            self._caption_panel.set_caption(self._stream_buffer)
+            return
+
+        caption = self._load_caption(path)
+        if caption:
+            self._caption_panel.set_caption(caption)
         else:
-            # Check for existing .txt sidecar
-            txt_path = path.with_suffix(".txt")
-            if txt_path.exists():
-                try:
-                    caption = txt_path.read_text(encoding="utf-8").strip()
-                    self._captions[key] = caption
-                    self._caption_panel.set_caption(caption)
-                except Exception:
-                    self._caption_panel.clear_caption()
-            else:
-                self._caption_panel.clear_caption()
+            self._caption_panel.clear_caption()
 
     def _on_clear_all(self):
         """Reset the workspace — clear all images, captions, and viewer state."""
+        if not self._confirm_discard_caption_edit():
+            return
+
         # Cancel an in-flight generation first, or an orphan worker keeps
         # streaming tokens into the freshly cleared panel.
         if self._caption_worker and self._is_generating:
             self._caption_worker.cancel()
 
-        # Cancel any in-progress batch
-        self._batch_queue.clear()
-        self._batch_index = 0
-        self._batch_active = False
+        # Cancel any in-progress batch, including its progress UI — leaving
+        # these set stranded the Batch button disabled and labelled
+        # "Processing N/M...".
+        self._reset_batch_state()
+
+        # The panel does not clear itself on the Clear All click so this
+        # handler can still abandon the action above.
+        self._file_browser.clear_all()
 
         # Clear captions cache
         self._captions.clear()
+        self._caption_mtimes.clear()
+        self._unsaved.clear()
+        self._stream_buffer = ""
         self._current_image = None
 
         # Reset viewer and caption panel
@@ -728,6 +868,32 @@ class MainWindow(QMainWindow):
         self._queue_label.setText("")
 
         self._notify("Workspace cleared", "info")
+
+    def _reset_batch_state(self):
+        """Clear the batch queue and every piece of UI that reflects it."""
+        self._batch_queue.clear()
+        self._batch_index = 0
+        self._batch_active = False
+        self._batch_current_path = None
+        self._progress_bar.setVisible(False)
+        self._settings_panel.set_batch_progress(0, 0)
+
+    def _reset_batch_statuses(self):
+        """Return queued/processing thumbnails to a truthful state.
+
+        An aborted batch used to leave the in-flight thumbnail stuck at
+        "Captioning..." and every remaining one at "Queued" indefinitely.
+        """
+        for path in self._file_browser.get_all_paths():
+            status = self._file_browser.get_item_status(path)
+            if status in ("queued", "processing"):
+                key = str(path)
+                if key in self._unsaved:
+                    self._file_browser.set_item_status(path, "generated")
+                elif read_caption(path).has_caption:
+                    self._file_browser.set_item_status(path, "done")
+                else:
+                    self._file_browser.set_item_status(path, "idle")
 
     # --- Model Loading ---
 
@@ -752,6 +918,11 @@ class MainWindow(QMainWindow):
         else:
             if not isinstance(self._engine, Qwen3VLEngine):
                 self._engine = Qwen3VLEngine()
+        # The title used to hard-code "GGUF Engine" even while an MLX model
+        # was loaded. Name the engine actually in use, or nothing at all.
+        self.setWindowTitle(
+            f"{self._app_title} — {'MLX' if backend == 'mlx' else 'GGUF'} Engine"
+        )
 
     def _load_model(self):
         """Load the selected model, guarding against re-entrant loads.
@@ -831,10 +1002,12 @@ class MainWindow(QMainWindow):
             candidate = model_dir / expected_mmproj
             mmproj_path = candidate if candidate.is_file() else None
         else:
-            mmproj_path = find_mmproj_file(model_dir)
+            mmproj_path = find_mmproj_file(model_dir, model_path)
 
         if mmproj_path is None:
-            mmproj_path = self._resolve_missing_mmproj(model_dir, info, expected_mmproj)
+            mmproj_path = self._resolve_missing_mmproj(
+                model_dir, info, expected_mmproj, model_path
+            )
             if mmproj_path is None:
                 return  # cancelled or download failed (status already set)
 
@@ -915,7 +1088,8 @@ class MainWindow(QMainWindow):
             raise RuntimeError(state["error"])
         return state["result"]
 
-    def _resolve_missing_mmproj(self, model_dir, info, expected_mmproj):
+    def _resolve_missing_mmproj(self, model_dir, info, expected_mmproj,
+                                model_path=None):
         """Obtain a vision encoder when the one matching the model isn't on disk.
 
         For a known registry model, download/browse for ITS specific encoder —
@@ -927,7 +1101,7 @@ class MainWindow(QMainWindow):
             mismatch_note = (
                 "\n\nA different model's vision encoder is present, but pairing "
                 "mismatched encoders crashes the engine — this model needs its own."
-                if find_mmproj_file(model_dir) is not None else ""
+                if find_mmproj_file(model_dir) is not None else ""  # any encoder at all
             )
             answer = QMessageBox.question(
                 self, "Vision Encoder Needed",
@@ -971,7 +1145,29 @@ class MainWindow(QMainWindow):
             self._settings_panel.set_model_status("Load cancelled")
             return None
 
-        # Local/unknown model: legacy default-download or browse flow.
+        # Local/unknown model: legacy default-download or browse flow. The
+        # built-in download only ships the Qwen3-VL 8B encoder, so it is
+        # offered only when it can actually pair with this model — handing it
+        # to, say, a 4B model crashes llama.cpp natively on the first caption.
+        if not default_mmproj_fits(model_path):
+            file_path, _ = QFileDialog.getOpenFileName(
+                self, "Select the mmproj (Vision Encoder) for this model",
+                str(model_dir), "GGUF models (*.gguf)"
+            )
+            if not file_path:
+                QMessageBox.warning(
+                    self, "Vision Encoder Needed",
+                    f"No vision encoder matching {Path(model_path).name} was "
+                    "found next to it.\n\n"
+                    "The built-in download only provides the Qwen3-VL 8B "
+                    "encoder, which this model cannot use — download the "
+                    "mmproj published alongside your model and put it in the "
+                    "same folder.",
+                )
+                self._settings_panel.set_model_status("Error: mmproj not found")
+                return None
+            return Path(file_path)
+
         answer = QMessageBox.question(
             self, "Vision Encoder Needed",
             "No mmproj (vision encoder) .gguf found next to this model.\n\n"
@@ -987,7 +1183,9 @@ class MainWindow(QMainWindow):
             try:
                 return self._download_mmproj_blocking(
                     "Downloading default vision encoder…",
-                    lambda cb: ensure_mmproj(model_dir, progress_callback=cb),
+                    lambda cb: ensure_mmproj(
+                        model_dir, progress_callback=cb, model_path=model_path
+                    ),
                 )
             except Exception as e:
                 QMessageBox.critical(
@@ -1085,6 +1283,7 @@ class MainWindow(QMainWindow):
         self._engine.unload()
 
         # Reset UI state
+        self.setWindowTitle(self._app_title)
         self._settings_panel.set_model_status("Model unloaded", is_loaded=False)
         self._set_connection_status("ready", "Model unloaded")
         self._settings_panel.model_combo.setEnabled(True)
@@ -1117,6 +1316,17 @@ class MainWindow(QMainWindow):
         if app_instance:
             app_instance.setStyleSheet(get_stylesheet(mode))
             apply_placeholder_palette(app_instance)
+
+        # Widgets that paint or set colours themselves cannot be reached by the
+        # app stylesheet — tell them to re-resolve against the new palette.
+        for widget in (
+            self._settings_panel, self._dataset_panel, self._file_browser,
+        ):
+            refresh = getattr(widget, "refresh_theme", None)
+            if refresh is not None:
+                refresh()
+        if self._notification_panel is not None:
+            self._notification_panel.refresh_theme()
 
     # --- Model Downloading ---
 
@@ -1199,6 +1409,16 @@ class MainWindow(QMainWindow):
         """Start a background download with progress UI (model or mmproj)."""
         from gui.model_download_manager import ModelDownloadWorker
         from gui.config import get_hf_token
+
+        # Re-entrancy guard: starting a second download while one is running
+        # would leave the first worker orphaned and both writing the same
+        # .part file.
+        if self._download_thread is not None and self._download_thread.isRunning():
+            self._notify(
+                f"A download is already running — {display_name} was not started.",
+                "warning",
+            )
+            return
 
         self._progress_bar.setRange(0, 0)  # indeterminate until fractions arrive
         self._progress_bar.setVisible(True)
@@ -1443,6 +1663,7 @@ class MainWindow(QMainWindow):
         # the fit hints reflect what's actually usable rather than the full
         # machine RAM.
         vram_gb = None
+        memory_is_shared = False
         if self._nvml_handle is not None and self._pynvml is not None:
             try:
                 mem_info = self._pynvml.nvmlDeviceGetMemoryInfo(self._nvml_handle)
@@ -1453,10 +1674,13 @@ class MainWindow(QMainWindow):
             try:
                 import psutil
                 vram_gb = psutil.virtual_memory().available / (1024 ** 3)
+                memory_is_shared = True
             except Exception:
                 pass
 
-        self._settings_panel.populate_models(local_paths, downloaded, vram_gb)
+        self._settings_panel.populate_models(
+            local_paths, downloaded, vram_gb, memory_is_shared
+        )
 
     def _browse_for_model(self):
         """Let the user pick any GGUF model file from disk (issue #7)."""
@@ -1512,7 +1736,15 @@ class MainWindow(QMainWindow):
                 if candidate.is_file():
                     return candidate
 
-        # Fallback: any non-mmproj GGUF file
+        # Fallback: any non-mmproj GGUF file — ONLY for a selection with no
+        # registry entry. For a registry model this fallback silently loaded a
+        # different GGUF off disk, then downloaded that entry's vision encoder
+        # and paired it with the foreign model: exactly the mismatched-mmproj
+        # crash the surrounding code exists to prevent. Returning None instead
+        # lets the "isn't downloaded yet — download it now?" prompt fire.
+        if model_info is not None:
+            return None
+
         for dir_path in search_dirs:
             if not dir_path.is_dir():
                 continue
@@ -1544,7 +1776,12 @@ class MainWindow(QMainWindow):
         if self._is_generating:
             return
 
+        # A regenerate wipes the caption box — offer to keep a hand-edit first.
+        if not self._batch_active and not self._confirm_discard_caption_edit():
+            return
+
         self._is_generating = True
+        self._stream_buffer = ""
         self._caption_panel.clear_caption()
         self._caption_panel.set_generating(True)
         self._settings_panel.set_generating(True)
@@ -1574,13 +1811,27 @@ class MainWindow(QMainWindow):
         self._caption_worker.moveToThread(self._generation_thread)
 
         self._generation_thread.started.connect(self._caption_worker.run)
-        self._caption_worker.new_token.connect(self._caption_panel.append_token)
+        self._caption_worker.new_token.connect(self._on_new_token)
         self._caption_worker.finished.connect(self._on_caption_finished)
         self._caption_worker.error.connect(self._on_caption_error)
         self._caption_worker.finished.connect(self._generation_thread.quit)
         self._caption_worker.error.connect(self._generation_thread.quit)
 
         self._generation_thread.start()
+
+    def _on_new_token(self, token: str):
+        """Append a streamed token, but only to its own image's caption box.
+
+        Tokens used to be wired straight to the panel, so selecting a
+        different image mid-generation kept appending the running caption on
+        top of the newly selected image's text — and Save/Ctrl+S then wrote
+        that foreign partial text into the wrong .txt and cache.
+        """
+        self._stream_buffer += token
+        worker = self._caption_worker
+        if worker is None or worker.image_path != self._current_image:
+            return
+        self._caption_panel.append_token(token)
 
     def _cancel_generation(self):
         """Cancel the current caption generation or batch process."""
@@ -1595,25 +1846,26 @@ class MainWindow(QMainWindow):
         # the LAST item is mid-generation, so also check the batch flag)
         if self._batch_queue or self._batch_active:
             remaining = len(self._batch_queue)
-            self._batch_queue.clear()
-            self._batch_index = 0
-            self._batch_active = False
-            self._progress_bar.setVisible(False)
+            self._reset_batch_state()
             self._queue_label.setText(f"Batch cancelled ({remaining} remaining skipped)")
             self._notify(f"Batch cancelled — {remaining} images skipped", "info")
             cancelled_something = True
 
-        # Cancel active download
-        if self._download_worker and self._download_thread and self._download_thread.isRunning():
-            self._download_worker.cancel()
-            self._notify("Cancelling download...", "info")
-            cancelled_something = True
-
         if cancelled_something:
+            self._reset_batch_statuses()
             self._caption_panel.show_feedback("Cancelled", is_success=False)
             self._set_connection_status("ready", "Cancelled")
-        else:
-            self._caption_panel.show_feedback("Nothing to cancel", is_success=False)
+            return
+
+        # Nothing was generating. If a download is running, route to
+        # _cancel_download, which CONFIRMS first — this path used to cancel it
+        # outright alongside the batch, silently deleting a multi-GB partial
+        # the user never meant to touch.
+        if self._download_thread is not None and self._download_thread.isRunning():
+            self._cancel_download()
+            return
+
+        self._caption_panel.show_feedback("Nothing to cancel", is_success=False)
 
     def _on_caption_finished(self, caption: str):
         """Handle completed caption generation.
@@ -1633,20 +1885,30 @@ class MainWindow(QMainWindow):
         self._settings_panel.set_generating(False)
         self._image_viewer.set_processing(False)
 
-        # Cache the caption under the image it belongs to
+        # Cache the caption under the image it belongs to. It is NOT saved
+        # yet — the status stays "generated" (no green check) until a write
+        # actually succeeds, and Export must not push it over a good file.
         if worker_path:
-            self._captions[str(worker_path)] = caption
+            self._cache_caption(worker_path, caption, saved=False)
             self._file_browser.set_item_caption(worker_path, caption)
-            self._file_browser.set_item_status(worker_path, "done")
+            self._file_browser.set_item_status(worker_path, "generated")
 
-        # If the selection moved mid-generation, the panel holds the streamed
-        # text of ANOTHER image — restore the selected image's own caption.
         if worker_path != self._current_image and self._current_image:
-            own = self._captions.get(str(self._current_image))
+            # The selection moved mid-generation: the panel holds the streamed
+            # text of ANOTHER image — restore the selected image's own caption.
+            own = self._load_caption(self._current_image)
             if own:
                 self._caption_panel.set_caption(own)
             else:
                 self._caption_panel.clear_caption()
+        elif worker_path:
+            # Still on the generated image: replace the raw streamed text with
+            # the processed caption (clean_caption plus prefix/suffix) that was
+            # cached and will be saved, so a later Save can't silently strip
+            # the preset's prefix/suffix back off.
+            self._caption_panel.set_caption(caption)
+
+        self._stream_buffer = ""
 
         # Update inference time
         inf_time = self._engine.last_inference_time
@@ -1661,7 +1923,10 @@ class MainWindow(QMainWindow):
         # caption is in flight. Using the flag ensures the last item is saved
         # silently like the rest and that _on_batch_complete still runs.
         if self._batch_active:
-            self._auto_save_caption(worker_path, caption)
+            if self._auto_save_caption(worker_path, caption):
+                self._batch_saved += 1
+            else:
+                self._batch_failed += 1
             self._process_next_batch_item()
         elif self._settings_panel.get_auto_save():
             self._auto_save_caption(worker_path, caption)
@@ -1687,18 +1952,27 @@ class MainWindow(QMainWindow):
         if answer == QMessageBox.StandardButton.Yes:
             self._auto_save_caption(image_path, caption)
 
-    def _auto_save_caption(self, image_path: Path, caption: str):
-        """Silently save a caption as a .txt sidecar file."""
+    def _auto_save_caption(self, image_path: Path, caption: str) -> bool:
+        """Silently save a caption as a .txt sidecar file.
+
+        Returns True only when the bytes actually reached disk. A failed write
+        used to be swallowed: the item was still marked "done", nothing
+        reached the notification store, and the batch dialog reported every
+        caption as saved.
+        """
         if not image_path or not caption:
-            return
-        txt_path = image_path.with_suffix(".txt")
+            return False
+        txt_path = caption_path(image_path)
         try:
-            txt_path.write_text(caption, encoding="utf-8")
-            self._captions[str(image_path)] = caption
-            self._file_browser.set_item_status(image_path, "done")
-            self._caption_panel.show_feedback(f"Saved: {txt_path.name}")
+            mtime = write_caption(image_path, caption)
         except Exception as e:
             self._caption_panel.show_feedback(f"Save error: {e}", is_success=False)
+            self._notify(f"Save failed for {image_path.name}: {e}", "error")
+            return False
+        self._cache_caption(image_path, caption, saved=True, mtime=mtime)
+        self._file_browser.set_item_status(image_path, "done")
+        self._caption_panel.show_feedback(f"Saved: {txt_path.name}")
+        return True
 
     def _on_caption_error(self, error: str):
         """Handle a caption generation error (or a user cancellation)."""
@@ -1721,13 +1995,14 @@ class MainWindow(QMainWindow):
         # _on_batch_complete; the error/cancel path must do it here so the
         # progress bar and queue label don't linger in a misleading state.
         if self._batch_active or self._batch_queue:
-            self._batch_queue.clear()
-            self._batch_index = 0
-            self._batch_active = False
-            self._progress_bar.setVisible(False)
+            self._reset_batch_state()
             if not was_cancel:
                 self._queue_label.setText("Batch stopped (error)")
-            self._settings_panel.set_batch_progress(0, 0)
+            self._reset_batch_statuses()
+        elif not self._is_generating:
+            # A single generation that failed leaves its own thumbnail at
+            # "Captioning..." otherwise.
+            self._reset_batch_statuses()
 
     # --- Status helpers ---
 
@@ -1750,12 +2025,17 @@ class MainWindow(QMainWindow):
     def _on_settings_changed(self):
         """Handle settings panel changes — update caption panel format badge."""
         preset_id = self._settings_panel.get_active_preset()
-        if preset_id:
-            from gui.settings_panel import TARGET_PRESETS
-            for preset in TARGET_PRESETS:
-                if preset["id"] == preset_id:
-                    self._caption_panel.set_format_label(preset["name"])
-                    break
+        if not preset_id:
+            # No preset is active — say so instead of leaving the last
+            # preset's name (or the startup default "SDXL") on the badge while
+            # a completely different prompt is being sent.
+            self._caption_panel.set_format_label("Custom")
+            return
+        from gui.settings_panel import TARGET_PRESETS
+        for preset in TARGET_PRESETS:
+            if preset["id"] == preset_id:
+                self._caption_panel.set_format_label(preset["name"])
+                break
 
     # --- Batch Captioning ---
 
@@ -1773,15 +2053,61 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No Images", "Please import images first.")
             return
 
+        # Batch re-captions everything and overwrites every .txt sidecar,
+        # hand-edited ones included. Ask before destroying existing work.
+        already = [p for p in all_paths if read_caption(p).has_caption]
+        if already:
+            box = QMessageBox(self)
+            box.setWindowTitle("Existing Captions Found")
+            box.setIcon(QMessageBox.Icon.Question)
+            box.setText(
+                f"{len(already)} of {len(all_paths)} images already have a "
+                ".txt caption."
+            )
+            box.setInformativeText(
+                "Re-captioning them overwrites those files, including any "
+                "captions you edited by hand."
+            )
+            skip_btn = box.addButton(
+                f"Skip {len(already)} already-captioned",
+                QMessageBox.ButtonRole.AcceptRole,
+            )
+            overwrite_btn = box.addButton(
+                "Overwrite all", QMessageBox.ButtonRole.DestructiveRole
+            )
+            box.addButton(QMessageBox.StandardButton.Cancel)
+            box.setDefaultButton(skip_btn)
+            box.exec()
+
+            clicked = box.clickedButton()
+            if clicked is overwrite_btn:
+                queue = list(all_paths)
+            elif clicked is skip_btn:
+                done = {str(p) for p in already}
+                queue = [p for p in all_paths if str(p) not in done]
+                if not queue:
+                    QMessageBox.information(
+                        self, "Nothing to Caption",
+                        "Every imported image already has a caption.",
+                    )
+                    return
+            else:
+                return
+        else:
+            queue = list(all_paths)
+
         self._batch_current_path: Optional[Path] = None
-        self._batch_queue = list(all_paths)
+        self._batch_queue = queue
         self._batch_index = 0
         self._batch_active = True
+        self._batch_saved = 0
+        self._batch_failed = 0
 
         # Mark all as queued
         for p in self._batch_queue:
             self._file_browser.set_item_status(p, "queued")
 
+        self._batch_total = len(self._batch_queue)
         self._progress_bar.setRange(0, len(self._batch_queue))
         self._progress_bar.setValue(0)
         self._progress_bar.setVisible(True)
@@ -1837,48 +2163,89 @@ class MainWindow(QMainWindow):
 
     def _on_batch_complete(self):
         """Handle batch completion."""
-        self._batch_active = False
         total = self._batch_index
-        self._batch_index = 0
-        self._progress_bar.setVisible(False)
-        self._queue_label.setText(f"Batch complete: {total} images captioned")
-        # (0, 0) resets the batch button — only now, with no item in flight
-        self._settings_panel.set_batch_progress(0, 0)
-        self._caption_panel.show_feedback(f"Batch complete! {total} images captioned.")
-        self._notify(f"Batch complete: {total} images captioned", "success")
+        saved = self._batch_saved
+        failed = self._batch_failed
+        self._reset_batch_state()
+
+        summary = f"{saved} saved"
+        if failed:
+            summary += f", {failed} failed"
+        self._queue_label.setText(f"Batch complete: {total} captioned ({summary})")
+        self._caption_panel.show_feedback(
+            f"Batch complete! {summary}.", is_success=not failed
+        )
+        self._notify(
+            f"Batch complete: {total} captioned — {summary}",
+            "error" if failed else "success",
+        )
 
         # Every caption was already written as a .txt sidecar during the run —
         # a "would you also like to export .txt files?" question here was a
-        # confusing no-op, so just confirm what happened.
-        QMessageBox.information(
-            self, "Batch Complete",
-            f"Batch complete — {total} captions saved as .txt files "
-            "next to the images.",
-        )
+        # confusing no-op, so just confirm what happened. Report the failures
+        # too: claiming all captions were saved when a write failed sent users
+        # away believing work was on disk that never made it.
+        if failed:
+            QMessageBox.warning(
+                self, "Batch Finished With Errors",
+                f"Batch finished — {saved} caption(s) saved as .txt files, "
+                f"but {failed} could not be written.\n\n"
+                "See the notification bell for the individual errors; those "
+                "captions are still in the app and can be saved from the "
+                "caption box.",
+            )
+        else:
+            QMessageBox.information(
+                self, "Batch Complete",
+                f"Batch complete — {saved} captions saved as .txt files "
+                "next to the images.",
+            )
 
     # --- Save / Export ---
 
-    def _save_current_caption(self):
-        """Save the current caption as a .txt sidecar file."""
+    def _save_current_caption(self) -> bool:
+        """Save the current caption as a .txt sidecar file. True on success."""
         if not self._current_image:
-            return
+            return False
+
+        # Refuse while a caption is streaming: the box is mid-generation and
+        # may not even hold this image's text yet.
+        if self._is_generating:
+            self._caption_panel.show_feedback(
+                "Still generating — save when it finishes", is_success=False
+            )
+            return False
 
         caption = self._caption_panel.get_caption()
         if not caption:
             self._caption_panel.show_feedback("Nothing to save", is_success=False)
-            return
+            return False
 
-        txt_path = self._current_image.with_suffix(".txt")
+        txt_path = caption_path(self._current_image)
         try:
-            txt_path.write_text(caption, encoding="utf-8")
-            self._captions[str(self._current_image)] = caption
-            self._caption_panel.show_feedback(f"Saved: {txt_path.name}")
-            self._file_browser.set_item_status(self._current_image, "done")
+            mtime = write_caption(self._current_image, caption)
         except Exception as e:
             self._caption_panel.show_feedback(f"Save error: {e}", is_success=False)
+            self._notify(
+                f"Save failed for {self._current_image.name}: {e}", "error"
+            )
+            return False
+
+        self._cache_caption(self._current_image, caption, saved=True, mtime=mtime)
+        self._caption_panel.mark_clean()
+        self._caption_panel.show_feedback(f"Saved: {txt_path.name}")
+        self._file_browser.set_item_caption(self._current_image, caption)
+        self._file_browser.set_item_status(self._current_image, "done")
+        return True
 
     def _export_all_captions(self):
-        """Export all cached captions as .txt sidecar files."""
+        """Export cached captions as .txt sidecar files.
+
+        The cache is compared against disk first. Blindly rewriting every
+        sidecar from memory destroyed good on-disk captions — including
+        replacing one with a generated caption the user had explicitly
+        declined to save.
+        """
         if not self._captions:
             QMessageBox.information(
                 self, "Nothing to Export",
@@ -1886,20 +2253,75 @@ class MainWindow(QMainWindow):
             )
             return
 
+        new_files: List[tuple] = []
+        conflicts: List[tuple] = []
+        unchanged = 0
+        for path_str, caption in self._captions.items():
+            img_path = Path(path_str)
+            info = read_caption(img_path)
+            if not info.has_caption:
+                new_files.append((img_path, caption))
+            elif info.text == caption.strip():
+                unchanged += 1
+            else:
+                conflicts.append((img_path, caption))
+
+        targets = list(new_files)
+        if conflicts:
+            box = QMessageBox(self)
+            box.setWindowTitle("Existing Caption Files Differ")
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setText(
+                f"{len(conflicts)} image(s) already have a .txt caption whose "
+                "text differs from the one held in the app."
+            )
+            box.setInformativeText(
+                f"{len(new_files)} caption(s) have no file yet and can be "
+                "written safely."
+            )
+            write_new_btn = box.addButton(
+                f"Write {len(new_files)} new only",
+                QMessageBox.ButtonRole.AcceptRole,
+            )
+            overwrite_btn = box.addButton(
+                f"Overwrite {len(conflicts)} too",
+                QMessageBox.ButtonRole.DestructiveRole,
+            )
+            box.addButton(QMessageBox.StandardButton.Cancel)
+            box.setDefaultButton(write_new_btn)
+            box.exec()
+
+            clicked = box.clickedButton()
+            if clicked is overwrite_btn:
+                targets += conflicts
+            elif clicked is not write_new_btn:
+                return
+
+        if not targets:
+            QMessageBox.information(
+                self, "Nothing to Export",
+                f"Every caption is already on disk ({unchanged} up to date).",
+            )
+            return
+
         saved = 0
         errors = 0
-        for path_str, caption in self._captions.items():
+        for img_path, caption in targets:
             try:
-                img_path = Path(path_str)
-                txt_path = img_path.with_suffix(".txt")
-                txt_path.write_text(caption, encoding="utf-8")
-                saved += 1
-            except Exception:
+                mtime = write_caption(img_path, caption)
+            except Exception as e:
                 errors += 1
+                self._notify(f"Export failed for {img_path.name}: {e}", "error")
+                continue
+            self._cache_caption(img_path, caption, saved=True, mtime=mtime)
+            self._file_browser.set_item_status(img_path, "done")
+            saved += 1
 
         msg = f"Exported {saved} caption files."
+        if unchanged:
+            msg += f"\n{unchanged} already matched the file on disk."
         if errors:
-            msg += f"\n{errors} error(s) occurred."
+            msg += f"\n{errors} error(s) occurred — see the notification bell."
 
         QMessageBox.information(self, "Export Complete", msg)
 
@@ -2017,8 +2439,37 @@ class MainWindow(QMainWindow):
 
     # --- Cleanup ---
 
+    def _unsaved_summary(self) -> List[str]:
+        """Names of images holding a caption that is not on disk."""
+        names = [Path(k).name for k in sorted(self._unsaved)]
+        if self._caption_panel.is_dirty() and self._current_image:
+            name = self._current_image.name
+            if name not in names:
+                names.insert(0, name)
+        return names
+
     def closeEvent(self, event):
         """Clean up all threads on close."""
+        # Unsaved captions used to be discarded without a word: the close was
+        # accepted unconditionally, and a caption whose save prompt was
+        # declined still showed the green "done" check.
+        pending = self._unsaved_summary()
+        if pending:
+            shown = ", ".join(pending[:5])
+            if len(pending) > 5:
+                shown += f", and {len(pending) - 5} more"
+            answer = QMessageBox.question(
+                self, "Unsaved Captions",
+                f"{len(pending)} caption(s) have not been saved to disk "
+                f"({shown}).\n\nClose anyway and lose them?",
+                QMessageBox.StandardButton.Cancel
+                | QMessageBox.StandardButton.Discard,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if answer != QMessageBox.StandardButton.Discard:
+                event.ignore()
+                return
+
         threads_clean = True
 
         # Caption generation: cancel only if actually generating (idempotent,

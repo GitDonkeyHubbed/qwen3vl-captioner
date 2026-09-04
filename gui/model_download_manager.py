@@ -393,6 +393,40 @@ class _StripAuthOnRedirect(urllib.request.HTTPRedirectHandler):
         return new
 
 
+# Windows FSCTL_SET_SPARSE — CTL_CODE(FILE_DEVICE_FILE_SYSTEM=0x9, 49,
+# METHOD_BUFFERED=0, FILE_SPECIAL_ACCESS=0) == (9 << 16) | (49 << 2)
+_FSCTL_SET_SPARSE = 0x000900C4
+
+
+def _make_sparse(fileobj) -> bool:
+    """Ask the filesystem to make an open file sparse. True if it took effect.
+
+    Only NTFS needs (and supports) this: a plain `truncate()` there physically
+    writes the zeros. POSIX filesystems already create holes, so this is a
+    no-op off Windows. Never raises — a failure just means the pre-allocation
+    is dense, which is slow but correct.
+    """
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+
+        handle = msvcrt.get_osfhandle(fileobj.fileno())
+        returned = wintypes.DWORD()
+        ok = ctypes.windll.kernel32.DeviceIoControl(
+            wintypes.HANDLE(handle),
+            wintypes.DWORD(_FSCTL_SET_SPARSE),
+            None, 0, None, 0,
+            ctypes.byref(returned),
+            None,
+        )
+        return bool(ok)
+    except Exception:
+        return False
+
+
 class ModelDownloadWorker(QObject):
     """Downloads a single GGUF file from HuggingFace with streaming progress.
 
@@ -631,7 +665,7 @@ class ModelDownloadWorker(QObject):
         except Exception:
             return 0, False
 
-    def _run_parallel(self, url, target: Path, part: Path, total: int):
+    def _run_parallel(self, url, target: Path, part: Path, total: int):  # noqa: D401
         """Download *url* into *part* over several parallel range connections."""
         conns = max(2, min(self.max_connections, 16))
         # Marker: flags that this .part is a full-size but hole-filled parallel
@@ -643,6 +677,12 @@ class ModelDownloadWorker(QObject):
             self.target_dir.mkdir(parents=True, exist_ok=True)
             marker.write_text("1")
             with open(part, "wb") as f:
+                # Mark the file sparse BEFORE extending it. On NTFS a plain
+                # truncate() is not sparse, so an 8 GB model download
+                # physically wrote ~8 GB of zeros before the first byte
+                # arrived: double the disk writes, no progress shown, and no
+                # cancel check for the duration.
+                _make_sparse(f)
                 f.truncate(total)  # pre-allocate so each thread can seek+write
         except Exception as exc:
             self._safe_unlink(marker)
