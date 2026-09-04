@@ -14,10 +14,11 @@ snippets. Matches the Figma "VL-CAPTIONER Studio Pro" sidebar design:
 
 import os
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QObject, QRunnable, Qt, QThreadPool, pyqtSignal
 from PyQt6.QtGui import (
     QPixmap, QPainter, QColor, QPen, QDragEnterEvent, QDropEvent, QImageReader,
 )
@@ -85,6 +86,56 @@ def _stem_key(path: Path) -> str:
     return stem
 
 
+class _ThumbnailSignals(QObject):
+    """Signal carrier for _ThumbnailTask (QRunnable is not a QObject)."""
+
+    done = pyqtSignal(str, object)  # str(path), QImage or None
+
+
+class _ThumbnailTask(QRunnable):
+    """Decode one thumbnail off the UI thread.
+
+    Every imported image used to be decoded on the UI thread, and the
+    scaled-decode shortcut only helps formats whose decoder supports it (JPEG),
+    so importing a PNG/WebP dataset froze the window for minutes with no
+    progress.
+    """
+
+    def __init__(self, path: Path, signals: "_ThumbnailSignals"):
+        super().__init__()
+        self._path = path
+        self._signals = signals
+        self.setAutoDelete(True)
+
+    def run(self):
+        image = None
+        try:
+            reader = QImageReader(str(self._path))
+            reader.setAutoTransform(True)  # honour EXIF orientation
+            size = reader.size()
+            if size.isValid():
+                # Ask the decoder for a downscaled read where it supports one:
+                # a 40 MP photo is ~160 MB of pixels just to draw 56px.
+                reader.setScaledSize(
+                    size.scaled(
+                        THUMB_SIZE, THUMB_SIZE, Qt.AspectRatioMode.KeepAspectRatio
+                    )
+                )
+            decoded = reader.read()
+            if not decoded.isNull():
+                if decoded.width() > THUMB_SIZE or decoded.height() > THUMB_SIZE:
+                    # Formats without scaled-decode support come back full size.
+                    decoded = decoded.scaled(
+                        THUMB_SIZE, THUMB_SIZE,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                image = decoded
+        except Exception:
+            image = None
+        self._signals.done.emit(str(self._path), image)
+
+
 class ThumbnailItem(QFrame):
     """A single thumbnail entry in the file list."""
 
@@ -114,7 +165,7 @@ class ThumbnailItem(QFrame):
         self.thumb_label.setFixedSize(THUMB_SIZE, THUMB_SIZE)
         self.thumb_label.setProperty("class", "thumb-image")
         self.thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._load_thumbnail()
+        self._thumb_loaded = False
 
         # Check overlay (hidden by default)
         self._check_overlay = _CheckCircleOverlay(thumb_container)
@@ -140,24 +191,10 @@ class ThumbnailItem(QFrame):
 
         layout.addLayout(text_layout, 1)
 
-    def _load_thumbnail(self):
-        """Load and scale the thumbnail image.
-
-        Decode via QImageReader with a target size so the JPEG decoder
-        downscales DURING decode — QPixmap(path) decoded every image at full
-        resolution (a 40MP photo → ~160 MB of pixels) just to draw a 56px
-        thumbnail, freezing the UI thread on large imports.
-        """
-        reader = QImageReader(str(self.image_path))
-        reader.setAutoTransform(True)  # honor EXIF orientation like the viewer
-        size = reader.size()
-        if size.isValid():
-            scaled = size.scaled(
-                THUMB_SIZE, THUMB_SIZE, Qt.AspectRatioMode.KeepAspectRatio
-            )
-            reader.setScaledSize(scaled)
-        image = reader.read()
-        if not image.isNull():
+    def apply_thumbnail(self, image):
+        """Install a decoded thumbnail image (called on the UI thread)."""
+        self._thumb_loaded = True
+        if image is not None and not image.isNull():
             self.thumb_label.setPixmap(QPixmap.fromImage(image))
         else:
             self.thumb_label.setText("?")
@@ -401,6 +438,17 @@ class FileBrowserPanel(QFrame):
         # ── Drop overlay (shown during drag) ──
         self._drop_overlay = _DropOverlay(self)
 
+        # Thumbnail decoding runs off the UI thread. The pool is capped well
+        # below the CPU count: thumbnails are I/O plus a short decode, and
+        # saturating every core just starves the UI thread that has to paint
+        # the results.
+        self._thumb_pool = QThreadPool(self)
+        self._thumb_pool.setMaxThreadCount(
+            max(2, min(4, QThreadPool.globalInstance().maxThreadCount()))
+        )
+        self._thumb_signals = _ThumbnailSignals(self)
+        self._thumb_signals.done.connect(self._on_thumbnail_ready)
+
     # ─── Drag & Drop ──────────────────────────────────────────
 
     def dragEnterEvent(self, event: QDragEnterEvent):
@@ -476,12 +524,20 @@ class FileBrowserPanel(QFrame):
     # ─── Public API ───────────────────────────────────────────
 
     def add_images(self, paths: List[Path]):
-        """Add images to the file browser."""
+        """Add images to the file browser.
+
+        Rows appear immediately with an empty thumbnail; the decodes are
+        queued on a thread pool and filled in as they land.
+        """
         new_paths = []
         decode_warnings: List[str] = []
-        for p in paths:
-            key = str(p)
-            if key not in self._items:
+        # One relayout for the whole import instead of one per row: adding to
+        # a live layout re-activates it over every existing row.
+        with self._batched_layout():
+            for p in paths:
+                key = str(p)
+                if key in self._items:
+                    continue
                 item = ThumbnailItem(p)
                 item.clicked.connect(self._on_item_clicked)
                 self._list_layout.addWidget(item)
@@ -495,6 +551,9 @@ class FileBrowserPanel(QFrame):
                     item.set_status("done")
                 if info.decode_error:
                     decode_warnings.append(p.name)
+
+        for p in new_paths:
+            self._thumb_pool.start(_ThumbnailTask(p, self._thumb_signals))
 
         self.count_label.setText(str(len(self._items)))
 
@@ -531,6 +590,22 @@ class FileBrowserPanel(QFrame):
         if new_paths:
             self.images_imported.emit(new_paths)
 
+    @contextmanager
+    def _batched_layout(self):
+        """Suspend layout activation around a bulk change to the item list."""
+        self._list_widget.setUpdatesEnabled(False)
+        try:
+            yield
+        finally:
+            self._list_widget.setUpdatesEnabled(True)
+            self._list_layout.activate()
+
+    def _on_thumbnail_ready(self, path_str: str, image):
+        """Install a decoded thumbnail, if its row still exists."""
+        item = self._items.get(path_str)
+        if item is not None:
+            item.apply_thumbnail(image)
+
     def refresh_theme(self):
         """Re-resolve colours set inline, after a runtime theme switch."""
         self._btn_frame.setStyleSheet(
@@ -541,6 +616,8 @@ class FileBrowserPanel(QFrame):
 
     def clear_all(self):
         """Remove all items from the file browser."""
+        # Drop queued decodes for rows that are about to disappear.
+        self._thumb_pool.clear()
         for item in self._items.values():
             item.setParent(None)
             item.deleteLater()
@@ -644,8 +721,17 @@ class FileBrowserPanel(QFrame):
         self.add_images(image_paths)
 
     def _filter_items(self, text: str):
-        """Filter visible thumbnails based on search text."""
+        """Filter visible thumbnails based on search text.
+
+        The show/hide loop runs with the list detached from layout updates:
+        each setVisible() otherwise re-activates the layout across every row,
+        making a single keystroke O(n²) — seconds to tens of seconds on a
+        few-thousand-image list.
+        """
         text_lower = text.lower()
-        for item in self._items.values():
-            visible = text_lower in item.image_path.name.lower() if text_lower else True
-            item.setVisible(visible)
+        with self._batched_layout():
+            for item in self._items.values():
+                visible = (
+                    text_lower in item.image_path.name.lower() if text_lower else True
+                )
+                item.setVisible(visible)

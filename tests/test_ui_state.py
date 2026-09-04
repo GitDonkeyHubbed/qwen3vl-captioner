@@ -174,3 +174,66 @@ def test_batch_button_resets_at_zero_total(qapp):
     assert panel.batch_btn.isEnabled() is True
     assert "Batch Caption All" in panel.batch_btn.text()
     panel.deleteLater()
+
+
+# ── Performance-shaped behaviour (Batch F) ──────────────────────────────
+
+def test_thumbnails_are_not_decoded_on_the_ui_thread(qapp, tmp_path):
+    """Importing used to fully decode every image inline, freezing the window
+    for minutes on a PNG/WebP dataset (the scaled-decode shortcut only helps
+    formats whose decoder supports one)."""
+    from PIL import Image
+
+    paths = []
+    for i in range(8):
+        p = tmp_path / f"img{i}.png"
+        Image.new("RGB", (900, 700), (i * 20, 80, 160)).save(p)
+        paths.append(p)
+
+    panel = FileBrowserPanel()
+    panel.add_images(paths)
+
+    # Rows exist immediately, thumbnails have not been installed yet.
+    assert len(panel.get_all_paths()) == 8
+    assert all(not item._thumb_loaded for item in panel._items.values())
+
+    panel._thumb_pool.waitForDone(30000)
+    qapp.processEvents()
+    assert all(item._thumb_loaded for item in panel._items.values())
+    panel.deleteLater()
+
+
+def test_zoom_uses_a_view_transform_not_a_rescale():
+    """Re-scaling the full-resolution pixmap per wheel notch allocated
+    hundreds of MB and stalled for seconds on a camera photo."""
+    import inspect
+
+    from gui.image_viewer import ImageViewer
+    src = inspect.getsource(ImageViewer._apply_zoom)
+    assert "setTransform" in src
+    assert ".scaled(" not in src
+
+
+def test_spinner_timer_is_not_started_at_construction(qapp):
+    """The spinner woke the event loop 33x a second from launch, hidden."""
+    from gui.image_viewer import ProcessingOverlay
+
+    overlay = ProcessingOverlay()
+    assert overlay._spinner._timer.isActive() is False
+
+    overlay.show_overlay()
+    assert overlay._spinner._timer.isActive() is True
+
+    overlay.hide_overlay()
+    assert overlay._spinner._timer.isActive() is False
+    overlay.deleteLater()
+
+
+def test_make_sparse_is_a_safe_noop_off_windows(tmp_path):
+    from gui.model_download_manager import _make_sparse
+
+    path = tmp_path / "x.part"
+    with open(path, "wb") as f:
+        assert _make_sparse(f) is False  # POSIX already creates holes
+        f.truncate(1024)
+    assert path.stat().st_size == 1024

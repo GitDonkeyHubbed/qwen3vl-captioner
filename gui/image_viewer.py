@@ -10,10 +10,12 @@ from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QPixmap, QWheelEvent, QPainter, QColor, QPen
+from PyQt6.QtGui import (
+    QColor, QImageReader, QPainter, QPen, QPixmap, QTransform, QWheelEvent,
+)
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QFrame, QSizePolicy, QScrollArea,
+    QFrame, QGraphicsPixmapItem, QGraphicsScene, QGraphicsView, QSizePolicy,
 )
 
 from gui.theme import COLORS
@@ -28,7 +30,9 @@ class _SpinnerWidget(QWidget):
         self._angle = 0
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._rotate)
-        self._timer.start(30)
+        # Deliberately NOT started here: the spinner is hidden until a caption
+        # runs, and starting at construction woke the event loop 33x a second
+        # from launch onwards. show_overlay() starts it.
 
     def _rotate(self):
         self._angle = (self._angle + 6) % 360
@@ -206,22 +210,41 @@ class ImageViewer(QFrame):
         container_layout.setContentsMargins(0, 0, 0, 0)
         container_layout.setSpacing(0)
 
-        self._scroll = QScrollArea()
-        self._scroll.setStyleSheet(f"background: {COLORS['bg_darkest']}; border: none;")
-        self._scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._scroll.setWidgetResizable(False)
+        # A QGraphicsView, not a QLabel in a QScrollArea: zooming a label
+        # means re-scaling the ENTIRE full-resolution pixmap on every wheel
+        # notch (hundreds of MB to gigabytes allocated, seconds of stall per
+        # notch on a camera photo). A view transform rasterizes only what is
+        # actually on screen.
+        self._scene = QGraphicsScene(self)
+        self._pixmap_item: Optional[QGraphicsPixmapItem] = None
 
-        self._image_label = QLabel("Select an image from the sidebar to start captioning")
-        self._image_label.setStyleSheet(
-            f"color: {COLORS['text_muted']}; font-size: 14px; background: transparent;"
+        self._view = QGraphicsView(self._scene)
+        self._view.setStyleSheet(
+            f"background: {COLORS['bg_darkest']}; border: none;"
         )
-        self._image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._image_label.setSizePolicy(
+        self._view.setRenderHints(
+            QPainter.RenderHint.Antialiasing
+            | QPainter.RenderHint.SmoothPixmapTransform
+        )
+        self._view.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        self._view.setTransformationAnchor(
+            QGraphicsView.ViewportAnchor.AnchorUnderMouse
+        )
+        self._view.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
+        # The viewer handles the wheel itself (zoom), so the view must not
+        # also scroll on it.
+        self._view.wheelEvent = lambda event: self.wheelEvent(event)
 
-        self._scroll.setWidget(self._image_label)
-        container_layout.addWidget(self._scroll, 1)
+        self._empty_label = QLabel(
+            "Select an image from the sidebar to start captioning", self._view
+        )
+        self._empty_label.setProperty("class", "viewer-empty")
+        self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        container_layout.addWidget(self._view, 1)
 
         layout.addWidget(self._image_container, 1)
 
@@ -231,12 +254,22 @@ class ImageViewer(QFrame):
     def set_image(self, image_path: Path):
         """Load and display an image from a file path."""
         self._image_path = image_path
-        self._pixmap = QPixmap(str(image_path))
+        reader = QImageReader(str(image_path))
+        reader.setAutoTransform(True)  # honour EXIF orientation
+        image = reader.read()
+        self._pixmap = QPixmap.fromImage(image) if not image.isNull() else QPixmap()
+
+        self._scene.clear()
+        self._pixmap_item = None
 
         if self._pixmap.isNull():
-            self._image_label.setText(f"Failed to load: {image_path.name}")
+            self._show_message(f"Failed to load: {image_path.name}")
             self.filename_label.setText("Error")
             return
+
+        self._empty_label.setVisible(False)
+        self._pixmap_item = self._scene.addPixmap(self._pixmap)
+        self._scene.setSceneRect(self._pixmap_item.boundingRect())
 
         self.filename_label.setText(
             f"{image_path.name}    "
@@ -250,11 +283,19 @@ class ImageViewer(QFrame):
         """Clear the current image."""
         self._pixmap = None
         self._image_path = None
-        self._image_label.setPixmap(QPixmap())
-        self._image_label.setText("Select an image from the sidebar to start captioning")
+        self._scene.clear()
+        self._pixmap_item = None
+        self._show_message("Select an image from the sidebar to start captioning")
         self.filename_label.setText("No image loaded")
         self.zoom_label.setText("100%")
         self._zoom = 1.0
+
+    def _show_message(self, text: str):
+        """Show the empty/error placeholder over the (now empty) scene."""
+        self._empty_label.setText(text)
+        self._empty_label.setGeometry(self._view.rect())
+        self._empty_label.setVisible(True)
+        self._empty_label.raise_()
 
     def set_processing(self, is_processing: bool):
         """Show or hide the processing overlay."""
@@ -268,7 +309,7 @@ class ImageViewer(QFrame):
         if not self._pixmap or self._pixmap.isNull():
             return
 
-        view_size = self._scroll.size()
+        view_size = self._view.viewport().size()
         img_w = self._pixmap.width()
         img_h = self._pixmap.height()
 
@@ -290,20 +331,18 @@ class ImageViewer(QFrame):
         self._apply_zoom()
 
     def _apply_zoom(self):
-        """Apply the current zoom level to the displayed image."""
+        """Apply the current zoom level.
+
+        A view transform, not a re-scale of the source pixmap: only the pixels
+        inside the viewport are rasterized, so a wheel notch costs the same on
+        a 40 MP photo as on a thumbnail.
+        """
         if not self._pixmap or self._pixmap.isNull():
             return
 
-        new_w = int(self._pixmap.width() * self._zoom)
-        new_h = int(self._pixmap.height() * self._zoom)
-
-        scaled = self._pixmap.scaled(
-            new_w, new_h,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        self._image_label.setPixmap(scaled)
-        self._image_label.resize(scaled.size())
+        transform = QTransform()
+        transform.scale(self._zoom, self._zoom)
+        self._view.setTransform(transform)
 
         self.zoom_label.setText(f"{int(self._zoom * 100)}%")
 
@@ -324,6 +363,8 @@ class ImageViewer(QFrame):
         super().resizeEvent(event)
         if self._pixmap and not self._pixmap.isNull():
             self._fit_to_view()
+        else:
+            self._empty_label.setGeometry(self._view.rect())
         # Keep overlay filling the image container
         self._overlay.setGeometry(self._image_container.rect())
 

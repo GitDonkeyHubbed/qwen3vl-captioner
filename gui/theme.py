@@ -612,6 +612,11 @@ def get_stylesheet(mode: str = "dark") -> str:
     }}
 
     /* Thumbnail items */
+    QLabel[class="viewer-empty"] {{
+        color: {c['text_muted']};
+        font-size: 14px;
+        background: transparent;
+    }}
     QLabel[class="panel-title"] {{
         color: {c['text_primary']};
         font-size: 14px;
