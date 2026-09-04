@@ -47,10 +47,12 @@ def main():
     """Application entry point."""
     app = QApplication(sys.argv)
 
-    # Remove Qt's default 256MB image allocation limit.
-    # High-res images (e.g. 8000x6000 camera photos) exceed 256MB when decoded
-    # to 32-bit RGBA, causing "Rejecting image" errors. 0 = unlimited.
-    QImageReader.setAllocationLimit(0)
+    # Raise Qt's default 256MB image allocation limit — high-res images
+    # (e.g. 8000x6000 camera photos) exceed it when decoded to 32-bit RGBA and
+    # are rejected. A finite ceiling is deliberate: 0 would disable Qt's
+    # decompression-bomb guard entirely and let one crafted file drive a
+    # multi-gigabyte decode on the UI thread.
+    QImageReader.setAllocationLimit(2048)
 
     # Set application metadata
     app.setApplicationName("VL-CAPTIONER")

@@ -42,7 +42,9 @@ echo
 
 # --- Step 3: Virtual environment + dependencies ---
 echo "[3/5] Creating virtual environment and installing dependencies..."
-uv venv --python 3.12 .venv
+# --clear keeps setup re-runnable: uv refuses to reuse an existing .venv,
+# and `set -e` would turn that refusal into an immediate exit.
+uv venv --clear --python 3.12 .venv
 uv pip install --python .venv/bin/python -r requirements.txt
 echo "      Core dependencies installed."
 echo
@@ -59,7 +61,7 @@ else
     echo "      Intel Mac: no prebuilt wheel — building from source (CPU only)."
     echo "      This needs Xcode Command Line Tools and can take 10+ minutes."
     uv pip install --python .venv/bin/python \
-        "llama_cpp_python @ git+https://github.com/JamePeng/llama-cpp-python"
+        "llama_cpp_python @ git+https://github.com/JamePeng/llama-cpp-python@${LLAMA_TAG}"
 fi
 echo
 
