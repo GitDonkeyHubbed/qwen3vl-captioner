@@ -12,6 +12,8 @@ snippets. Matches the Figma "VL-CAPTIONER Studio Pro" sidebar design:
   - Drag & Drop support for images and folders
 """
 
+import os
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -51,6 +53,36 @@ class _CheckCircleOverlay(QWidget):
         painter.drawLine(4, 7, 6, 10)
         painter.drawLine(6, 10, 11, 4)
         painter.end()
+
+
+def is_importable_image(path: Path) -> bool:
+    """True for a real image file the app should import.
+
+    AppleDouble sidecars (`._IMG_0001.jpg`) carry an image extension, sort
+    first in a folder, and are not decodable — importing one aborted the whole
+    batch on item 1. Dot-prefixed files are metadata, never user images.
+    """
+    if path.name.startswith("."):
+        return False
+    return path.suffix.lower() in IMAGE_EXTENSIONS
+
+
+def scan_directory(dir_path: Path) -> List[Path]:
+    """Return the importable images in a directory, sorted. May raise OSError."""
+    return sorted(f for f in dir_path.iterdir() if f.is_file() and is_importable_image(f))
+
+
+def _stem_key(path: Path) -> str:
+    """Collision key for the `.txt` sidecar a file would claim.
+
+    Case-insensitive on Windows and macOS, where `Photo.jpg` and `photo.png`
+    still map to a single sidecar.
+    """
+    stem = str(path.with_suffix(""))
+    stem = os.path.normcase(stem)
+    if sys.platform == "darwin":
+        stem = stem.lower()
+    return stem
 
 
 class ThumbnailItem(QFrame):
@@ -221,6 +253,7 @@ class FileBrowserPanel(QFrame):
     image_selected = pyqtSignal(Path)
     images_imported = pyqtSignal(list)  # list[Path]
     stem_collision_detected = pyqtSignal(str)  # warning text for the user
+    import_failed = pyqtSignal(str)            # a path could not be scanned
     caption_decode_warning = pyqtSignal(str)   # non-UTF-8 sidecars were read lossily
     clear_requested = pyqtSignal()      # emitted when user clicks Clear All
 
@@ -376,10 +409,15 @@ class FileBrowserPanel(QFrame):
             # Check if any URL is an image or directory
             has_valid = False
             for url in event.mimeData().urls():
+                if not url.isLocalFile():
+                    continue
                 path = Path(url.toLocalFile())
-                if path.is_dir() or (path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS):
-                    has_valid = True
-                    break
+                try:
+                    if path.is_dir() or (path.is_file() and is_importable_image(path)):
+                        has_valid = True
+                        break
+                except OSError:
+                    continue
             if has_valid:
                 event.acceptProposedAction()
                 self._drop_overlay.setGeometry(0, 0, self.width(), self.height())
@@ -399,15 +437,29 @@ class FileBrowserPanel(QFrame):
             return
 
         image_paths: List[Path] = []
+        failed: List[str] = []
         for url in event.mimeData().urls():
+            # Skip non-file URLs. Path(url.toLocalFile()) for, say, an image
+            # dragged out of a browser tab is Path(""), whose is_dir() is True
+            # for the process working directory — so the drop imported every
+            # image in it.
+            if not url.isLocalFile():
+                continue
             path = Path(url.toLocalFile())
-            if path.is_dir():
-                # Import all images from the dropped directory
-                for f in sorted(path.iterdir()):
-                    if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS:
-                        image_paths.append(f)
-            elif path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS:
-                image_paths.append(path)
+            try:
+                if path.is_dir():
+                    image_paths.extend(scan_directory(path))
+                elif path.is_file() and is_importable_image(path):
+                    image_paths.append(path)
+            except OSError as e:
+                # A permission-denied or dropped network share raised out of a
+                # Qt slot, which aborts the whole PyQt6 process.
+                failed.append(f"{path.name}: {e}")
+
+        if failed:
+            self.import_failed.emit(
+                f"{len(failed)} item(s) could not be read: " + "; ".join(failed[:3])
+            )
 
         if image_paths:
             self.add_images(image_paths)
@@ -462,8 +514,8 @@ class FileBrowserPanel(QFrame):
         stems: dict = {}
         for item in self._items.values():
             p = item.image_path
-            stems.setdefault(str(p.with_suffix("")), []).append(p.name)
-        new_stems = {str(p.with_suffix("")) for p in new_paths}
+            stems.setdefault(_stem_key(p), []).append(p.name)
+        new_stems = {_stem_key(p) for p in new_paths}
         relevant = [
             names for stem, names in stems.items()
             if len(names) > 1 and stem in new_stems
@@ -580,13 +632,15 @@ class FileBrowserPanel(QFrame):
 
     def import_directory(self, dir_path: Path):
         """Import all images from a directory."""
-        if not dir_path.is_dir():
+        try:
+            if not dir_path.is_dir():
+                return
+            image_paths = scan_directory(dir_path)
+        except OSError as e:
+            # Unhandled inside a Qt slot, an OSError here (permission denied, a
+            # network share dropping mid-scan) aborts the whole PyQt6 process.
+            self.import_failed.emit(f"Could not read {dir_path}: {e}")
             return
-
-        image_paths = sorted([
-            f for f in dir_path.iterdir()
-            if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS
-        ])
         self.add_images(image_paths)
 
     def _filter_items(self, text: str):

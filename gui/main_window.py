@@ -638,6 +638,9 @@ class MainWindow(QMainWindow):
         self._file_browser.caption_decode_warning.connect(
             lambda msg: self._notify(msg, "warning")
         )
+        self._file_browser.import_failed.connect(
+            lambda msg: self._notify(msg, "error")
+        )
         self._file_browser.clear_requested.connect(self._on_clear_all)
 
         # Caption panel
@@ -697,6 +700,11 @@ class MainWindow(QMainWindow):
 
     def dragEnterEvent(self, event):
         self._file_browser.dragEnterEvent(event)
+
+    def dragLeaveEvent(self, event):
+        # Without this the "Drop images here" overlay stayed visible after a
+        # drag left the window without dropping.
+        self._file_browser.dragLeaveEvent(event)
 
     def dropEvent(self, event):
         self._file_browser.dropEvent(event)
@@ -1395,6 +1403,16 @@ class MainWindow(QMainWindow):
         from gui.model_download_manager import ModelDownloadWorker
         from gui.config import get_hf_token
 
+        # Re-entrancy guard: starting a second download while one is running
+        # would leave the first worker orphaned and both writing the same
+        # .part file.
+        if self._download_thread is not None and self._download_thread.isRunning():
+            self._notify(
+                f"A download is already running — {display_name} was not started.",
+                "warning",
+            )
+            return
+
         self._progress_bar.setRange(0, 0)  # indeterminate until fractions arrive
         self._progress_bar.setVisible(True)
         self._queue_label.setText(f"Downloading {display_name}...")
@@ -1991,12 +2009,17 @@ class MainWindow(QMainWindow):
     def _on_settings_changed(self):
         """Handle settings panel changes — update caption panel format badge."""
         preset_id = self._settings_panel.get_active_preset()
-        if preset_id:
-            from gui.settings_panel import TARGET_PRESETS
-            for preset in TARGET_PRESETS:
-                if preset["id"] == preset_id:
-                    self._caption_panel.set_format_label(preset["name"])
-                    break
+        if not preset_id:
+            # No preset is active — say so instead of leaving the last
+            # preset's name (or the startup default "SDXL") on the badge while
+            # a completely different prompt is being sent.
+            self._caption_panel.set_format_label("Custom")
+            return
+        from gui.settings_panel import TARGET_PRESETS
+        for preset in TARGET_PRESETS:
+            if preset["id"] == preset_id:
+                self._caption_panel.set_format_label(preset["name"])
+                break
 
     # --- Batch Captioning ---
 

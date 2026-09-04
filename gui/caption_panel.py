@@ -114,7 +114,10 @@ class CaptionPanel(QFrame):
         )
         format_row.addWidget(format_dot)
 
-        self.format_badge = QLabel("SDXL FORMAT")
+        # "CUSTOM" until a target preset is actually selected — the badge used
+        # to claim "SDXL FORMAT" at startup, when no preset is active and the
+        # prompt sent is a generic one.
+        self.format_badge = QLabel("CUSTOM FORMAT")
         self.format_badge.setProperty("class", "format-badge")
         format_row.addWidget(self.format_badge)
 

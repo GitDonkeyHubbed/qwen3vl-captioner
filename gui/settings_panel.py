@@ -44,9 +44,30 @@ def _get_active_options(extra_opts: Dict[str, bool]) -> Dict[str, bool]:
 
 
 # --- Model-Specific Prompt Builders ---
-# Each builder receives: caption_length_instruction, extra_opts dict, name_value (str or "")
+# Each builder receives: the caption-length KEY, its instruction sentence, the
+# extra_opts dict, and name_value (str or "").
+#
+# The key matters: the tag builders below need to know which of Short / Medium
+# / Long / Descriptive was chosen, and substring-matching the instruction
+# SENTENCE for that never worked — "Keep the description brief, around 1-2
+# sentences." does not contain "Short" — so the Caption Length selector was a
+# no-op for the Stable Diffusion and Pony presets: every setting produced
+# "Use 15-30 tags."
 
-def _build_prompt_sd(length_instr: str, extra_opts: Dict[str, bool], name_value: str) -> str:
+# Tag-count guidance per caption-length key, for the booru-tag presets.
+_TAG_COUNTS = {
+    "Short": "Use 5-15 tags.",
+    "Medium": "Use 15-30 tags.",
+    "Long": "Use 30-50 tags.",
+    "Descriptive (Longest)": "Use 50+ tags covering every detail.",
+}
+
+
+def _tag_count_hint(length_key: str) -> str:
+    """Tag-count instruction for a caption-length key."""
+    return _TAG_COUNTS.get(length_key, _TAG_COUNTS["Medium"])
+
+def _build_prompt_sd(length_key: str, length_instr: str, extra_opts: Dict[str, bool], name_value: str) -> str:
     """SD 1.5/SDXL: Accurate, anatomically focused booru-style tags."""
     parts = [
         "Describe this image as a comma-separated list of precise booru-style tags for Stable Diffusion training.",
@@ -73,17 +94,11 @@ def _build_prompt_sd(length_instr: str, extra_opts: Dict[str, bool], name_value:
         parts.append("Use precise, unambiguous tags.")
     if name_value:
         parts.append(f"Refer to any person/character as {name_value}.")
-    # Length hint
-    if "Short" in length_instr:
-        parts.append("Use 5-15 tags.")
-    elif "Long" in length_instr or "Descriptive" in length_instr or "comprehensive" in length_instr.lower():
-        parts.append("Use 30-50+ tags covering every detail.")
-    else:
-        parts.append("Use 15-30 tags.")
+    parts.append(_tag_count_hint(length_key))
     return " ".join(parts)
 
 
-def _build_prompt_pony(length_instr: str, extra_opts: Dict[str, bool], name_value: str) -> str:
+def _build_prompt_pony(length_key: str, length_instr: str, extra_opts: Dict[str, bool], name_value: str) -> str:
     """Pony Diffusion (SDXL): Precise anatomical tags + score prefix."""
     parts = [
         "Describe this image as comma-separated booru-style tags for Pony Diffusion.",
@@ -107,16 +122,11 @@ def _build_prompt_pony(length_instr: str, extra_opts: Dict[str, bool], name_valu
         parts.append("Use precise, unambiguous tags.")
     if name_value:
         parts.append(f"Refer to any person/character as {name_value}.")
-    if "Short" in length_instr:
-        parts.append("Use 5-15 tags.")
-    elif "Long" in length_instr or "Descriptive" in length_instr or "comprehensive" in length_instr.lower():
-        parts.append("Use 30-50+ tags.")
-    else:
-        parts.append("Use 15-30 tags.")
+    parts.append(_tag_count_hint(length_key))
     return " ".join(parts)
 
 
-def _build_prompt_flux1(length_instr: str, extra_opts: Dict[str, bool], name_value: str) -> str:
+def _build_prompt_flux1(length_key: str, length_instr: str, extra_opts: Dict[str, bool], name_value: str) -> str:
     """Flux.1: Objective, anatomically detailed description (less poetic)."""
     parts = [
         "Write a highly accurate, objectively detailed description of this image for Flux.1 training.",
@@ -167,7 +177,7 @@ def _build_prompt_flux1(length_instr: str, extra_opts: Dict[str, bool], name_val
     return " ".join(parts)
 
 
-def _build_prompt_flux2(length_instr: str, extra_opts: Dict[str, bool], name_value: str) -> str:
+def _build_prompt_flux2(length_key: str, length_instr: str, extra_opts: Dict[str, bool], name_value: str) -> str:
     """Flux.2: Objective, anatomically detailed description (less poetic/cinematic)."""
     parts = [
         "Write a highly accurate, objectively detailed description of this image for Flux.2 training.",
@@ -218,7 +228,7 @@ def _build_prompt_flux2(length_instr: str, extra_opts: Dict[str, bool], name_val
     return " ".join(parts)
 
 
-def _build_prompt_zimage(length_instr: str, extra_opts: Dict[str, bool], name_value: str) -> str:
+def _build_prompt_zimage(length_key: str, length_instr: str, extra_opts: Dict[str, bool], name_value: str) -> str:
     """Z-Image: Objective, clinical natural language description."""
     parts = [
         "Write a detailed, objective natural language description of this image for Z-Image fine-tuning.",
@@ -268,7 +278,7 @@ def _build_prompt_zimage(length_instr: str, extra_opts: Dict[str, bool], name_va
     return " ".join(parts)
 
 
-def _build_prompt_chroma(length_instr: str, extra_opts: Dict[str, bool], name_value: str) -> str:
+def _build_prompt_chroma(length_key: str, length_instr: str, extra_opts: Dict[str, bool], name_value: str) -> str:
     """Chroma: Detailed objective description focusing on color/form."""
     parts = [
         "Write a detailed, objective description of this image for Chroma model training.",
@@ -318,7 +328,7 @@ def _build_prompt_chroma(length_instr: str, extra_opts: Dict[str, bool], name_va
     return " ".join(parts)
 
 
-def _build_prompt_qwen(length_instr: str, extra_opts: Dict[str, bool], name_value: str) -> str:
+def _build_prompt_qwen(length_key: str, length_instr: str, extra_opts: Dict[str, bool], name_value: str) -> str:
     """Qwen Image: Clinical, objective, comprehensive description."""
     parts = [
         "Provide a highly accurate, objective, and comprehensive description of this image for Qwen-based training.",
@@ -342,7 +352,7 @@ def _build_prompt_qwen(length_instr: str, extra_opts: Dict[str, bool], name_valu
     return " ".join(parts)
 
 
-def _build_prompt_generic(length_instr: str, extra_opts: Dict[str, bool], name_value: str, base_prompt: str) -> str:
+def _build_prompt_generic(length_key: str, length_instr: str, extra_opts: Dict[str, bool], name_value: str, base_prompt: str) -> str:
     """Generic fallback: original concatenation behavior when no preset is selected."""
     parts = [base_prompt]
     if length_instr:
@@ -509,6 +519,14 @@ class SettingsPanel(QFrame):
         self._extra_checkboxes: Dict[str, QCheckBox] = {}
         self._show_extra_options = True
         self._custom_edit_mode = False
+
+        # Activity flags. Every busy-sensitive control is derived from these in
+        # _sync_busy_state(), so a caption finishing cannot undo a download's
+        # UI state (or vice versa).
+        self._generating = False
+        self._downloading = False
+        self._batch_current = 0
+        self._batch_total = 0
 
         # Outer scroll area
         outer_layout = QVBoxLayout(self)
@@ -1361,12 +1379,16 @@ class SettingsPanel(QFrame):
                 if preset["id"] == self._active_preset_id:
                     builder = preset.get("prompt_builder")
                     if builder:
-                        return builder(length_instruction, extra_opts, name_value)
+                        return builder(
+                            length_key, length_instruction, extra_opts, name_value
+                        )
                     break
 
         # No preset selected or no builder — use generic fallback
         base_prompt = self.prompt_text.toPlainText().strip()
-        return _build_prompt_generic(length_instruction, extra_opts, name_value, base_prompt)
+        return _build_prompt_generic(
+            length_key, length_instruction, extra_opts, name_value, base_prompt
+        )
 
     def get_prefix(self) -> str:
         return self.prefix_input.text().strip()
@@ -1404,19 +1426,21 @@ class SettingsPanel(QFrame):
         """Update the model status display."""
         self._model_is_loaded = is_loaded
         if is_loaded:
-            self.load_model_btn.setEnabled(True)
             self.load_model_btn.setText("  Unload Model")
             self.load_model_btn.setProperty("class", "secondary-button")
             self.load_model_btn.style().unpolish(self.load_model_btn)
             self.load_model_btn.style().polish(self.load_model_btn)
             self.status_text.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 10px;")
         else:
-            self.load_model_btn.setEnabled(True)
             self.load_model_btn.setText("  Load Model")
             self.load_model_btn.setProperty("class", "accent-button")
             self.load_model_btn.style().unpolish(self.load_model_btn)
             self.load_model_btn.style().polish(self.load_model_btn)
             self.status_text.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 10px;")
+
+        # Enablement comes from the activity flags, not from here — writing it
+        # unconditionally is what let these setters overwrite each other.
+        self._sync_busy_state()
 
         self.status_text.setText(status)
         if detail:
@@ -1437,23 +1461,39 @@ class SettingsPanel(QFrame):
         the final item, whose caption is still generating when current == total
         (re-enabling there allowed a second batch to start mid-flight).
         """
-        if total > 0:
-            self.batch_btn.setText(f"  Processing {current}/{total}...")
+        self._batch_current, self._batch_total = current, total
+        self._sync_busy_state()
+
+    def set_generating(self, is_generating: bool):
+        """Record that a caption is being generated."""
+        self._generating = is_generating
+        self._sync_busy_state()
+
+    def set_download_in_progress(self, in_progress: bool):
+        """Record that a model download is running."""
+        self._downloading = in_progress
+        self._sync_busy_state()
+
+    def _sync_busy_state(self):
+        """Derive every busy-sensitive control from the activity flags.
+
+        These used to be three independent setters writing the same buttons
+        unconditionally, so whichever fired last won: a caption finishing
+        during a download called set_generating(False), which hid Cancel and
+        re-enabled Download — and a second click started a duplicate download
+        of the same file.
+        """
+        busy = self._generating or self._downloading
+
+        if self._batch_total > 0:
+            self.batch_btn.setText(
+                f"  Processing {self._batch_current}/{self._batch_total}..."
+            )
             self.batch_btn.setEnabled(False)
         else:
             self.batch_btn.setText("⚡  Batch Caption All")
-            self.batch_btn.setEnabled(True)
+            self.batch_btn.setEnabled(not busy)
 
-    def set_generating(self, is_generating: bool):
-        """Toggle UI state during generation."""
-        self.batch_btn.setEnabled(not is_generating)
-        self.load_model_btn.setEnabled(not is_generating)
-        self._download_btn.setEnabled(not is_generating)
-        # Show cancel button while generating
-        self.cancel_btn.setVisible(is_generating)
-
-    def set_download_in_progress(self, in_progress: bool):
-        """Toggle cancel button visibility during model download."""
-        self.cancel_btn.setVisible(in_progress)
-        self._download_btn.setEnabled(not in_progress)
-        self.load_model_btn.setEnabled(not in_progress)
+        self.load_model_btn.setEnabled(not busy)
+        self._download_btn.setEnabled(not busy)
+        self.cancel_btn.setVisible(busy)
