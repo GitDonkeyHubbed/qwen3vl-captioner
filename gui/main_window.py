@@ -302,9 +302,11 @@ class MainWindow(QMainWindow):
 
         brand_title = QLabel("QWEN 3 VL ABL Captioner")
         brand_title.setProperty("class", "brand-title")
+        # No inline `color:` — the brand-title rule supplies it, so the title
+        # follows a runtime theme switch instead of staying zinc-100 on a
+        # light nav bar (1.15:1).
         brand_title.setStyleSheet(
-            f"color: {COLORS['text_primary']}; font-size: 13px; font-weight: 700; "
-            f"letter-spacing: 0.5px; padding: 0; margin: 0; background: transparent;"
+            "letter-spacing: 0.5px; padding: 0; margin: 0; background: transparent;"
         )
         brand_block.addWidget(brand_title)
 
@@ -1299,6 +1301,17 @@ class MainWindow(QMainWindow):
         if app_instance:
             app_instance.setStyleSheet(get_stylesheet(mode))
             apply_placeholder_palette(app_instance)
+
+        # Widgets that paint or set colours themselves cannot be reached by the
+        # app stylesheet — tell them to re-resolve against the new palette.
+        for widget in (
+            self._settings_panel, self._dataset_panel, self._file_browser,
+        ):
+            refresh = getattr(widget, "refresh_theme", None)
+            if refresh is not None:
+                refresh()
+        if self._notification_panel is not None:
+            self._notification_panel.refresh_theme()
 
     # --- Model Downloading ---
 

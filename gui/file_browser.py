@@ -80,10 +80,7 @@ class ThumbnailItem(QFrame):
 
         self.thumb_label = QLabel(thumb_container)
         self.thumb_label.setFixedSize(THUMB_SIZE, THUMB_SIZE)
-        self.thumb_label.setStyleSheet(
-            f"border-radius: 4px; background: {COLORS['bg_hover']}; "
-            f"border: 1px solid {COLORS['border_light']};"
-        )
+        self.thumb_label.setProperty("class", "thumb-image")
         self.thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._load_thumbnail()
 
@@ -100,16 +97,12 @@ class ThumbnailItem(QFrame):
         text_layout.setSpacing(3)
 
         self.name_label = QLabel(image_path.name)
-        self.name_label.setStyleSheet(
-            f"font-weight: 500; font-size: 12px; color: {COLORS['text_primary']};"
-        )
+        self.name_label.setProperty("class", "thumb-name")
         self.name_label.setWordWrap(False)
         text_layout.addWidget(self.name_label)
 
         self.preview_label = QLabel("")
-        self.preview_label.setStyleSheet(
-            f"font-size: 10px; color: {COLORS['text_dim']};"
-        )
+        self.preview_label.setProperty("class", "thumb-preview")
         self.preview_label.setWordWrap(False)
         text_layout.addWidget(self.preview_label)
 
@@ -147,11 +140,18 @@ class ThumbnailItem(QFrame):
     def set_caption_preview(self, text: str):
         """Show a preview snippet of the caption."""
         self._caption_preview = text
-        preview = text[:40] + "..." if len(text) > 40 else text
-        self.preview_label.setText(preview)
-        self.preview_label.setStyleSheet(
-            f"font-size: 10px; color: {COLORS['text_dim']};"
+        self._set_preview(text)
+
+    def _set_preview(self, text: str, active: bool = False):
+        """Set the preview line, styled by class so it follows the theme."""
+        self.preview_label.setText(
+            text[:40] + "..." if len(text) > 40 else text
         )
+        self.preview_label.setProperty(
+            "class", "thumb-preview-active" if active else "thumb-preview"
+        )
+        self.preview_label.style().unpolish(self.preview_label)
+        self.preview_label.style().polish(self.preview_label)
 
     def set_status(self, status: str):
         """Set the status badge (idle, queued, processing, generated, done).
@@ -166,31 +166,14 @@ class ThumbnailItem(QFrame):
         self._check_overlay.setVisible(status == "done")
 
         if status == "idle" and self._caption_preview:
-            self.preview_label.setText(
-                self._caption_preview[:40] + ("..." if len(self._caption_preview) > 40 else "")
-            )
-            self.preview_label.setStyleSheet(
-                f"font-size: 10px; color: {COLORS['text_dim']};"
-            )
+            self._set_preview(self._caption_preview)
         elif status == "queued":
-            self.preview_label.setText("Queued")
-            self.preview_label.setStyleSheet(
-                f"font-size: 10px; color: {COLORS['text_dim']};"
-            )
+            self._set_preview("Queued")
         elif status == "processing":
-            self.preview_label.setText("Captioning...")
-            self.preview_label.setStyleSheet(
-                f"font-size: 10px; color: {COLORS['accent_text']};"
-            )
+            self._set_preview("Captioning...", active=True)
         elif status in ("done", "generated"):
             if self._caption_preview:
-                self.preview_label.setText(
-                    self._caption_preview[:40]
-                    + ("..." if len(self._caption_preview) > 40 else "")
-                )
-                self.preview_label.setStyleSheet(
-                    f"font-size: 10px; color: {COLORS['text_dim']};"
-                )
+                self._set_preview(self._caption_preview)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -203,14 +186,21 @@ class _DropOverlay(QFrame):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        # The overlay must not eat clicks: a drag that entered the window and
+        # left without dropping used to strand it visible, swallowing every
+        # click on thumbnails and buttons underneath.
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setVisible(False)
+        self._label = QLabel("📂  Drop images here", self)
+        self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.refresh_theme()
+
+    def refresh_theme(self):
         self.setStyleSheet(
             f"background: rgba(59, 130, 246, 0.12); "
             f"border: 2px dashed {COLORS['accent']}; "
             f"border-radius: 8px;"
         )
-        self.setVisible(False)
-        self._label = QLabel("📂  Drop images here", self)
-        self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._label.setStyleSheet(
             f"color: {COLORS['accent_text']}; font-size: 14px; font-weight: 600; "
             f"background: transparent; border: none;"
@@ -303,7 +293,7 @@ class FileBrowserPanel(QFrame):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         self._list_widget = QWidget()
-        self._list_widget.setStyleSheet(f"background: {COLORS['bg_darkest']};")
+        self._list_widget.setProperty("class", "thumbnail-list")
         self._list_layout = QVBoxLayout(self._list_widget)
         self._list_layout.setContentsMargins(0, 4, 0, 4)
         self._list_layout.setSpacing(0)
@@ -314,9 +304,14 @@ class FileBrowserPanel(QFrame):
 
         # ── Action buttons ──
         btn_frame = QFrame()
+        # Scoped to QFrame: an unselectored `background:` here cascades onto
+        # every child, overriding the accent-button rule and rendering the
+        # primary "Open Folder" button white-on-white in light mode.
+        btn_frame.setObjectName("browserActions")
+        self._btn_frame = btn_frame
         btn_frame.setStyleSheet(
-            f"background: {COLORS['surface_translucent']}; "
-            f"border-top: 1px solid {COLORS['border']};"
+            f"QFrame#browserActions {{ background: {COLORS['surface_translucent']}; "
+            f"border-top: 1px solid {COLORS['border']}; }}"
         )
         btn_layout = QVBoxLayout(btn_frame)
         btn_layout.setContentsMargins(12, 10, 12, 10)
@@ -483,6 +478,14 @@ class FileBrowserPanel(QFrame):
 
         if new_paths:
             self.images_imported.emit(new_paths)
+
+    def refresh_theme(self):
+        """Re-resolve colours set inline, after a runtime theme switch."""
+        self._btn_frame.setStyleSheet(
+            f"QFrame#browserActions {{ background: {COLORS['surface_translucent']}; "
+            f"border-top: 1px solid {COLORS['border']}; }}"
+        )
+        self._drop_overlay.refresh_theme()
 
     def clear_all(self):
         """Remove all items from the file browser."""

@@ -9,7 +9,7 @@ batch controls, and model status display. Matches the Figma design.
 from pathlib import Path
 from typing import Optional, Dict, List
 
-from PyQt6.QtCore import Qt, pyqtSignal, QSize
+from PyQt6.QtCore import Qt, pyqtSignal, QEvent, QSize
 from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QPen, QBrush
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton,
@@ -520,7 +520,7 @@ class SettingsPanel(QFrame):
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(0, 0, 0, 0)
         title = QLabel("⚙  Model Settings")
-        title.setStyleSheet(f"font-size: 14px; font-weight: 600; color: {COLORS['text_primary']}; border: none;")
+        title.setProperty("class", "panel-title")
         header_layout.addWidget(title)
         header_layout.addStretch()
         outer_layout.addWidget(header)
@@ -528,7 +528,14 @@ class SettingsPanel(QFrame):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setStyleSheet(f"background: {COLORS['bg_darkest']}; border: none;")
+        # Scoped to QScrollArea: an unselectored `background:` cascades onto
+        # every child, overriding the accent/primary button rules and making
+        # Load Model and Batch Caption All white-on-near-white in light mode.
+        scroll.setObjectName("settingsScroll")
+        scroll.setStyleSheet(
+            f"QScrollArea#settingsScroll {{ background: {COLORS['bg_darkest']}; "
+            f"border: none; }}"
+        )
 
         scroll_widget = QWidget()
         layout = QVBoxLayout(scroll_widget)
@@ -552,13 +559,9 @@ class SettingsPanel(QFrame):
         self._download_btn.setFixedSize(32, 32)
         self._download_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._download_btn.setToolTip("Download this model from HuggingFace")
-        self._download_btn.setIcon(self._create_download_icon(COLORS['accent_text']))
         self._download_btn.setIconSize(QSize(18, 18))
-        self._download_btn.setStyleSheet(
-            f"QPushButton {{ background: {COLORS['bg_hover']}; border: 1px solid {COLORS['border']}; "
-            f"border-radius: 6px; }}"
-            f"QPushButton:hover {{ background: {COLORS['accent']}; border-color: {COLORS['accent']}; }}"
-        )
+        self._download_btn.installEventFilter(self)
+        self._refresh_download_icon(hovered=False)
         self._download_btn.clicked.connect(self._on_download_clicked)
         model_row.addWidget(self._download_btn)
 
@@ -889,6 +892,48 @@ class SettingsPanel(QFrame):
 
         scroll.setWidget(scroll_widget)
         outer_layout.addWidget(scroll)
+
+    # ─── Theme ────────────────────────────────────────────
+
+    def eventFilter(self, obj, event):
+        """Repaint the download arrow on hover.
+
+        The icon used to be rasterized once in `accent_text`, which in light
+        mode is #1d4ed8 — 1.30:1 against the #2563eb hover background, so the
+        arrow vanished exactly while the user pointed at it.
+        """
+        if obj is getattr(self, "_download_btn", None):
+            if event.type() == QEvent.Type.Enter:
+                self._refresh_download_icon(hovered=True)
+            elif event.type() == QEvent.Type.Leave:
+                self._refresh_download_icon(hovered=False)
+        return super().eventFilter(obj, event)
+
+    def _refresh_download_icon(self, hovered: bool = False):
+        """Paint the download arrow in a colour that reads on its background."""
+        color = "#ffffff" if hovered else COLORS["accent_text"]
+        self._download_btn.setIcon(self._create_download_icon(color))
+        self._download_btn.setStyleSheet(
+            f"QPushButton {{ background: {COLORS['bg_hover']}; "
+            f"border: 1px solid {COLORS['border']}; border-radius: 6px; }}"
+            f"QPushButton:hover {{ background: {COLORS['accent']}; "
+            f"border-color: {COLORS['accent']}; }}"
+        )
+
+    def refresh_theme(self):
+        """Re-resolve colours that are painted or set inline, after a switch."""
+        self.setStyleSheet(
+            f"QScrollArea#settingsScroll {{ background: {COLORS['bg_darkest']}; "
+            f"border: none; }}"
+        )
+        self._refresh_download_icon(hovered=False)
+        self._browse_btn.setStyleSheet(
+            f"QPushButton {{ background: {COLORS['bg_hover']}; "
+            f"border: 1px solid {COLORS['border']}; border-radius: 6px; "
+            f"font-size: 14px; }}"
+            f"QPushButton:hover {{ background: {COLORS['accent']}; "
+            f"border-color: {COLORS['accent']}; }}"
+        )
 
     # ─── Internal Helpers ─────────────────────────────────
 
