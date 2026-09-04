@@ -396,3 +396,20 @@ def test_unknown_selection_still_falls_back(win, tmp_path, monkeypatch):
     monkeypatch.setattr(win, "_model_search_dirs", lambda: [tmp_path])
 
     assert win._find_model_file() == other
+
+
+def test_cancel_confirms_before_killing_a_download(win, monkeypatch):
+    """Cancel used to kill a running download outright, deleting its multi-GB
+    partial, alongside the batch the user meant to stop."""
+    class _Thread:
+        def isRunning(self):
+            return True
+
+    win._download_thread = _Thread()
+    called = []
+    monkeypatch.setattr(win, "_cancel_download", lambda: called.append(True))
+
+    win._cancel_generation()  # nothing generating, a download is running
+
+    assert called == [True]  # routed to the path that asks first
+    win._download_thread = None

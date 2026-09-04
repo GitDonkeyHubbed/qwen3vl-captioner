@@ -1855,12 +1855,17 @@ class MainWindow(QMainWindow):
             self._reset_batch_statuses()
             self._caption_panel.show_feedback("Cancelled", is_success=False)
             self._set_connection_status("ready", "Cancelled")
-        else:
-            # A model download is NOT cancelled here: it has its own Cancel
-            # button, which confirms first. Silently deleting a multi-GB
-            # partial because the user meant to stop a batch is not a
-            # recoverable mistake.
-            self._caption_panel.show_feedback("Nothing to cancel", is_success=False)
+            return
+
+        # Nothing was generating. If a download is running, route to
+        # _cancel_download, which CONFIRMS first — this path used to cancel it
+        # outright alongside the batch, silently deleting a multi-GB partial
+        # the user never meant to touch.
+        if self._download_thread is not None and self._download_thread.isRunning():
+            self._cancel_download()
+            return
+
+        self._caption_panel.show_feedback("Nothing to cancel", is_success=False)
 
     def _on_caption_finished(self, caption: str):
         """Handle completed caption generation.

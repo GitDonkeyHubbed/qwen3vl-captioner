@@ -51,7 +51,7 @@ No new models — two full audit passes over the codebase (85 verified findings 
 - **Downloads got smarter**: live **speed + ETA**, free-disk-space pre-flight, corruption-safe partials (a multi-connection download that is interrupted discards its `.part` rather than resuming a file it cannot verify; single-stream downloads do resume), and your HF token is stored with owner-only permissions (`0600` on macOS/Linux; on Windows it inherits the user profile's ACL) and never sent over plain HTTP.
 - **Faster & smoother**: thumbnails decode at thumbnail size (no more UI stalls on big imports), **keyboard shortcuts** (Ctrl+S save, Ctrl+G generate, Ctrl+←/→ navigate), **drag & drop anywhere**, batch ETA, and a download offer right in the "model not downloaded" dialog.
 - **The install doctor got real diagnostic teeth.** The false "CPU build detected" warning on healthy GPU installs is gone, and `diagnose.bat` now pinpoints the exact conflicting DLL (System32, PATH, another AI app) behind `WinError 127` startup failures — with safe, reversible fix steps.
-- Test suite grew to **230 tests**; CI now HEAD-checks the pinned wheel URLs so a deleted release breaks CI (not your install), and every release tag is verified against the in-app version before it publishes.
+- Test suite grew to **231 tests**; CI now HEAD-checks the pinned wheel URLs so a deleted release breaks CI (not your install), and every release tag is verified against the in-app version before it publishes.
 
 See [CHANGELOG.md](CHANGELOG.md) for the complete list.
 
