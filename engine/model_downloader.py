@@ -63,6 +63,7 @@ _QUANT_RE = re.compile(
     r"^(?:iq\d+(?:_[a-z0-9]+)*|q\d+(?:_[a-z0-9]+)*|f\d+|bf\d+|fp\d+)$", re.I
 )
 _SIZE_TOKEN_RE = re.compile(r"^(\d+(?:\.\d+)?)b$", re.I)
+_MODEL_FAMILY_RE = re.compile(r"qwen\d+(?:\.\d+)?(?:[-_. ]*vl)?", re.I)
 
 
 def _tokens(name: str) -> list[str]:
@@ -84,6 +85,14 @@ def _size_tokens(name: str) -> set[str]:
     """
     return {
         m.group(1) for t in _tokens(name) if (m := _SIZE_TOKEN_RE.match(t))
+    }
+
+
+def _model_family_ids(name: str) -> set[str]:
+    """Architecture-family identifiers carried by a model filename."""
+    return {
+        re.sub(r"[-_. ]", "", match.group(0).lower())
+        for match in _MODEL_FAMILY_RE.finditer(name)
     }
 
 
@@ -157,6 +166,7 @@ def find_mmproj_file(
 
     key = _model_key(Path(model_path).stem)
     model_sizes = _size_tokens(Path(model_path).name)
+    model_families = _model_family_ids(Path(model_path).name)
 
     # 1. An encoder that names this model (the usual publisher layout,
     #    "<model stem>.mmproj-f16.gguf").
@@ -174,7 +184,11 @@ def find_mmproj_file(
     # 3. Same family and size, differing only in build tokens.
     for cand in candidates:
         cand_sizes = _size_tokens(cand.name)
-        if cand_sizes and model_sizes and cand_sizes == model_sizes:
+        cand_families = _model_family_ids(cand.name)
+        if (
+            cand_sizes and model_sizes and cand_sizes == model_sizes
+            and cand_families and cand_families == model_families
+        ):
             return cand
 
     # Everything left names a different model — refuse rather than guess.

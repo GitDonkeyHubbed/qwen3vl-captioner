@@ -535,16 +535,24 @@ def diagnose() -> dict:
         report["gpu_query_error"] = f"pynvml import failed: {e}"
     else:
         report["nvml_available"] = True
+        nvml_initialized = False
         try:
             pynvml.nvmlInit()
+            nvml_initialized = True
             handle = pynvml.nvmlDeviceGetHandleByIndex(0)
             name = pynvml.nvmlDeviceGetName(handle)
             report["gpu_name"] = name.decode() if isinstance(name, bytes) else name
             drv = pynvml.nvmlSystemGetDriverVersion()
             report["driver_version"] = drv.decode() if isinstance(drv, bytes) else drv
-            pynvml.nvmlShutdown()
         except Exception as e:
             report["gpu_query_error"] = str(e)
+        finally:
+            if nvml_initialized:
+                try:
+                    pynvml.nvmlShutdown()
+                except Exception as e:
+                    if report["gpu_query_error"] is None:
+                        report["gpu_query_error"] = str(e)
 
     return report
 

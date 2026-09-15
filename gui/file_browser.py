@@ -234,15 +234,14 @@ class ThumbnailItem(QFrame):
         # Show/hide check overlay
         self._check_overlay.setVisible(status == "done")
 
-        if status == "idle" and self._caption_preview:
+        if status == "idle":
             self._set_preview(self._caption_preview)
         elif status == "queued":
             self._set_preview("Queued")
         elif status == "processing":
             self._set_preview("Captioning...", active=True)
         elif status in ("done", "generated"):
-            if self._caption_preview:
-                self._set_preview(self._caption_preview)
+            self._set_preview(self._caption_preview)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:

@@ -15,6 +15,8 @@ disagree about:
 
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 from typing import NamedTuple, Optional
 
@@ -97,5 +99,25 @@ def write_caption(image_path: Path, text: str) -> float:
     assuming it succeeded.
     """
     path = caption_path(image_path)
-    path.write_text(text, encoding="utf-8")
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temp_file:
+            temp_path = Path(temp_file.name)
+            temp_file.write(text.encode("utf-8"))
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+        os.replace(temp_path, path)
+        temp_path = None
+    finally:
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
     return path.stat().st_mtime

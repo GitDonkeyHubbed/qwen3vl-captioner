@@ -68,7 +68,7 @@ CI runs **Lint & Test** on every PR. Match it locally:
 # macOS / Linux (on Windows use .venv\Scripts\python.exe)
 .venv/bin/python -m compileall -q app.py doctor.py engine gui tests   # syntax
 .venv/bin/python -m ruff check app.py doctor.py engine gui tests      # lint (rules in pyproject.toml)
-python -m pytest tests/ -q                                    # tests
+.venv/bin/python -m pytest tests/ -q                          # tests
 ```
 
 Keep the codebase **ruff-clean**. Prefer removing an unused import over

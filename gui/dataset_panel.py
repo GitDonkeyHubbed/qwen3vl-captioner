@@ -26,7 +26,6 @@ class DatasetPanel(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._paths: List[Path] = []
-        self.setStyleSheet(f"background: {COLORS['bg_dark']};")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -34,11 +33,8 @@ class DatasetPanel(QFrame):
 
         # --- Header Row ---
         header_row = QHBoxLayout()
-        title = QLabel("Dataset Overview")
-        title.setStyleSheet(
-            f"color: {COLORS['text_primary']}; font-size: 16px; font-weight: 600;"
-        )
-        header_row.addWidget(title)
+        self._title = QLabel("Dataset Overview")
+        header_row.addWidget(self._title)
         header_row.addStretch()
 
         self._refresh_btn = QPushButton("Refresh")
@@ -50,9 +46,6 @@ class DatasetPanel(QFrame):
 
         # --- Stats Row ---
         self._stats_frame = QFrame()
-        self._stats_frame.setStyleSheet(
-            f"background: {COLORS['bg_card']}; border: 1px solid {COLORS['border']}; border-radius: 6px;"
-        )
         stats_layout = QHBoxLayout(self._stats_frame)
         stats_layout.setContentsMargins(16, 10, 16, 10)
         stats_layout.setSpacing(24)
@@ -89,6 +82,37 @@ class DatasetPanel(QFrame):
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
 
+        layout.addWidget(self._table, 1)
+
+        # --- Empty state ---
+        self._empty_label = QLabel("Import images in the Project tab to see your dataset here.")
+        self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_label.setVisible(False)
+        layout.addWidget(self._empty_label)
+        self._apply_theme()
+
+    def set_refresh_callback(self, callback):
+        """Connect the Refresh button to a callback."""
+        self._refresh_btn.clicked.connect(callback)
+
+    def refresh_theme(self):
+        """Re-apply palette-dependent colours after a runtime theme switch."""
+        self._apply_theme()
+        # The Yes/No foregrounds are set per cell, so the table has to be
+        # rebuilt for them to follow the new palette.
+        if self._paths:
+            self.populate(self._paths)
+
+    def _apply_theme(self):
+        """Apply every inline Dataset colour from the active palette."""
+        self.setStyleSheet(f"background: {COLORS['bg_dark']};")
+        self._title.setStyleSheet(
+            f"color: {COLORS['text_primary']}; font-size: 16px; font-weight: 600;"
+        )
+        self._stats_frame.setStyleSheet(
+            f"background: {COLORS['bg_card']}; border: 1px solid "
+            f"{COLORS['border']}; border-radius: 6px;"
+        )
         self._table.setStyleSheet(f"""
             QTableWidget {{
                 background: {COLORS['bg_darkest']};
@@ -119,31 +143,21 @@ class DatasetPanel(QFrame):
                 background: {COLORS['bg_card']};
             }}
         """)
-
-        layout.addWidget(self._table, 1)
-
-        # --- Empty state ---
-        self._empty_label = QLabel("Import images in the Project tab to see your dataset here.")
-        self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._empty_label.setStyleSheet(
             f"color: {COLORS['text_dim']}; font-size: 12px; padding: 40px;"
         )
-        self._empty_label.setVisible(False)
-        layout.addWidget(self._empty_label)
-
-    def set_refresh_callback(self, callback):
-        """Connect the Refresh button to a callback."""
-        self._refresh_btn.clicked.connect(callback)
-
-    def refresh_theme(self):
-        """Re-apply palette-dependent colours after a runtime theme switch."""
-        self._empty_label.setStyleSheet(
-            f"color: {COLORS['text_dim']}; font-size: 12px; padding: 40px;"
-        )
-        # The Yes/No foregrounds are set per cell, so the table has to be
-        # rebuilt for them to follow the new palette.
-        if self._paths:
-            self.populate(self._paths)
+        for stat in (
+            self._stat_total, self._stat_captioned,
+            self._stat_uncaptioned, self._stat_coverage,
+        ):
+            stat.findChild(QLabel, "stat_label").setStyleSheet(
+                f"color: {COLORS['text_dim']}; font-size: 9px; font-weight: 600; "
+                f"text-transform: uppercase; letter-spacing: 0.5px;"
+            )
+            stat.findChild(QLabel, "stat_value").setStyleSheet(
+                f"color: {COLORS['text_primary']}; font-size: 18px; "
+                f"font-weight: 700; font-family: 'Consolas', monospace;"
+            )
 
     def populate(self, image_paths: List[Path]):
         """Populate the table with image metadata and caption status."""
@@ -219,18 +233,11 @@ class DatasetPanel(QFrame):
         vl.setSpacing(2)
 
         lbl = QLabel(label)
-        lbl.setStyleSheet(
-            f"color: {COLORS['text_dim']}; font-size: 9px; font-weight: 600; "
-            f"text-transform: uppercase; letter-spacing: 0.5px;"
-        )
+        lbl.setObjectName("stat_label")
         vl.addWidget(lbl)
 
         val = QLabel(value)
         val.setObjectName("stat_value")
-        val.setStyleSheet(
-            f"color: {COLORS['text_primary']}; font-size: 18px; font-weight: 700; "
-            f"font-family: 'Consolas', monospace;"
-        )
         vl.addWidget(val)
         return w
 

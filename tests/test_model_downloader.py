@@ -135,6 +135,20 @@ def test_size_mismatch_is_refused(tmp_path):
     assert find_mmproj_file(tmp_path, model) is None
 
 
+def test_same_size_encoder_from_foreign_family_is_refused(tmp_path):
+    model = _touch(tmp_path / "Qwen3-VL-8B-Instruct.Q4_K_M.gguf")
+    _touch(tmp_path / "Gliese-Qwen3.5-8B-Caption.mmproj-f16.gguf")
+
+    assert find_mmproj_file(tmp_path, model) is None
+
+
+def test_same_family_and_size_fallback_is_preserved(tmp_path):
+    model = _touch(tmp_path / "PublisherA-Qwen3-VL-8B-Instruct.Q4_K_M.gguf")
+    encoder = _touch(tmp_path / "PublisherB-Qwen3-VL-8B.mmproj-f16.gguf")
+
+    assert find_mmproj_file(tmp_path, model) == encoder
+
+
 def test_qwen35_size_token_is_not_misread(tmp_path):
     # "Qwen3.5-2B" must parse as a 2B model, not a 352B one.
     from engine.model_downloader import _size_tokens

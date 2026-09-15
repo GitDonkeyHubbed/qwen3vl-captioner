@@ -144,7 +144,9 @@ class CaptionPanel(QFrame):
         self.delete_btn.setProperty("class", "danger-button")
         self.delete_btn.setFixedSize(32, 28)
         self.delete_btn.setToolTip("Clear caption")
-        self.delete_btn.clicked.connect(self.clear_caption)
+        self.delete_btn.clicked.connect(
+            lambda: self.clear_caption(user_initiated=True)
+        )
         bottom_row.addWidget(self.delete_btn)
 
         # Save button (inverted: light bg, dark text)
@@ -172,10 +174,14 @@ class CaptionPanel(QFrame):
             self.caption_text.setTextCursor(cursor)
             self.caption_text.ensureCursorVisible()
 
-    def clear_caption(self):
-        """Clear the caption text."""
-        with self._writing_programmatically():
+    def clear_caption(self, *, user_initiated: bool = False):
+        """Clear the caption text, tracking delete-button clears as edits."""
+        if user_initiated:
             self.caption_text.clear()
+            self._set_dirty(True)
+        else:
+            with self._writing_programmatically():
+                self.caption_text.clear()
         self.confidence_badge.setVisible(False)
         self.feedback_label.setText("")
 

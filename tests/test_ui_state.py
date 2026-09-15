@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 from gui.file_browser import (  # noqa: E402
     FileBrowserPanel,
+    ThumbnailItem,
     _stem_key,
     is_importable_image,
     scan_directory,
@@ -236,6 +237,21 @@ def test_make_sparse_is_a_safe_noop_off_windows(tmp_path):
 
     path = tmp_path / "x.part"
     with open(path, "wb") as f:
-        assert _make_sparse(f) is False  # POSIX already creates holes
+        result = _make_sparse(f)
+        if sys.platform != "win32":
+            assert result is False  # POSIX already creates holes
         f.truncate(1024)
     assert path.stat().st_size == 1024
+
+
+@pytest.mark.parametrize("status", ["idle", "generated", "done"])
+def test_thumbnail_terminal_status_without_caption_clears_preview(qapp, tmp_path, status):
+    item = ThumbnailItem(tmp_path / "image.jpg")
+    item.set_status("processing")
+    assert item.preview_label.text() == "Captioning..."
+
+    item.set_status(status)
+
+    assert item.preview_label.text() == ""
+    assert item.preview_label.property("class") == "thumb-preview"
+    item.deleteLater()

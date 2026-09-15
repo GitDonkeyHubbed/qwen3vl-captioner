@@ -6,6 +6,9 @@ empty files as captioned, and a strict UTF-8 read made a legacy-encoded
 caption look absent in one view and present in the other.
 """
 
+import pytest
+
+import gui.caption_io as caption_io
 from gui.caption_io import (
     caption_path,
     has_caption,
@@ -78,6 +81,23 @@ def test_write_caption_returns_mtime(tmp_path):
     mtime = write_caption(img, "a red car")
     assert caption_path(img).read_text(encoding="utf-8") == "a red car"
     assert read_caption(img).mtime == mtime
+
+
+def test_failed_atomic_replace_preserves_existing_sidecar(tmp_path, monkeypatch):
+    img = _image(tmp_path)
+    sidecar = caption_path(img)
+    sidecar.write_text("keep me", encoding="utf-8")
+
+    def fail_replace(*_args):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(caption_io.os, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="replace failed"):
+        write_caption(img, "new caption")
+
+    assert sidecar.read_text(encoding="utf-8") == "keep me"
+    assert list(tmp_path.glob(f".{sidecar.name}.*.tmp")) == []
 
 
 def test_read_error_is_reported_not_raised(tmp_path):

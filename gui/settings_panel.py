@@ -545,6 +545,7 @@ class SettingsPanel(QFrame):
         outer_layout.addWidget(header)
 
         scroll = QScrollArea()
+        self._scroll = scroll
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         # Scoped to QScrollArea: an unselectored `background:` cascades onto
@@ -941,7 +942,7 @@ class SettingsPanel(QFrame):
 
     def refresh_theme(self):
         """Re-resolve colours that are painted or set inline, after a switch."""
-        self.setStyleSheet(
+        self._scroll.setStyleSheet(
             f"QScrollArea#settingsScroll {{ background: {COLORS['bg_darkest']}; "
             f"border: none; }}"
         )

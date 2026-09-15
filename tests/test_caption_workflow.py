@@ -123,6 +123,27 @@ def test_clear_all_guards_the_edit(win, images, monkeypatch):
     assert win._caption_panel.get_caption() == "unsaved"
 
 
+def test_delete_button_marks_empty_caption_dirty(win, images):
+    caption_path(images[0]).write_text("existing", encoding="utf-8")
+    win._on_image_selected(images[0])
+
+    win._caption_panel.delete_btn.click()
+
+    assert win._caption_panel.get_caption() == ""
+    assert win._caption_panel.is_dirty()
+
+
+def test_saving_cleared_caption_removes_sidecar(win, images):
+    caption_path(images[0]).write_text("existing", encoding="utf-8")
+    win._on_image_selected(images[0])
+    win._caption_panel.delete_btn.click()
+
+    assert win._save_current_caption() is True
+    assert caption_path(images[0]).exists() is False
+    assert win._caption_panel.is_dirty() is False
+    assert win._file_browser.get_item_status(images[0]) == "idle"
+
+
 # ── Streaming to the wrong image ────────────────────────────────────────
 
 def test_tokens_do_not_leak_onto_another_image(win, images):

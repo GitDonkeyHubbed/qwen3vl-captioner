@@ -7,6 +7,8 @@ above 12.8, not below it as a string compare would).
 """
 
 import os
+import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -185,6 +187,24 @@ def test_diagnose_distinguishes_missing_nvml_from_missing_driver(monkeypatch):
     assert report["nvml_available"] is False
     assert report["gpu_name"] is None
     assert "pynvml import failed" in (report["gpu_query_error"] or "")
+
+
+def test_diagnose_shuts_down_nvml_when_device_query_fails(monkeypatch):
+    calls = []
+    pynvml = types.ModuleType("pynvml")
+    pynvml.nvmlInit = lambda: calls.append("init")
+
+    def fail_query(_index):
+        raise RuntimeError("device query failed")
+
+    pynvml.nvmlDeviceGetHandleByIndex = fail_query
+    pynvml.nvmlShutdown = lambda: calls.append("shutdown")
+    monkeypatch.setitem(sys.modules, "pynvml", pynvml)
+
+    report = cuda_setup.diagnose()
+
+    assert report["gpu_query_error"] == "device query failed"
+    assert calls == ["init", "shutdown"]
 
 
 def test_detect_cuda_toolkit_none_when_no_install(tmp_path, monkeypatch):

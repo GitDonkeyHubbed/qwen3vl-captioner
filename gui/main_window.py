@@ -2218,8 +2218,27 @@ class MainWindow(QMainWindow):
 
         caption = self._caption_panel.get_caption()
         if not caption:
-            self._caption_panel.show_feedback("Nothing to save", is_success=False)
-            return False
+            txt_path = caption_path(self._current_image)
+            try:
+                txt_path.unlink(missing_ok=True)
+            except Exception as e:
+                self._caption_panel.show_feedback(
+                    f"Save error: {e}", is_success=False
+                )
+                self._notify(
+                    f"Save failed for {self._current_image.name}: {e}", "error"
+                )
+                return False
+
+            key = str(self._current_image)
+            self._captions.pop(key, None)
+            self._caption_mtimes.pop(key, None)
+            self._unsaved.discard(key)
+            self._caption_panel.mark_clean()
+            self._caption_panel.show_feedback(f"Removed: {txt_path.name}")
+            self._file_browser.set_item_caption(self._current_image, "")
+            self._file_browser.set_item_status(self._current_image, "idle")
+            return True
 
         txt_path = caption_path(self._current_image)
         try:
