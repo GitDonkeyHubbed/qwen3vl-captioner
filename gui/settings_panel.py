@@ -535,7 +535,8 @@ class SettingsPanel(QFrame):
 
         # Panel header
         header = QFrame()
-        header.setStyleSheet(f"border-bottom: 1px solid {COLORS['border']}; padding: 12px 16px;")
+        self._header = header
+        header.setStyleSheet(self._header_qss())
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(0, 0, 0, 0)
         title = QLabel("⚙  Model Settings")
@@ -545,17 +546,14 @@ class SettingsPanel(QFrame):
         outer_layout.addWidget(header)
 
         scroll = QScrollArea()
-        self._scroll = scroll
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         # Scoped to QScrollArea: an unselectored `background:` cascades onto
         # every child, overriding the accent/primary button rules and making
         # Load Model and Batch Caption All white-on-near-white in light mode.
         scroll.setObjectName("settingsScroll")
-        scroll.setStyleSheet(
-            f"QScrollArea#settingsScroll {{ background: {COLORS['bg_darkest']}; "
-            f"border: none; }}"
-        )
+        self._scroll = scroll
+        scroll.setStyleSheet(self._scroll_qss())
 
         scroll_widget = QWidget()
         layout = QVBoxLayout(scroll_widget)
@@ -940,12 +938,24 @@ class SettingsPanel(QFrame):
             f"border-color: {COLORS['accent']}; }}"
         )
 
-    def refresh_theme(self):
-        """Re-resolve colours that are painted or set inline, after a switch."""
-        self._scroll.setStyleSheet(
+    @staticmethod
+    def _header_qss() -> str:
+        return f"border-bottom: 1px solid {COLORS['border']}; padding: 12px 16px;"
+
+    @staticmethod
+    def _scroll_qss() -> str:
+        return (
             f"QScrollArea#settingsScroll {{ background: {COLORS['bg_darkest']}; "
             f"border: none; }}"
         )
+
+    def refresh_theme(self):
+        """Re-resolve colours that are painted or set inline, after a switch."""
+        # Restyle the widgets that own these sheets. The scroll rule used to be
+        # set on the panel itself, where the scroll area's own stylesheet
+        # outranked it and kept the old palette.
+        self._header.setStyleSheet(self._header_qss())
+        self._scroll.setStyleSheet(self._scroll_qss())
         self._refresh_download_icon(hovered=False)
         self._browse_btn.setStyleSheet(
             f"QPushButton {{ background: {COLORS['bg_hover']}; "

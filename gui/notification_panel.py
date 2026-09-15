@@ -137,6 +137,7 @@ class NotificationPanel(QFrame):
         header_layout.addWidget(self._clear_btn)
 
         root.addWidget(self._header)
+        self._apply_chrome_styles()
 
         # --- Scrollable content ---
         scroll = QScrollArea()
@@ -160,7 +161,6 @@ class NotificationPanel(QFrame):
         shadow.setOffset(0, 4)
         shadow.setColor(QColor(0, 0, 0, 100))
         self.setGraphicsEffect(shadow)
-        self._apply_theme()
 
     # -- public --
 
@@ -184,11 +184,16 @@ class NotificationPanel(QFrame):
         Only the panel chrome and the rows are redone — _build_ui() installs a
         layout on `self` and cannot be called twice.
         """
-        self._apply_theme()
+        self._apply_chrome_styles()
         self._refresh()
 
-    def _apply_theme(self):
-        """Apply palette colours to persistent notification chrome."""
+    def _apply_chrome_styles(self):
+        """Set the panel and header stylesheets from the active palette.
+
+        Shared by _build_ui and refresh_theme: the header, title and Clear All
+        used to be styled only at build time, leaving a near-invisible title
+        (#f4f4f5 on #e4e4e7) after a switch to light mode.
+        """
         self.setStyleSheet(
             f"NotificationPanel {{"
             f"  background-color: {COLORS['bg_darkest']};"

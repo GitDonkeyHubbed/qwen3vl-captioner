@@ -25,7 +25,6 @@ class DatasetPanel(QFrame):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._paths: List[Path] = []
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -89,30 +88,40 @@ class DatasetPanel(QFrame):
         self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._empty_label.setVisible(False)
         layout.addWidget(self._empty_label)
-        self._apply_theme()
+
+        self._apply_styles()
 
     def set_refresh_callback(self, callback):
         """Connect the Refresh button to a callback."""
         self._refresh_btn.clicked.connect(callback)
 
-    def refresh_theme(self):
-        """Re-apply palette-dependent colours after a runtime theme switch."""
-        self._apply_theme()
-        # The Yes/No foregrounds are set per cell, so the table has to be
-        # rebuilt for them to follow the new palette.
-        if self._paths:
-            self.populate(self._paths)
+    def _apply_styles(self):
+        """Set every palette-dependent inline stylesheet from the active COLORS.
 
-    def _apply_theme(self):
-        """Apply every inline Dataset colour from the active palette."""
+        The single place these colours are set, so __init__ and refresh_theme
+        cannot drift apart: an inline sheet outranks the app stylesheet and
+        keeps whatever hex strings it was built with.
+        """
         self.setStyleSheet(f"background: {COLORS['bg_dark']};")
         self._title.setStyleSheet(
             f"color: {COLORS['text_primary']}; font-size: 16px; font-weight: 600;"
         )
         self._stats_frame.setStyleSheet(
-            f"background: {COLORS['bg_card']}; border: 1px solid "
-            f"{COLORS['border']}; border-radius: 6px;"
+            f"background: {COLORS['bg_card']}; border: 1px solid {COLORS['border']}; border-radius: 6px;"
         )
+        for stat in (
+            self._stat_total, self._stat_captioned,
+            self._stat_uncaptioned, self._stat_coverage,
+        ):
+            stat.findChild(QLabel, "stat_label").setStyleSheet(
+                f"color: {COLORS['text_dim']}; font-size: 9px; font-weight: 600; "
+                f"text-transform: uppercase; letter-spacing: 0.5px;"
+            )
+            stat.findChild(QLabel, "stat_value").setStyleSheet(
+                f"color: {COLORS['text_primary']}; font-size: 18px; font-weight: 700; "
+                f"font-family: 'Consolas', monospace;"
+            )
+
         self._table.setStyleSheet(f"""
             QTableWidget {{
                 background: {COLORS['bg_darkest']};
@@ -143,25 +152,36 @@ class DatasetPanel(QFrame):
                 background: {COLORS['bg_card']};
             }}
         """)
+
         self._empty_label.setStyleSheet(
             f"color: {COLORS['text_dim']}; font-size: 12px; padding: 40px;"
         )
-        for stat in (
-            self._stat_total, self._stat_captioned,
-            self._stat_uncaptioned, self._stat_coverage,
-        ):
-            stat.findChild(QLabel, "stat_label").setStyleSheet(
-                f"color: {COLORS['text_dim']}; font-size: 9px; font-weight: 600; "
-                f"text-transform: uppercase; letter-spacing: 0.5px;"
-            )
-            stat.findChild(QLabel, "stat_value").setStyleSheet(
-                f"color: {COLORS['text_primary']}; font-size: 18px; "
-                f"font-weight: 700; font-family: 'Consolas', monospace;"
-            )
+
+    def refresh_theme(self):
+        """Re-apply palette-dependent colours after a runtime theme switch.
+
+        Recolours in place. It used to repopulate the table, which re-read
+        every sidecar and image header on the UI thread each time the
+        settings dialog previewed a theme, even with this tab hidden.
+        """
+        self._apply_styles()
+        # The Yes/No foregrounds are per-cell brushes; re-resolve them from
+        # the has_caption flag stored on each item.
+        for row in range(self._table.rowCount()):
+            item = self._table.item(row, 3)
+            if item is not None:
+                item.setForeground(QColor(
+                    self._status_color(item.data(Qt.ItemDataRole.UserRole))
+                ))
+
+    @staticmethod
+    def _status_color(has_caption: bool) -> str:
+        # COLORS, not Qt.GlobalColor.green (#00ff00), which is 1.08:1 on
+        # the light table background.
+        return COLORS["success"] if has_caption else COLORS["error"]
 
     def populate(self, image_paths: List[Path]):
         """Populate the table with image metadata and caption status."""
-        self._paths = list(image_paths)
         self._table.setRowCount(0)
 
         if not image_paths:
@@ -196,11 +216,9 @@ class DatasetPanel(QFrame):
             if has_caption:
                 captioned += 1
             status_item = QTableWidgetItem("Yes" if has_caption else "No")
-            # COLORS, not Qt.GlobalColor.green (#00ff00), which is 1.08:1 on
-            # the light table background.
-            status_item.setForeground(
-                QColor(COLORS["success"] if has_caption else COLORS["error"])
-            )
+            # Kept on the item so refresh_theme can recolour without a re-read.
+            status_item.setData(Qt.ItemDataRole.UserRole, has_caption)
+            status_item.setForeground(QColor(self._status_color(has_caption)))
             self._table.setItem(row, 3, status_item)
 
             # Caption preview
@@ -232,6 +250,7 @@ class DatasetPanel(QFrame):
         vl.setContentsMargins(0, 0, 0, 0)
         vl.setSpacing(2)
 
+        # Styled by _apply_styles, which finds these by object name.
         lbl = QLabel(label)
         lbl.setObjectName("stat_label")
         vl.addWidget(lbl)

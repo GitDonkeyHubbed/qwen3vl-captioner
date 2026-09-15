@@ -234,13 +234,14 @@ class ThumbnailItem(QFrame):
         # Show/hide check overlay
         self._check_overlay.setVisible(status == "done")
 
-        if status == "idle":
-            self._set_preview(self._caption_preview)
-        elif status == "queued":
+        if status == "queued":
             self._set_preview("Queued")
         elif status == "processing":
             self._set_preview("Captioning...", active=True)
-        elif status in ("done", "generated"):
+        else:  # idle, generated, done
+            # Always re-render from the cached preview, even when it is empty:
+            # a cancelled or failed batch resets uncaptioned rows to idle, and
+            # skipping the write left "Queued" / "Captioning..." on them.
             self._set_preview(self._caption_preview)
 
     def mousePressEvent(self, event):
