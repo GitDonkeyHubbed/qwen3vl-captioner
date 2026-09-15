@@ -34,13 +34,23 @@ class NotificationEntry:
     is_read: bool = False
 
 
-# Category -> dot color
-_CATEGORY_COLORS = {
-    "info":     COLORS["accent_text"],
-    "error":    COLORS["error"],
-    "success":  COLORS["success"],
-    "download": COLORS["warning"],
+# Category -> palette key for the dot colour.
+#
+# Deliberately keys, not colour values: a dict of resolved colours is a
+# snapshot of whichever palette was active at import time (always dark, given
+# app.py's import order), so the dots never followed a switch to light mode.
+_CATEGORY_COLOR_KEYS = {
+    "info":     "accent_text",
+    "error":    "error",
+    "success":  "success",
+    "warning":  "warning",
+    "download": "warning",
 }
+
+
+def category_color(category: str) -> str:
+    """Resolve a notification category to a colour in the ACTIVE palette."""
+    return COLORS[_CATEGORY_COLOR_KEYS.get(category, "text_dim")]
 
 
 # ---------------------------------------------------------------------------
@@ -108,47 +118,26 @@ class NotificationPanel(QFrame):
     # -- layout --
 
     def _build_ui(self):
-        self.setStyleSheet(
-            f"NotificationPanel {{"
-            f"  background-color: {COLORS['bg_darkest']};"
-            f"  border: 1px solid {COLORS['border_light']};"
-            f"  border-radius: 10px;"
-            f"}}"
-        )
-
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
         # --- Header ---
-        header = QFrame()
-        header.setStyleSheet(
-            f"background: transparent; border-bottom: 1px solid {COLORS['border']};"
-        )
-        header_layout = QHBoxLayout(header)
+        self._header = QFrame()
+        header_layout = QHBoxLayout(self._header)
         header_layout.setContentsMargins(16, 12, 12, 10)
 
-        title = QLabel("Notifications")
-        title.setStyleSheet(
-            f"color: {COLORS['text_primary']}; font-size: 13px; "
-            f"font-weight: 700; background: transparent; border: none;"
-        )
-        header_layout.addWidget(title)
+        self._title = QLabel("Notifications")
+        header_layout.addWidget(self._title)
         header_layout.addStretch()
 
-        clear_btn = QPushButton("Clear All")
-        clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        clear_btn.setStyleSheet(
-            f"QPushButton {{"
-            f"  color: {COLORS['text_dim']}; background: transparent;"
-            f"  border: none; font-size: 11px; font-weight: 500; padding: 2px 6px;"
-            f"}}"
-            f"QPushButton:hover {{ color: {COLORS['text_secondary']}; }}"
-        )
-        clear_btn.clicked.connect(self._on_clear)
-        header_layout.addWidget(clear_btn)
+        self._clear_btn = QPushButton("Clear All")
+        self._clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._clear_btn.clicked.connect(self._on_clear)
+        header_layout.addWidget(self._clear_btn)
 
-        root.addWidget(header)
+        root.addWidget(self._header)
+        self._apply_chrome_styles()
 
         # --- Scrollable content ---
         scroll = QScrollArea()
@@ -189,6 +178,44 @@ class NotificationPanel(QFrame):
 
     # -- internals --
 
+    def refresh_theme(self):
+        """Re-resolve palette colours after a runtime theme switch.
+
+        Only the panel chrome and the rows are redone — _build_ui() installs a
+        layout on `self` and cannot be called twice.
+        """
+        self._apply_chrome_styles()
+        self._refresh()
+
+    def _apply_chrome_styles(self):
+        """Set the panel and header stylesheets from the active palette.
+
+        Shared by _build_ui and refresh_theme: the header, title and Clear All
+        used to be styled only at build time, leaving a near-invisible title
+        (#f4f4f5 on #e4e4e7) after a switch to light mode.
+        """
+        self.setStyleSheet(
+            f"NotificationPanel {{"
+            f"  background-color: {COLORS['bg_darkest']};"
+            f"  border: 1px solid {COLORS['border_light']};"
+            f"  border-radius: 10px;"
+            f"}}"
+        )
+        self._header.setStyleSheet(
+            f"background: transparent; border-bottom: 1px solid {COLORS['border']};"
+        )
+        self._title.setStyleSheet(
+            f"color: {COLORS['text_primary']}; font-size: 13px; "
+            f"font-weight: 700; background: transparent; border: none;"
+        )
+        self._clear_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  color: {COLORS['text_dim']}; background: transparent;"
+            f"  border: none; font-size: 11px; font-weight: 500; padding: 2px 6px;"
+            f"}}"
+            f"QPushButton:hover {{ color: {COLORS['text_secondary']}; }}"
+        )
+
     def _refresh(self):
         """Rebuild the notification items from the store."""
         # Clear existing items (keep the stretch at the end)
@@ -224,7 +251,7 @@ class NotificationPanel(QFrame):
         layout.setSpacing(10)
 
         # Category dot
-        dot_color = _CATEGORY_COLORS.get(entry.category, COLORS["text_dim"])
+        dot_color = category_color(entry.category)
         dot = QLabel("\u2022")
         dot.setFixedWidth(12)
         dot.setStyleSheet(

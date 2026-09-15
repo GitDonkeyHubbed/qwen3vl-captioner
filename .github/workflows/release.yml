@@ -51,9 +51,15 @@ jobs:
           import re, sys, tomllib
 
           tag = sys.argv[1].lstrip("Vv")
-          app = re.search(
-              r'APP_VERSION\s*=\s*"([^"]+)"', open("gui/version.py").read()
-          ).group(1)
+          # Accept either quote style, matching tests/test_version_sync.py.
+          # The two patterns disagreeing meant a quoting change passed CI and
+          # then crashed this job with an AttributeError on None.
+          app_match = re.search(
+              r"""APP_VERSION\s*=\s*['"]([^'"]+)['"]""", open("gui/version.py").read()
+          )
+          if app_match is None:
+              sys.exit("APP_VERSION not found in gui/version.py")
+          app = app_match.group(1)
           proj = tomllib.load(open("pyproject.toml", "rb"))["project"]["version"]
           readme = open("README.md").read()
           badge = re.search(
