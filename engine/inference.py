@@ -12,10 +12,13 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
-from PIL import Image, ImageOps
-
-
-from engine.base import DEFAULT_SYSTEM_PROMPT, apply_prefix_suffix, clean_caption
+from engine.base import (
+    DEFAULT_SYSTEM_PROMPT,
+    MAX_IMAGE_DIM,
+    apply_prefix_suffix,
+    clean_caption,
+    load_image_for_inference,
+)
 from engine.cuda_setup import setup_cuda_dll_path, startup_failure_advice
 
 # Setup CUDA DLL path before importing llama_cpp
@@ -42,7 +45,7 @@ def is_image_file(path: Path) -> bool:
     return path.suffix.lower() in IMAGE_EXTENSIONS
 
 
-def image_to_data_uri(image_path: Path, max_dim: int = 1280) -> str:
+def image_to_data_uri(image_path: Path, max_dim: int = MAX_IMAGE_DIM) -> str:
     """
     Load an image, resize if needed (keeping aspect ratio), and convert to
     a base64 data URI suitable for llama-cpp-python vision input.
@@ -52,34 +55,19 @@ def image_to_data_uri(image_path: Path, max_dim: int = 1280) -> str:
         max_dim: Maximum dimension (width or height) to resize to.
         
     Returns:
-        A data URI string like 'data:image/png;base64,...'
+        A data URI string like 'data:image/jpeg;base64,...'
     """
-    # Open inside a context manager so the source file handle is released
-    # deterministically — exif_transpose + convert() force the pixel load, so
-    # the detached RGB copy needs no further access to the file. (Prevents a
-    # descriptor leak / Windows file lock during batch runs.)
-    #
-    # exif_transpose applies the EXIF Orientation tag (3/6/8 — ubiquitous in
-    # phone/camera JPEGs). Without it the model receives sideways pixels and
-    # captions a rotated scene — invisibly, because the Qt preview applies
-    # orientation on its own.
-    with Image.open(image_path) as src:
-        img = ImageOps.exif_transpose(src).convert("RGB")
+    img = load_image_for_inference(image_path, max_dim)
 
-    # Resize if any dimension exceeds max_dim. Clamp to >=1 px so an extreme
-    # aspect ratio (e.g. 10000x1) can't scale a side to zero and crash resize.
-    w, h = img.size
-    if w > max_dim or h > max_dim:
-        scale = max_dim / max(w, h)
-        new_w = max(1, int(w * scale))
-        new_h = max(1, int(h * scale))
-        img = img.resize((new_w, new_h), Image.LANCZOS)
-    
-    # Convert to PNG bytes then base64
+    # Encode as JPEG q95 rather than PNG. The chat handler decodes whatever it
+    # is given and re-encodes to JPEG q95 itself before handing bytes to
+    # llama.cpp, so a PNG here bought nothing and cost a slow, entropy-coded
+    # compression pass (plus several times the base64 payload) on every
+    # caption.
     buffer = io.BytesIO()
-    img.save(buffer, format="PNG")
+    img.save(buffer, format="JPEG", quality=95)
     b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
-    return f"data:image/png;base64,{b64}"
+    return f"data:image/jpeg;base64,{b64}"
 
 
 class Qwen3VLEngine:

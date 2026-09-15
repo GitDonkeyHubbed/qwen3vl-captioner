@@ -88,8 +88,19 @@ def _windows_checks(report: dict, problems: list):
     """CUDA toolkit / wheel matching — the common Windows failure modes."""
     if report["gpu_name"]:
         print(f"{OK} GPU:             {report['gpu_name']} (driver {report['driver_version']})")
+    elif not report.get("nvml_available"):
+        # The NVML bindings are missing from the app environment — that says
+        # nothing about the user's driver, so don't send them to nvidia.com.
+        print(f"{WARN} GPU:             cannot query — the 'nvidia-ml-py' package is not installed")
+        problems.append(
+            "GPU status could not be checked: the 'nvidia-ml-py' package is missing "
+            "from the app environment (this is not a driver problem).\n"
+            "         Re-run setup.bat to reinstall dependencies."
+        )
     else:
-        print(f"{WARN} GPU:             could not query NVML — NVIDIA driver missing or no NVIDIA GPU")
+        print(f"{WARN} GPU:             NVML query failed — NVIDIA driver missing or no NVIDIA GPU")
+        if report.get("gpu_query_error"):
+            print(f"{INFO}                  {report['gpu_query_error']}")
         problems.append(
             "Install/update the NVIDIA GPU driver: https://www.nvidia.com/drivers"
         )
@@ -157,7 +168,8 @@ def _macos_checks(report: dict, problems: list):
             # appending to `problems`, so a healthy Metal-only setup doesn't
             # exit 1 / print "PROBLEMS FOUND" over a missing optional extra.
             print(f"{WARN} MLX backend:     mlx-vlm not installed (optional — MLX models hidden)")
-            print(f"{INFO}                  to enable: ./setup.sh  (or: .venv/bin/pip install mlx-vlm)")
+            print(f"{INFO}                  to enable: ./setup.sh")
+            print(f"{INFO}                  (or: uv pip install --python .venv/bin/python mlx-vlm)")
 
 
 def main() -> int:

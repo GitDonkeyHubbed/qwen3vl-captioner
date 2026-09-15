@@ -1,6 +1,8 @@
 # Development / test dependencies (not needed to run the app).
 # Install with:  uv pip install -r requirements-dev.txt
-# Run tests:     python -m pytest tests/ -q
+# Run tests with the .venv interpreter, not a bare `python` from PATH:
+#   macOS / Linux: .venv/bin/python -m pytest tests/ -q
+#   Windows:       .venv\Scripts\python.exe -m pytest tests/ -q
 
 pytest>=9.1.1
 ruff>=0.16.5
