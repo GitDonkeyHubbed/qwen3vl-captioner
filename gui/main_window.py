@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
     QMessageBox, QSizePolicy, QStackedWidget, QProgressDialog,
 )
 
-from gui.caption_io import caption_path, read_caption, write_caption
+from gui.caption_io import caption_path, delete_caption, read_caption, write_caption
 from gui.file_browser import FileBrowserPanel
 from gui.image_viewer import ImageViewer
 from gui.caption_panel import CaptionPanel
@@ -780,10 +780,17 @@ class MainWindow(QMainWindow):
             self._caption_panel.mark_clean()
             return True
 
+        if self._caption_panel.get_caption():
+            detail = "has unsaved edits.\n\nSave it before continuing?"
+        else:
+            # Saving an emptied box deletes the sidecar; say so up front.
+            detail = (
+                "was cleared but not saved.\n\nSave (removing "
+                f"{caption_path(self._current_image).name}) before continuing?"
+            )
         answer = QMessageBox.question(
             self, "Unsaved Caption",
-            f"The caption for {self._current_image.name} has unsaved edits.\n\n"
-            "Save it before continuing?",
+            f"The caption for {self._current_image.name} {detail}",
             QMessageBox.StandardButton.Save
             | QMessageBox.StandardButton.Discard
             | QMessageBox.StandardButton.Cancel,
@@ -1981,6 +1988,23 @@ class MainWindow(QMainWindow):
         self._settings_panel.set_generating(False)
         self._image_viewer.set_processing(False)
 
+        # Still on the worker's image: the box holds a partial stream that is
+        # neither on disk nor cached. Left there, a trash + Save deleted the
+        # good sidecar unprompted, and a plain Save wrote the fragment over it.
+        # Put the image's own caption back, as _on_caption_finished does.
+        worker = self._caption_worker
+        if (
+            worker is not None
+            and self._current_image is not None
+            and worker.image_path == self._current_image
+        ):
+            own = self._load_caption(self._current_image)
+            if own:
+                self._caption_panel.set_caption(own)
+            else:
+                self._caption_panel.clear_caption()
+        self._stream_buffer = ""
+
         was_cancel = "cancel" in error.lower()
         if was_cancel:
             self._caption_panel.show_feedback("Generation cancelled", is_success=False)
@@ -2051,6 +2075,13 @@ class MainWindow(QMainWindow):
         all_paths = self._file_browser.get_all_paths()
         if not all_paths:
             QMessageBox.warning(self, "No Images", "Please import images first.")
+            return
+
+        # Starting a batch selects the first queued image with _batch_active
+        # already set, which bypasses the per-selection unsaved-edit prompt.
+        # Ask now, and before counting sidecars, so a just-saved edit counts
+        # as already-captioned and "Skip" protects it.
+        if not self._confirm_discard_caption_edit():
             return
 
         # Batch re-captions everything and overwrites every .txt sidecar,
@@ -2218,27 +2249,13 @@ class MainWindow(QMainWindow):
 
         caption = self._caption_panel.get_caption()
         if not caption:
-            txt_path = caption_path(self._current_image)
-            try:
-                txt_path.unlink(missing_ok=True)
-            except Exception as e:
-                self._caption_panel.show_feedback(
-                    f"Save error: {e}", is_success=False
-                )
-                self._notify(
-                    f"Save failed for {self._current_image.name}: {e}", "error"
-                )
+            if not self._caption_panel.is_dirty():
+                self._caption_panel.show_feedback("Nothing to save", is_success=False)
                 return False
-
-            key = str(self._current_image)
-            self._captions.pop(key, None)
-            self._caption_mtimes.pop(key, None)
-            self._unsaved.discard(key)
-            self._caption_panel.mark_clean()
-            self._caption_panel.show_feedback(f"Removed: {txt_path.name}")
-            self._file_browser.set_item_caption(self._current_image, "")
-            self._file_browser.set_item_status(self._current_image, "idle")
-            return True
+            # The user emptied the box. Refusing this made the clear
+            # unsaveable, and the "Unsaved Caption" prompt's default Save
+            # button then blocked navigation.
+            return self._remove_current_caption()
 
         txt_path = caption_path(self._current_image)
         try:
@@ -2255,6 +2272,60 @@ class MainWindow(QMainWindow):
         self._caption_panel.show_feedback(f"Saved: {txt_path.name}")
         self._file_browser.set_item_caption(self._current_image, caption)
         self._file_browser.set_item_status(self._current_image, "done")
+        return True
+
+    def _remove_current_caption(self) -> bool:
+        """Persist a caption the user cleared by deleting its sidecar.
+
+        A blank sidecar already counts as "uncaptioned" everywhere, so no file
+        is the consistent way to store it. True once the clear is settled
+        (sidecar removed, or kept at the user's request); False on an error.
+        """
+        img = self._current_image
+        txt_path = caption_path(img)
+        key = str(img)
+
+        # The box showed a generated caption that was never saved, so the
+        # caption on disk is one the user has not looked at in this box.
+        # Don't delete it on the strength of clearing something else.
+        if key in self._unsaved and read_caption(img).has_caption:
+            answer = QMessageBox.question(
+                self, "Delete Caption File",
+                f"You cleared a generated caption that was never saved, but "
+                f"{txt_path.name} on disk still holds an earlier caption.\n\n"
+                f"Delete {txt_path.name} as well?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                # Keep the file but still honour the clear: drop the rejected
+                # generated caption and show the file again. Returning False
+                # here trapped the user — every navigation re-asked both
+                # questions, and the junk caption came back on each revisit.
+                self._captions.pop(key, None)
+                self._caption_mtimes.pop(key, None)
+                self._unsaved.discard(key)
+                own = self._load_caption(img)
+                self._caption_panel.set_caption(own)
+                self._caption_panel.show_feedback(f"Kept {txt_path.name}")
+                self._file_browser.set_item_caption(img, own)
+                self._file_browser.set_item_status(img, "done" if own else "idle")
+                return True
+
+        try:
+            delete_caption(img)
+        except Exception as e:
+            self._caption_panel.show_feedback(f"Delete error: {e}", is_success=False)
+            self._notify(f"Could not remove {txt_path.name}: {e}", "error")
+            return False
+
+        self._captions.pop(key, None)
+        self._caption_mtimes.pop(key, None)
+        self._unsaved.discard(key)
+        self._caption_panel.mark_clean()
+        self._caption_panel.show_feedback(f"Removed: {txt_path.name}")
+        self._file_browser.set_item_caption(img, "")
+        self._file_browser.set_item_status(img, "idle")
         return True
 
     def _export_all_captions(self):

@@ -144,9 +144,7 @@ class CaptionPanel(QFrame):
         self.delete_btn.setProperty("class", "danger-button")
         self.delete_btn.setFixedSize(32, 28)
         self.delete_btn.setToolTip("Clear caption")
-        self.delete_btn.clicked.connect(
-            lambda: self.clear_caption(user_initiated=True)
-        )
+        self.delete_btn.clicked.connect(self._on_delete_clicked)
         bottom_row.addWidget(self.delete_btn)
 
         # Save button (inverted: light bg, dark text)
@@ -174,14 +172,15 @@ class CaptionPanel(QFrame):
             self.caption_text.setTextCursor(cursor)
             self.caption_text.ensureCursorVisible()
 
-    def clear_caption(self, *, user_initiated: bool = False):
-        """Clear the caption text, tracking delete-button clears as edits."""
-        if user_initiated:
+    def clear_caption(self):
+        """Clear the caption text (an app reset, so it leaves the box clean).
+
+        The trash button goes through `_on_delete_clicked` instead: routed
+        here, a user's clear was never dirty, so the next selection change
+        silently reloaded the caption it was meant to remove.
+        """
+        with self._writing_programmatically():
             self.caption_text.clear()
-            self._set_dirty(True)
-        else:
-            with self._writing_programmatically():
-                self.caption_text.clear()
         self.confidence_badge.setVisible(False)
         self.feedback_label.setText("")
 
@@ -217,6 +216,13 @@ class CaptionPanel(QFrame):
         self.regenerate_btn.setText(
             "\u23f3 Generating..." if is_generating else "\u2728 Regenerate Caption"
         )
+        # Typing while a caption streams could be neither saved (Save refuses
+        # mid-generation) nor protected: tokens landed inside it, the next one
+        # reset the dirty flag, and the finished caption replaced it. Don't
+        # accept edits (or a trash click) until generation ends. Programmatic
+        # inserts still work on a read-only QTextEdit.
+        self.caption_text.setReadOnly(is_generating)
+        self.delete_btn.setEnabled(not is_generating)
 
     def set_format_label(self, text: str):
         """Update the format badge text (e.g., when preset changes)."""
@@ -239,6 +245,17 @@ class CaptionPanel(QFrame):
         if dirty != self._dirty:
             self._dirty = dirty
             self.dirty_changed.emit(dirty)
+
+    def _on_delete_clicked(self):
+        """Trash button: a user edit, so it marks the box dirty.
+
+        Saving the emptied box then removes the sidecar.
+        """
+        if not self.caption_text.toPlainText():
+            return
+        self.caption_text.clear()  # not programmatic: textChanged marks dirty
+        self.confidence_badge.setVisible(False)
+        self.feedback_label.setText("")
 
     def _on_text_changed(self):
         """Track edits, then refresh the counters."""
