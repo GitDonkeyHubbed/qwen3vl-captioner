@@ -230,6 +230,8 @@ def test_spinner_timer_is_not_started_at_construction(qapp):
 
 
 def test_make_sparse_is_a_safe_noop_off_windows(tmp_path):
+    if sys.platform == "win32":
+        pytest.skip("_make_sparse marks the file sparse on Windows")
     from gui.model_download_manager import _make_sparse
 
     path = tmp_path / "x.part"
