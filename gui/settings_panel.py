@@ -1511,8 +1511,12 @@ class SettingsPanel(QFrame):
         during a download called set_generating(False), which hid Cancel and
         re-enabled Download — and a second click started a duplicate download
         of the same file.
+
+        A batch counts as busy for its whole run: between items there is a
+        ~100 ms gap with no caption generating, which used to hide Cancel and
+        re-enable Load/Download once per image.
         """
-        busy = self._generating or self._downloading
+        busy = self._generating or self._downloading or self._batch_total > 0
 
         if self._batch_total > 0:
             self.batch_btn.setText(

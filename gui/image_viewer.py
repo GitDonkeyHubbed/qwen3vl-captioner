@@ -372,6 +372,11 @@ class ImageViewer(QFrame):
         """Zoom with mouse wheel."""
         if self._pixmap and not self._pixmap.isNull():
             delta = event.angleDelta().y()
+            if delta == 0:
+                # A sideways scroll or a trackpad begin/end phase event carries
+                # no vertical motion; it fell into zoom-out and shrank the image.
+                event.accept()
+                return
             zoom_step = 0.05
             if delta > 0:
                 self._set_zoom(self._zoom + zoom_step)

@@ -9,7 +9,6 @@ caption look absent in one view and present in the other.
 import os
 import subprocess
 import sys
-import time
 
 import pytest
 
@@ -220,15 +219,18 @@ def test_save_succeeds_while_another_process_holds_the_sidecar(tmp_path):
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows read-only attribute")
-def test_read_only_sidecar_fails_fast_and_intact(tmp_path):
+def test_read_only_sidecar_fails_fast_and_intact(tmp_path, monkeypatch):
     img = _captioned(tmp_path)
     p = caption_path(img)
+    # Count the retry back-off sleeps rather than timing the call, which a
+    # slow runner can push past any wall-clock bound.
+    sleeps = []
+    monkeypatch.setattr(caption_io.time, "sleep", sleeps.append)
     subprocess.run(["attrib", "+r", str(p)], check=True)
     try:
-        start = time.monotonic()
         with pytest.raises(PermissionError):
             write_caption(img, "new")
-        assert time.monotonic() - start < 0.5  # no pointless retries
+        assert sleeps == []  # no pointless retries
     finally:
         subprocess.run(["attrib", "-r", str(p)], check=True)
     assert read_caption(img).text == OLD
