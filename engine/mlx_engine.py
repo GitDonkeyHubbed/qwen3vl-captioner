@@ -12,11 +12,19 @@ it automatically on Apple Silicon).
 
 import platform
 import sys
+import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Optional
 
-from engine.base import DEFAULT_SYSTEM_PROMPT, apply_prefix_suffix, clean_caption
+from engine.base import (
+    DEFAULT_SYSTEM_PROMPT,
+    MAX_IMAGE_DIM,
+    apply_prefix_suffix,
+    clean_caption,
+    load_image_for_inference,
+)
 
 MLX_SUPPORTED = sys.platform == "darwin" and platform.machine() == "arm64"
 
@@ -90,6 +98,29 @@ def _stream_with_sampling(
             if "sampler" not in str(exc):
                 raise
     return stream_generate(*args, temperature=temperature, top_p=top_p, **kwargs)
+
+
+@contextmanager
+def _prepared_image(image_path: Path, max_dim: int = MAX_IMAGE_DIM):
+    """Yield a path to an EXIF-corrected, size-clamped copy of an image.
+
+    mlx-vlm was handed the source path directly, so a single image was encoded
+    at its native resolution — up to 16.7 MP — while every other path in the
+    app clamps first. Handing over a temporary file (rather than a PIL object)
+    keeps mlx-vlm on the exact input shape every published version accepts.
+    """
+    img = load_image_for_inference(image_path, max_dim)
+    tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+    try:
+        img.save(tmp, format="JPEG", quality=95)
+        tmp.close()
+        yield Path(tmp.name)
+    finally:
+        tmp.close()
+        try:
+            Path(tmp.name).unlink()
+        except OSError:
+            pass
 
 
 class MlxVlmEngine:
@@ -198,23 +229,24 @@ class MlxVlmEngine:
 
         temp = temperature if temperature > 0 else 0.0
         nucleus = top_p if temperature > 0 else 1.0
-        token_stream = _stream_with_sampling(
-            stream_generate,
-            (self.model, self.processor, formatted_prompt),
-            {"image": [str(image_path)], "max_tokens": max_tokens},
-            temp,
-            nucleus,
-        )
-        for chunk in token_stream:
-            if cancel_check and cancel_check():
-                break
-            text = getattr(chunk, "text", None)
-            if text is None:
-                text = str(chunk)
-            if text:
-                caption_parts.append(text)
-                if stream_callback:
-                    stream_callback(text)
+        with _prepared_image(image_path) as prepared_path:
+            token_stream = _stream_with_sampling(
+                stream_generate,
+                (self.model, self.processor, formatted_prompt),
+                {"image": [str(prepared_path)], "max_tokens": max_tokens},
+                temp,
+                nucleus,
+            )
+            for chunk in token_stream:
+                if cancel_check and cancel_check():
+                    break
+                text = getattr(chunk, "text", None)
+                if text is None:
+                    text = str(chunk)
+                if text:
+                    caption_parts.append(text)
+                    if stream_callback:
+                        stream_callback(text)
 
         self._last_inference_time = time.perf_counter() - start_time
 
