@@ -98,12 +98,18 @@ def test_readme_test_count_matches_the_suite():
     claimed = re.search(r"Test suite grew to \*\*(\d+) tests\*\*", readme)
     assert claimed, "README test-count sentence not found"
 
-    result = subprocess.run(
+result = subprocess.run(
         [sys.executable, "-m", "pytest", "tests/", "-q", "--collect-only"],
-        cwd=REPO, capture_output=True, text=True,
+        cwd=REPO,
+        capture_output=True,
+        text=True,
     )
-    collected = re.search(r"(\d+) tests collected", result.stdout)
-    assert collected, f"could not parse a collection count from:\n{result.stdout[-2000:]}"
+    assert result.returncode == 0, (
+        "pytest --collect-only failed:\n" + (result.stdout + result.stderr)[-4000:]
+    )
+    out = result.stdout + result.stderr
+    collected = re.search(r"(\d+) tests collected", out)
+    assert collected, f"could not parse a collection count from:\n{out[-2000:]}"
 
     assert int(claimed.group(1)) == int(collected.group(1)), (
         f"README says {claimed.group(1)} tests but the suite collects "
