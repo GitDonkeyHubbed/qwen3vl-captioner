@@ -341,3 +341,75 @@ def test_ensure_mmproj_uses_a_same_family_encoder_and_refuses_a_foreign_one(
         ensure_mmproj(foreign, model_path=model)
 
     assert stub_hf == []  # neither case downloads anything
+
+
+# ── A publisher prefix may be dropped, a model name may not ─────────────
+#
+# The trailing-token family match took any shorter family found at the end of
+# the longer one as "the same model under a publisher prefix". A version-less
+# family such as the "vl" of "VL-8B" is the tail of Qwen3-VL and Keye-VL alike,
+# so it paired with the Qwen3-VL-8B encoder — at stage 1 through name
+# containment ("vl8b" in "qwen3vl8b") and at stage 3 through size and family.
+
+@pytest.mark.parametrize("model_name, encoder_name", [
+    ("Huihui-Qwen3-VL-8B-Instruct-abliterated-Q4_K_M.gguf",
+     "Qwen3-VL-8B-Instruct-abliterated-v2.mmproj-f16.gguf"),
+    ("Qwen3-VL-8B-Instruct-abliterated-v2.Q6_K.gguf",
+     "Qwen3-VL-8B-Instruct-abliterated-v2.mmproj-f16.gguf"),
+    ("Huihui-Qwen3-VL-8B-Instruct-abliterated-Q4_K_M.gguf",
+     "mmproj-Qwen_Qwen3-VL-8B-Instruct-f16.gguf"),
+    ("Qwen3-VL-4B-Instruct-Q8_0.gguf", "mmproj-Qwen3-VL-4B-Instruct-F16.gguf"),
+    ("Qwen3-VL-30B-A3B-Instruct-Q4_K_M.gguf",
+     "mmproj-Qwen3-VL-30B-A3B-Instruct-F16.gguf"),
+    ("PublisherA-Qwen3-VL-8B-Instruct.Q4_K_M.gguf",
+     "PublisherB-Qwen3-VL-8B.mmproj-f16.gguf"),
+    # The version may be its own token ("gemma 3"), not only "qwen3".
+    ("google_gemma-3-4b-it-Q4_K_M.gguf", "mmproj-gemma-3-4b-it-f16.gguf"),
+    # Nothing dropped: a version-less family still pairs with itself.
+    ("Keye-VL-8B-Preview-Q4_K_M.gguf", "mmproj-Keye-VL-8B-f16.gguf"),
+    # A version-less family under an org prefix (bartowski's "org_model"
+    # against ggml-org's bare name) is a publisher, not another model.
+    ("mistral-community_pixtral-12b-Q4_K_M.gguf", "mmproj-pixtral-12b-f16.gguf"),
+    ("XiaomiMiMo_MiMo-VL-7B-RL-Q4_K_M.gguf", "mmproj-MiMo-VL-7B-RL-f16.gguf"),
+    ("CohereForAI_aya-vision-8b-Q4_K_M.gguf", "mmproj-aya-vision-8b-f16.gguf"),
+])
+def test_publisher_prefixed_encoder_still_pairs(tmp_path, model_name, encoder_name):
+    model = _touch(tmp_path / model_name)
+    _touch(tmp_path / "unrelated-model.gguf")  # rules out the bare-mmproj stage
+    encoder = _touch(tmp_path / encoder_name)
+
+    assert find_mmproj_file(tmp_path, model) == encoder
+
+
+@pytest.mark.parametrize("model_name, encoder_name", [
+    ("Qwen3.5-4B-Q4_K_M.gguf", "Qwen3-VL-4B-Instruct.mmproj-f16.gguf"),
+    ("Gliese-Qwen3.5-4B-Abliterated-Caption.Q4_K_M.gguf",
+     "Qwen3-VL-4B-Instruct.mmproj-f16.gguf"),
+    ("gemma-3-4b-it-Q4_K_M.gguf", "Qwen3-VL-4B-Instruct.mmproj-f16.gguf"),
+    ("Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+     "Qwen3-VL-8B-Instruct-abliterated-v2.mmproj-f16.gguf"),
+    ("Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf", "mmproj-Qwen3-VL-7B-F16.gguf"),
+    ("Qwen3-VL-2B-Instruct-Q4_K_M.gguf", "Qwen3-VL-8B-Instruct.mmproj-f16.gguf"),
+    # A version-less family on the model side (stage 1 containment) ...
+    ("VL-8B-Q4_K_M.gguf", "Qwen3-VL-8B.mmproj-f16.gguf"),
+    ("VL-8B-Instruct-Q4_K_M.gguf", "mmproj-Qwen3-VL-8B-Instruct-F16.gguf"),
+    # ... and where only stage 3 (same size and family) could pair it.
+    ("VL-8B-Chat-Q4_K_M.gguf", "Qwen3-VL-8B-Instruct.mmproj-f16.gguf"),
+    ("VL-8B-Q4_K_M.gguf", "Keye-VL-8B.mmproj-f16.gguf"),
+    # A dropped token carrying a version ("v1") is part of the model's name.
+    ("llava-v1.6-mistral-7b-Q4_K_M.gguf", "mmproj-Mistral-7B-Instruct-f16.gguf"),
+])
+def test_encoder_of_another_model_is_refused(tmp_path, model_name, encoder_name):
+    model = _touch(tmp_path / model_name)
+    _touch(tmp_path / "unrelated-model.gguf")  # rules out the bare-mmproj stage
+    _touch(tmp_path / encoder_name)
+
+    assert find_mmproj_file(tmp_path, model) is None
+
+
+def test_same_family_does_not_drop_a_model_name_as_a_prefix():
+    from engine.model_downloader import _same_family
+    assert not _same_family("VL-8B-Q4_K_M.gguf", "Qwen3-VL-8B.mmproj-f16.gguf")
+    assert not _same_family("Qwen3-VL-8B.mmproj-f16.gguf", "VL-8B-Q4_K_M.gguf")
+    assert _same_family("Qwen3-VL-8B-Q4_K_M.gguf",
+                        "Huihui-Qwen3-VL-8B.mmproj-f16.gguf")

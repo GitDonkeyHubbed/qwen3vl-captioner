@@ -141,9 +141,22 @@ def _same_family(a: str, b: str) -> bool:
     if not any(ch.isalpha() for ch in want):
         return False
     # The shorter family must be whole trailing tokens of the longer one, so
-    # only a separate prefix token is ignored.
-    if _token_tail(long_, want) is not None:
-        return True
+    # only a separate prefix token is ignored. When a prefix IS dropped it
+    # must look like a publisher, not a model name: a bare "vl" is the tail of
+    # Qwen3-VL and Keye-VL alike, and a dropped versioned token ("qwen3",
+    # "v1" of llava-v1.6-mistral) is the model itself. A version-less family
+    # of real length ("pixtral", "aya vision") under an org prefix still pairs.
+    tail = _token_tail(long_, want)
+    if tail is not None:
+        dropped = long_[:len(long_) - len(tail)]
+        if (
+            not dropped
+            or _VERSIONED_NAME_RE.search(want)
+            or ((len(short) >= 2 or len(want) >= 5) and not any(
+                _VERSIONED_NAME_RE.fullmatch(t) for t in dropped
+            ))
+        ):
+            return True
     # A prefix on BOTH sides (Huihui-Qwen3-VL vs Qwen_Qwen3-VL): drop leading
     # tokens from each. What is left must still hold a versioned name token
     # such as "qwen3" or "gemma3n", so a bare "vl" or "5 vl" tail — shared by
