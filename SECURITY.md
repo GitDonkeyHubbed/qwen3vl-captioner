@@ -23,4 +23,11 @@ You can expect an acknowledgment within **72 hours** and a fix or workaround wit
 
 ## Scope
 
-This is a local desktop application — it does not run a server, expose ports, or process untrusted remote input by design. The most relevant security surface is the dependency chain (Python packages). Dependency vulnerabilities are scanned regularly and patched promptly.
+This is a local desktop application: it does not run a server or expose ports. It does, however, fetch and parse data it did not produce, and reports about any of it are in scope:
+
+- **Model downloads** — GGUF/safetensors files and vision encoders pulled from HuggingFace over HTTPS, written to disk and then loaded by llama.cpp / mlx-vlm.
+- **Installer fetches** — `setup.bat` / `setup.sh` download the uv installer and prebuilt llama-cpp-python wheels from pinned URLs.
+- **User media** — images the user imports are decoded by Qt and Pillow, and `.txt` caption sidecars are read from disk.
+- **The dependency chain** — Python packages, scanned regularly and patched promptly.
+
+Path traversal in downloaded filenames, unsafe deserialization, decoder crashes on crafted images, and TLS/verification weaknesses in any of the above are all things we want to hear about.
