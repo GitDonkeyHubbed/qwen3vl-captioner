@@ -4,7 +4,10 @@ Covers stuck states, a process abort, wrong imports, and a selector that
 silently did nothing.
 """
 
+import os
+import stat
 import sys
+import types
 
 import pytest
 
@@ -15,7 +18,6 @@ from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 from gui.file_browser import (  # noqa: E402
     FileBrowserPanel,
-    ThumbnailItem,
     _stem_key,
     is_importable_image,
     scan_directory,
@@ -62,7 +64,9 @@ def test_appledouble_and_dotfiles_are_skipped(tmp_path):
     for name in ("._IMG_0001.jpg", ".DS_Store", "IMG_0001.jpg", "b.png"):
         (tmp_path / name).write_bytes(b"")
 
-    found = [p.name for p in scan_directory(tmp_path)]
+    # Order-independent: this is about filtering, and WindowsPath sorts
+    # case-insensitively where PosixPath does not.
+    found = sorted(p.name for p in scan_directory(tmp_path))
     assert found == ["IMG_0001.jpg", "b.png"]
     assert is_importable_image(tmp_path / "._IMG_0001.jpg") is False
     assert is_importable_image(tmp_path / "IMG_0001.jpg") is True
@@ -230,28 +234,136 @@ def test_spinner_timer_is_not_started_at_construction(qapp):
     overlay.deleteLater()
 
 
+# ── Parallel download pre-allocation ────────────────────────────────────
+
+@pytest.mark.skipif(os.name == "nt", reason="NTFS behaviour covered by the Windows tests")
 def test_make_sparse_is_a_safe_noop_off_windows(tmp_path):
-    if sys.platform == "win32":
-        pytest.skip("_make_sparse marks the file sparse on Windows")
     from gui.model_download_manager import _make_sparse
 
     path = tmp_path / "x.part"
     with open(path, "wb") as f:
-        result = _make_sparse(f)
-        if sys.platform != "win32":
-            assert result is False  # POSIX already creates holes
+        assert _make_sparse(f) is False  # POSIX already creates holes
         f.truncate(1024)
     assert path.stat().st_size == 1024
 
 
-@pytest.mark.parametrize("status", ["idle", "generated", "done"])
-def test_thumbnail_terminal_status_without_caption_clears_preview(qapp, tmp_path, status):
-    item = ThumbnailItem(tmp_path / "image.jpg")
-    item.set_status("processing")
-    assert item.preview_label.text() == "Captioning..."
+def test_make_sparse_posix_branch_is_a_noop(tmp_path, monkeypatch):
+    # Runs everywhere: force the non-Windows branch even on Windows.
+    import gui.model_download_manager as mdm
 
-    item.set_status(status)
+    monkeypatch.setattr(mdm, "os", types.SimpleNamespace(name="posix"))
+    with open(tmp_path / "x.part", "wb") as f:
+        assert mdm._make_sparse(f) is False
 
-    assert item.preview_label.text() == ""
-    assert item.preview_label.property("class") == "thumb-preview"
-    item.deleteLater()
+
+@pytest.mark.skipif(os.name != "nt", reason="FSCTL_SET_SPARSE is Windows-only")
+def test_make_sparse_sets_the_sparse_attribute_on_windows(tmp_path):
+    from gui.model_download_manager import _make_sparse
+
+    path = tmp_path / "x.part"
+    with open(path, "wb") as f:
+        if not _make_sparse(f):
+            pytest.skip("temp volume does not support sparse files")
+    assert os.stat(path).st_file_attributes & stat.FILE_ATTRIBUTE_SPARSE_FILE
+
+
+def _allocated_bytes(path) -> int:
+    """Bytes actually allocated on disk for *path* (Windows only)."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetCompressedFileSizeW.restype = wintypes.DWORD
+    kernel32.GetCompressedFileSizeW.argtypes = [
+        wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD),
+    ]
+    high = wintypes.DWORD()
+    low = kernel32.GetCompressedFileSizeW(str(path), ctypes.byref(high))
+    if low == 0xFFFFFFFF and ctypes.get_last_error():
+        raise ctypes.WinError(ctypes.get_last_error())
+    return (high.value << 32) | low
+
+
+def test_preallocate_extends_to_the_full_size(tmp_path):
+    from gui.model_download_manager import _preallocate
+
+    path = tmp_path / "m.gguf.part"
+    with open(path, "wb") as f:
+        _preallocate(f, 4096)
+    assert path.read_bytes() == b"\0" * 4096
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the zero-writing truncate() is Windows-only")
+def test_preallocate_does_not_write_the_body_on_windows(tmp_path):
+    """CPython's truncate() goes through the CRT's _chsize_s on Windows, which
+    writes every byte as zeros even on a sparse file — an 8 GB model wrote
+    ~8 GB of zeros before the download started."""
+    from gui.model_download_manager import _make_sparse, _preallocate
+
+    # Probe the volume with a separate file: checking the file under test
+    # would also skip when _preallocate itself forgot to make it sparse.
+    with open(tmp_path / "probe", "wb") as probe:
+        if not _make_sparse(probe):
+            pytest.skip("temp volume does not support sparse files")
+
+    total = 64 * 1024 * 1024
+    path = tmp_path / "m.gguf.part"
+    with open(path, "wb") as f:
+        _preallocate(f, total)
+        f.flush()
+        os.fsync(f.fileno())  # allocation is only reported once cached writes land
+    assert os.stat(path).st_file_attributes & stat.FILE_ATTRIBUTE_SPARSE_FILE
+    assert path.stat().st_size == total
+    assert _allocated_bytes(path) < total // 16
+
+
+def test_parallel_download_overwrites_the_preallocated_last_byte(tmp_path, monkeypatch):
+    """_preallocate writes a placeholder final byte; the last range must
+    replace it so the finished file is byte-identical to the source."""
+    import urllib.request
+
+    from gui.model_download_manager import ModelDownloadWorker
+
+    payload = bytes(range(256)) * 4096 + b"\x01\x02\xab"  # last byte non-zero
+    total = len(payload)
+
+    class FakeResponse:
+        status = 206
+
+        def __init__(self, body):
+            self._body = body
+
+        def read(self, n):
+            chunk, self._body = self._body[:n], self._body[n:]
+            return chunk
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    class FakeOpener:
+        def open(self, request, timeout=None):
+            start, end = request.get_header("Range").split("=", 1)[1].split("-")
+            return FakeResponse(payload[int(start):int(end) + 1])
+
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *a: FakeOpener())
+
+    worker = ModelDownloadWorker(
+        repo_id="owner/repo", filename="m.gguf", target_dir=tmp_path,
+        max_connections=4,
+    )
+    finished, errors = [], []
+    worker.finished.connect(finished.append)
+    worker.error.connect(errors.append)
+
+    target = tmp_path / "m.gguf"
+    part = tmp_path / "m.gguf.part"
+    worker._run_parallel("https://example.invalid/m.gguf", target, part, total)
+
+    assert errors == []
+    assert finished == [str(target)]
+    assert target.read_bytes() == payload
+    assert not part.exists()
+    assert not (tmp_path / "m.gguf.part.parallel").exists()

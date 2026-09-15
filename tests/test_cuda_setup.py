@@ -189,22 +189,65 @@ def test_diagnose_distinguishes_missing_nvml_from_missing_driver(monkeypatch):
     assert "pynvml import failed" in (report["gpu_query_error"] or "")
 
 
-def test_diagnose_shuts_down_nvml_when_device_query_fails(monkeypatch):
+def _fake_pynvml(monkeypatch, *, init_exc=None, query_exc=None, shutdown_exc=None):
+    """Install a stand-in pynvml that records init/shutdown calls."""
     calls = []
-    pynvml = types.ModuleType("pynvml")
-    pynvml.nvmlInit = lambda: calls.append("init")
+    mod = types.ModuleType("pynvml")
 
-    def fail_query(_index):
-        raise RuntimeError("device query failed")
+    def nvmlInit():
+        calls.append("init")
+        if init_exc:
+            raise init_exc
 
-    pynvml.nvmlDeviceGetHandleByIndex = fail_query
-    pynvml.nvmlShutdown = lambda: calls.append("shutdown")
-    monkeypatch.setitem(sys.modules, "pynvml", pynvml)
+    def nvmlShutdown():
+        calls.append("shutdown")
+        if shutdown_exc:
+            raise shutdown_exc
 
+    def nvmlDeviceGetHandleByIndex(index):
+        if query_exc:
+            raise query_exc
+        return object()
+
+    mod.nvmlInit = nvmlInit
+    mod.nvmlShutdown = nvmlShutdown
+    mod.nvmlDeviceGetHandleByIndex = nvmlDeviceGetHandleByIndex
+    mod.nvmlDeviceGetName = lambda handle: b"Fake GPU"
+    mod.nvmlSystemGetDriverVersion = lambda: "999.99"
+    monkeypatch.setitem(sys.modules, "pynvml", mod)
+    return calls
+
+
+def test_diagnose_shuts_nvml_down_when_a_query_raises(monkeypatch):
+    # nvmlShutdown sat at the end of the try, so a query failing after a
+    # successful nvmlInit (GPU lost, no device 0) leaked the NVML init.
+    calls = _fake_pynvml(monkeypatch, query_exc=RuntimeError("GPU is lost"))
     report = cuda_setup.diagnose()
-
-    assert report["gpu_query_error"] == "device query failed"
+    assert report["gpu_query_error"] == "GPU is lost"
     assert calls == ["init", "shutdown"]
+
+
+def test_diagnose_skips_nvml_shutdown_when_init_fails(monkeypatch):
+    # No NVIDIA driver: real pynvml answers a shutdown without a successful
+    # init with NVMLError_Uninitialized, which must not escape diagnose().
+    calls = _fake_pynvml(
+        monkeypatch,
+        init_exc=RuntimeError("NVML Shared Library Not Found"),
+        shutdown_exc=RuntimeError("Uninitialized"),
+    )
+    report = cuda_setup.diagnose()
+    assert calls == ["init"]
+    assert report["gpu_query_error"] == "NVML Shared Library Not Found"
+    assert report["gpu_name"] is None
+
+
+def test_diagnose_nvml_shutdown_error_is_not_fatal(monkeypatch):
+    calls = _fake_pynvml(monkeypatch, shutdown_exc=RuntimeError("shutdown hiccup"))
+    report = cuda_setup.diagnose()
+    assert calls == ["init", "shutdown"]
+    assert report["gpu_name"] == "Fake GPU"
+    assert report["driver_version"] == "999.99"
+    assert report["gpu_query_error"] is None
 
 
 def test_detect_cuda_toolkit_none_when_no_install(tmp_path, monkeypatch):

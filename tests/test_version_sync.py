@@ -16,6 +16,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parent.parent
 
 
@@ -98,20 +100,108 @@ def test_readme_test_count_matches_the_suite():
     claimed = re.search(r"Test suite grew to \*\*(\d+) tests\*\*", readme)
     assert claimed, "README test-count sentence not found"
 
-result = subprocess.run(
+    result = subprocess.run(
         [sys.executable, "-m", "pytest", "tests/", "-q", "--collect-only"],
-        cwd=REPO,
-        capture_output=True,
-        text=True,
+        cwd=REPO, capture_output=True, text=True, errors="replace",
     )
+    # Check the exit code BEFORE parsing: a module that fails to import still
+    # prints "N tests collected, 1 error", and a broken conftest reports only
+    # on stderr — either way the README would be blamed for a collection bug.
     assert result.returncode == 0, (
-        "pytest --collect-only failed:\n" + (result.stdout + result.stderr)[-4000:]
+        f"pytest --collect-only exited {result.returncode}; fix collection "
+        f"before checking the README count.\n--- stdout ---\n"
+        f"{result.stdout[-2000:]}\n--- stderr ---\n{result.stderr[-2000:]}"
     )
-    out = result.stdout + result.stderr
-    collected = re.search(r"(\d+) tests collected", out)
-    assert collected, f"could not parse a collection count from:\n{out[-2000:]}"
+    collected = re.search(r"(\d+) tests collected", result.stdout)
+    assert collected, (
+        f"could not parse a collection count from:\n--- stdout ---\n"
+        f"{result.stdout[-2000:]}\n--- stderr ---\n{result.stderr[-2000:]}"
+    )
 
     assert int(claimed.group(1)) == int(collected.group(1)), (
         f"README says {claimed.group(1)} tests but the suite collects "
         f"{collected.group(1)}"
     )
+
+
+def _fake_collect_only(monkeypatch, returncode, stdout, stderr=""):
+    """Replace subprocess.run so the README-count test sees a canned run."""
+    import subprocess
+
+    def fake_run(args, **kwargs):
+        return subprocess.CompletedProcess(args, returncode, stdout, stderr)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+
+def _readme_count() -> str:
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    return re.search(r"Test suite grew to \*\*(\d+) tests\*\*", readme).group(1)
+
+
+def test_readme_count_guard_fails_on_a_collection_error(monkeypatch):
+    """A broken test module must fail the guard even though pytest still
+    prints a parseable (and here matching) count — it used to pass silently."""
+    _fake_collect_only(
+        monkeypatch, 2,
+        "ERROR tests/test_broken.py\n"
+        f"{_readme_count()} tests collected, 1 error in 0.10s\n",
+    )
+    with pytest.raises(AssertionError, match="exited 2"):
+        test_readme_test_count_matches_the_suite()
+
+
+def test_readme_count_guard_surfaces_stderr(monkeypatch):
+    """A conftest crash writes only to stderr; the failure must show it."""
+    _fake_collect_only(
+        monkeypatch, 4, "",
+        "ImportError while loading conftest 'tests/conftest.py'.\n",
+    )
+    with pytest.raises(AssertionError, match="ImportError while loading conftest"):
+        test_readme_test_count_matches_the_suite()
+
+
+# ── Contributor docs run tools with the .venv interpreter ────────────────
+
+_BARE_TOOL = re.compile(r"^\s*(python3?|py|pytest|ruff)(\s|$)")
+
+
+def _fenced_code_lines(markdown: str):
+    """Yield (fence language, line) for every line inside a fenced block."""
+    lang = None
+    for line in markdown.splitlines():
+        if line.lstrip().startswith("```"):
+            lang = None if lang is not None else line.strip()[3:].strip()
+            continue
+        if lang is not None:
+            yield lang, line
+
+
+def test_dev_docs_run_tools_with_the_venv_interpreter():
+    """CONTRIBUTING.md said `python -m pytest tests/ -q` right under two lines
+    that used .venv/bin/python. A bare `python` is whatever is on PATH — on
+    the owner's Windows PC a system Python without pytest — not the .venv
+    that setup created. requirements-dev.txt repeated the same command, and
+    the Windows lines sat in a bash block, where Git Bash strips backslashes.
+    """
+    contributing = (REPO / "CONTRIBUTING.md").read_text(encoding="utf-8")
+    offenders = []
+    for lang, line in _fenced_code_lines(contributing):
+        if line.lstrip().startswith("#"):
+            continue  # a comment line, not a command
+        command = line.split(" #", 1)[0]
+        if _BARE_TOOL.match(command):
+            offenders.append(line.strip())
+        elif lang in ("bash", "sh") and ".venv\\" in command:
+            offenders.append(f"{line.strip()}  (backslash path in a {lang} block)")
+    assert not offenders, (
+        "CONTRIBUTING.md commands must use the .venv interpreter:\n"
+        + "\n".join(offenders)
+    )
+
+    requirements = (REPO / "requirements-dev.txt").read_text(encoding="utf-8")
+    for line in requirements.splitlines():
+        if "-m pytest" in line:
+            assert ".venv" in line, (
+                f"requirements-dev.txt runs tests without the .venv interpreter: {line!r}"
+            )

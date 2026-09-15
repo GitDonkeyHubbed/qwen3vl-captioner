@@ -401,10 +401,10 @@ _FSCTL_SET_SPARSE = 0x000900C4
 def _make_sparse(fileobj) -> bool:
     """Ask the filesystem to make an open file sparse. True if it took effect.
 
-    Only NTFS needs (and supports) this: a plain `truncate()` there physically
-    writes the zeros. POSIX filesystems already create holes, so this is a
-    no-op off Windows. Never raises — a failure just means the pre-allocation
-    is dense, which is slow but correct.
+    Only NTFS needs this: without the flag, extending a file reserves every
+    cluster of the new size up front, while POSIX filesystems already leave
+    holes — so this is a no-op off Windows. Never raises — a failure just
+    means the pre-allocation is dense, which costs disk space but is correct.
     """
     if os.name != "nt":
         return False
@@ -425,6 +425,23 @@ def _make_sparse(fileobj) -> bool:
         return bool(ok)
     except Exception:
         return False
+
+
+def _preallocate(fileobj, total: int) -> None:
+    """Extend an open, empty file to *total* bytes without writing its body.
+
+    Don't use `truncate()` for this: on Windows CPython implements it with
+    the C runtime's `_chsize_s`, which physically writes zeros up to the new
+    size — sparse flag or not — so an 8 GB model wrote ~8 GB of zeros before
+    its first byte arrived, with no progress shown and no cancel check.
+    Writing just the last byte extends the file and leaves the gap as a hole
+    (on POSIX, and on NTFS once `_make_sparse` succeeds). The parallel
+    downloader's last segment ends at `total - 1`, so it overwrites that byte.
+    """
+    _make_sparse(fileobj)
+    if total > 0:
+        fileobj.seek(total - 1)
+        fileobj.write(b"\0")
 
 
 class ModelDownloadWorker(QObject):
@@ -677,13 +694,10 @@ class ModelDownloadWorker(QObject):
             self.target_dir.mkdir(parents=True, exist_ok=True)
             marker.write_text("1")
             with open(part, "wb") as f:
-                # Mark the file sparse BEFORE extending it. On NTFS a plain
-                # truncate() is not sparse, so an 8 GB model download
-                # physically wrote ~8 GB of zeros before the first byte
-                # arrived: double the disk writes, no progress shown, and no
-                # cancel check for the duration.
-                _make_sparse(f)
-                f.truncate(total)  # pre-allocate so each thread can seek+write
+                # Full size up front so each thread can seek+write its range,
+                # without writing the body (see _preallocate: truncate() wrote
+                # every byte as zeros on Windows before the download started).
+                _preallocate(f, total)
         except Exception as exc:
             self._safe_unlink(marker)
             self.error.emit(f"Could not create download file: {exc}")

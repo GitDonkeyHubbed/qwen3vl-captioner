@@ -47,14 +47,19 @@ Use the interpreter inside the `.venv` that setup created — a bare `python`
 is whatever is on your PATH, which is not the environment the app was
 installed into.
 
-```bash
-# Windows
-uv pip install --python .venv\Scripts\python.exe -r requirements-dev.txt
-.venv\Scripts\python.exe -m pytest tests/ -q
+macOS / Linux:
 
-# macOS / Linux
+```bash
 uv pip install --python .venv/bin/python -r requirements-dev.txt
 .venv/bin/python -m pytest tests/ -q
+```
+
+Windows (Command Prompt or PowerShell; in Git Bash use forward slashes,
+`.venv/Scripts/python.exe`, since bash strips the backslashes):
+
+```bat
+uv pip install --python .venv\Scripts\python.exe -r requirements-dev.txt
+.venv\Scripts\python.exe -m pytest tests/ -q
 ```
 
 The tests cover the platform-independent logic (CUDA→wheel mapping, the model
@@ -62,13 +67,23 @@ registry, caption cleanup, config). They run headless and need no GPU.
 
 ### Before you open a PR
 
-CI runs **Lint & Test** on every PR. Match it locally:
+CI runs **Lint & Test** on every PR. Match it locally — syntax check, lint
+(rules in `pyproject.toml`), then tests.
+
+macOS / Linux:
 
 ```bash
-# macOS / Linux (on Windows use .venv\Scripts\python.exe)
-.venv/bin/python -m compileall -q app.py doctor.py engine gui tests   # syntax
-.venv/bin/python -m ruff check app.py doctor.py engine gui tests      # lint (rules in pyproject.toml)
-.venv/bin/python -m pytest tests/ -q                          # tests
+.venv/bin/python -m compileall -q app.py doctor.py engine gui tests
+.venv/bin/python -m ruff check app.py doctor.py engine gui tests
+.venv/bin/python -m pytest tests/ -q
+```
+
+Windows (Command Prompt or PowerShell):
+
+```bat
+.venv\Scripts\python.exe -m compileall -q app.py doctor.py engine gui tests
+.venv\Scripts\python.exe -m ruff check app.py doctor.py engine gui tests
+.venv\Scripts\python.exe -m pytest tests/ -q
 ```
 
 Keep the codebase **ruff-clean**. Prefer removing an unused import over
