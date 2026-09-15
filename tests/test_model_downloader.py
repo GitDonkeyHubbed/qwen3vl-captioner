@@ -180,3 +180,164 @@ def test_default_mmproj_fits(tmp_path):
     assert default_mmproj_fits(Path("Qwen3-VL-8B-Instruct-abliterated-v2.Q6_K.gguf")) is True
     assert default_mmproj_fits(Path("Qwen3-VL-4B-Instruct.Q4_K_M.gguf")) is False
     assert default_mmproj_fits(Path("Gliese-Qwen3.5-8B-Caption.Q4_K_M.gguf")) is False
+
+
+# ── Family identity (stage 3) and K-quant names (stage 1) ───────────────
+#
+# Stage 3 used to pair on parameter size alone, so any same-size encoder in
+# the folder was taken — a Qwen3.5-4B or Gemma-3-4B model got the Qwen3-VL-4B
+# encoder. And because "Q4_K_M" left "k"/"m" in the model key, stage 1 never
+# recognised a K-quant model's own encoder, leaving that choice to stage 3.
+
+# The owner's real model folder, filenames only.
+_REAL_FOLDER_MODELS = (
+    "Huihui-Qwen3-VL-8B-Instruct-abliterated-Q4_K_M.gguf",
+    "Qwen3-VL-8B-Instruct-abliterated-v2.Q2_K.gguf",
+    "Qwen3-VL-8B-Instruct-abliterated-v2.Q6_K.gguf",
+)
+_REAL_FOLDER_ENCODER = "Qwen3-VL-8B-Instruct-abliterated-v2.mmproj-f16.gguf"
+
+
+@pytest.mark.parametrize("model_name", _REAL_FOLDER_MODELS)
+def test_real_folder_models_all_pair_with_the_v2_encoder(tmp_path, model_name):
+    for name in _REAL_FOLDER_MODELS:
+        _touch(tmp_path / name)
+    encoder = _touch(tmp_path / _REAL_FOLDER_ENCODER)
+
+    assert find_mmproj_file(tmp_path, tmp_path / model_name) == encoder
+
+
+@pytest.mark.parametrize("model_name, encoder_name", [
+    # Official Qwen naming: "mmproj-" in front and "Qwen3VL" joined.
+    ("Qwen3-VL-8B-Instruct-Q4_K_M.gguf", "mmproj-Qwen3VL-8B-Instruct-F16.gguf"),
+    # The publisher prefix on the encoder side instead of the model side.
+    ("Qwen3-VL-8B-Instruct-abliterated-v2.Q8_0.gguf",
+     "Huihui-Qwen3-VL-8B-Instruct-abliterated.mmproj-f16.gguf"),
+    # A different publisher prefix on each side.
+    ("Huihui-Qwen3-VL-8B-Instruct-abliterated-Q4_K_M.gguf",
+     "mmproj-Qwen_Qwen3-VL-8B-Instruct-f16.gguf"),
+    ("Qwen_Qwen3-VL-8B-Instruct-Q4_K_M.gguf",
+     "Huihui-Qwen3-VL-8B-Instruct-abliterated.mmproj-f16.gguf"),
+    ("huihui-ai_Huihui-Qwen3-VL-4B-Instruct-abliterated-Q4_K_M.gguf",
+     "mmproj-Qwen_Qwen3VL-4B-Instruct-f16.gguf"),
+])
+def test_same_family_encoder_pairs_across_publishers(
+    tmp_path, model_name, encoder_name
+):
+    model = _touch(tmp_path / model_name)
+    _touch(tmp_path / "unrelated-model.gguf")  # rules out the bare-mmproj stage
+    encoder = _touch(tmp_path / encoder_name)
+
+    assert find_mmproj_file(tmp_path, model) == encoder
+
+
+@pytest.mark.parametrize("model_name", [
+    "Qwen3.5-4B-Q4_K_M.gguf",
+    "Gliese-Qwen3.5-4B-Abliterated-Caption.Q4_K_M.gguf",
+    "gemma-3-4b-it-Q4_K_M.gguf",
+])
+def test_same_size_encoder_of_another_family_is_refused(tmp_path, model_name):
+    model = _touch(tmp_path / model_name)
+    _touch(tmp_path / "Qwen3-VL-4B-Instruct.Q4_K_M.gguf")
+    _touch(tmp_path / "Qwen3-VL-4B-Instruct.mmproj-f16.gguf")
+
+    assert find_mmproj_file(tmp_path, model) is None
+
+
+def test_llama_text_model_is_refused_the_qwen3vl_8b_encoder(tmp_path, stub_hf):
+    model = _touch(tmp_path / "Llama-3.1-8B-Instruct-Q4_K_M.gguf")
+    _touch(tmp_path / "Qwen3-VL-8B-Instruct-abliterated-v2.Q4_K_M.gguf")
+    _touch(tmp_path / "Qwen3-VL-8B-Instruct-abliterated-v2.mmproj-f16.gguf")
+
+    assert find_mmproj_file(tmp_path, model) is None
+    # ensure_mmproj agrees: no pairing, and no download of the 8B Qwen3-VL
+    # encoder either — it raises and names the encoder it would not use.
+    with pytest.raises(MmprojMismatchError, match="belongs to a different model"):
+        ensure_mmproj(tmp_path, model_path=model)
+    assert stub_hf == []
+
+
+def test_a_size_without_a_family_is_refused(tmp_path):
+    # Its name is also contained in the encoder's, so neither the size nor the
+    # name containment of stage 1 may pair it without a family.
+    model = _touch(tmp_path / "8B-Instruct-Q4_K_M.gguf")
+    _touch(tmp_path / "other-model.gguf")
+    _touch(tmp_path / "Qwen3-VL-8B-Instruct.mmproj-f16.gguf")
+
+    assert find_mmproj_file(tmp_path, model) is None
+
+
+def test_same_family_distinguishes_qwen_generations():
+    from engine.model_downloader import _same_family
+    assert _same_family("Qwen3-VL-8B-Instruct-Q4_K_M.gguf",
+                        "Huihui-Qwen3-VL-8B-Instruct-abliterated.mmproj-f16.gguf")
+    assert not _same_family("Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
+                            "Qwen3-VL-7B.mmproj-f16.gguf")
+    assert not _same_family("Qwen3.5-4B-Q4_K_M.gguf", "Qwen3-VL-4B.mmproj-f16.gguf")
+    # Prefixes on both sides may not reduce the match to a bare shared tail.
+    assert not _same_family("Foo-Qwen2.5-VL-7B-Q4_K_M.gguf",
+                            "mmproj-Bar-Qwen3.5-VL-7B-f16.gguf")
+    assert not _same_family("Keye-VL-8B-Preview-Q4_K_M.gguf",
+                            "mmproj-Qwen_Qwen3-VL-8B-Instruct-f16.gguf")
+    assert not _same_family("Foo-InternVL3-8B-Q4_K_M.gguf",
+                            "mmproj-Bar-InternVL3_5-8B-f16.gguf")
+    # No size token: the family is unknown, so it never matches.
+    assert not _same_family("Qwen3-VL-Instruct.Q4_K_M.gguf",
+                            "Qwen3-VL-Instruct.mmproj-f16.gguf")
+
+
+@pytest.mark.parametrize("quant", ["Q4_K_M", "Q2_K", "Q6_K", "Q8_0", "IQ4_NL", "IQ2_XXS"])
+def test_k_quant_model_takes_its_own_encoder_at_stage_one(tmp_path, quant):
+    # The Huihui encoder sorts first and is the same family and size, so it
+    # would win at stage 3; only a stage-1 match picks the model's own one.
+    model = _touch(tmp_path / f"Qwen3-VL-8B-Instruct-abliterated-v2.{quant}.gguf")
+    _touch(tmp_path / "Huihui-Qwen3-VL-8B-Instruct-abliterated.mmproj-f16.gguf")
+    own = _touch(tmp_path / "Qwen3-VL-8B-Instruct-abliterated-v2.mmproj-f16.gguf")
+
+    assert find_mmproj_file(tmp_path, model) == own
+
+
+def test_exact_encoder_name_beats_a_longer_one_that_contains_it(tmp_path):
+    model = _touch(tmp_path / "Qwen3-VL-8B-Instruct-Q4_K_M.gguf")
+    _touch(tmp_path / "Qwen3-VL-8B-Instruct-abliterated-v2.mmproj-f16.gguf")
+    own = _touch(tmp_path / "Qwen3-VL-8B-Instruct.mmproj-f16.gguf")
+
+    assert find_mmproj_file(tmp_path, model) == own
+
+
+def test_own_encoder_wins_over_an_alphabetically_earlier_foreign_one(tmp_path):
+    model = _touch(tmp_path / "Qwen3.5-4B-Instruct.Q4_K_M.gguf")
+    _touch(tmp_path / "gemma-3-4b-it.Q4_K_M.gguf")
+    _touch(tmp_path / "gemma-3-4b-it.mmproj-f16.gguf")
+    own = _touch(tmp_path / "Qwen3.5-4B-Instruct.mmproj-f16.gguf")
+
+    assert find_mmproj_file(tmp_path, model) == own
+
+
+def test_bare_q8_0_mmproj_pairs_when_the_folder_holds_one_model(tmp_path):
+    # "mmproj-Q8_0" left a stray "0", so it was not seen as a bare encoder.
+    model = _touch(tmp_path / "Huihui-Qwen3-VL-8B-Instruct-abliterated-Q4_K_M.gguf")
+    mmproj = _touch(tmp_path / "mmproj-Q8_0.gguf")
+
+    assert find_mmproj_file(tmp_path, model) == mmproj
+
+
+def test_ensure_mmproj_uses_a_same_family_encoder_and_refuses_a_foreign_one(
+    tmp_path, stub_hf
+):
+    same = tmp_path / "same"
+    same.mkdir()
+    model = _touch(same / "Huihui-Qwen3-VL-8B-Instruct-abliterated-Q4_K_M.gguf")
+    _touch(same / "Qwen3-VL-8B-Instruct-abliterated-v2.Q6_K.gguf")
+    encoder = _touch(same / _REAL_FOLDER_ENCODER)
+    assert ensure_mmproj(same, model_path=model) == encoder
+
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    model = _touch(foreign / "Qwen3.5-4B-Q4_K_M.gguf")
+    _touch(foreign / "Qwen3-VL-4B-Instruct.Q4_K_M.gguf")
+    _touch(foreign / "Qwen3-VL-4B-Instruct.mmproj-f16.gguf")
+    with pytest.raises(MmprojMismatchError, match="belongs to a different model"):
+        ensure_mmproj(foreign, model_path=model)
+
+    assert stub_hf == []  # neither case downloads anything

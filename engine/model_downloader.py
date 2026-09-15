@@ -63,7 +63,12 @@ _QUANT_RE = re.compile(
     r"^(?:iq\d+(?:_[a-z0-9]+)*|q\d+(?:_[a-z0-9]+)*|f\d+|bf\d+|fp\d+)$", re.I
 )
 _SIZE_TOKEN_RE = re.compile(r"^(\d+(?:\.\d+)?)b$", re.I)
-_MODEL_FAMILY_RE = re.compile(r"qwen\d+(?:\.\d+)?(?:[-_. ]*vl)?", re.I)
+# The pieces a quant tag leaves behind once "_" has split it: the K/M/S/L/XS/
+# XXS/XL/NL of "Q4_K_M", "IQ2_XXS" or "IQ4_NL", and the digits of "Q8_0".
+# Dropped only straight after a quant token, never elsewhere in a name.
+_QUANT_TAIL_RE = re.compile(r"^(?:\d+|k|s|m|l|xs|xxs|xl|nl)$", re.I)
+# A model-name token carrying its version: "qwen3", "gemma3n", "internvl3".
+_VERSIONED_NAME_RE = re.compile(r"[a-z]+\d[a-z0-9]*")
 
 
 def _tokens(name: str) -> list[str]:
@@ -71,10 +76,28 @@ def _tokens(name: str) -> list[str]:
     return [t for t in re.split(r"[-_. ]+", name.lower()) if t]
 
 
+def _identity_tokens(stem: str) -> list[str]:
+    """Tokens of a filename stem with the build tags (quant, "mmproj") removed.
+
+    "Q4_K_M" tokenises to "q4", "k", "m"; the "k" and "m" go with the "q4".
+    Left in, they made the key of every K-quant / Q8_0 model differ from the
+    encoder named after it, so that encoder was never recognised as its own.
+    """
+    keep = []
+    after_quant = False
+    for t in _tokens(stem):
+        if _QUANT_RE.match(t):
+            after_quant = True
+        elif not (after_quant and _QUANT_TAIL_RE.match(t)):
+            after_quant = False
+            if t != "mmproj":
+                keep.append(t)
+    return keep
+
+
 def _model_key(stem: str) -> str:
     """Normalised identity of a model, with quant and mmproj tokens removed."""
-    keep = [t for t in _tokens(stem) if t != "mmproj" and not _QUANT_RE.match(t)]
-    return "".join(keep)
+    return "".join(_identity_tokens(stem))
 
 
 def _size_tokens(name: str) -> set[str]:
@@ -88,12 +111,61 @@ def _size_tokens(name: str) -> set[str]:
     }
 
 
-def _model_family_ids(name: str) -> set[str]:
-    """Architecture-family identifiers carried by a model filename."""
-    return {
-        re.sub(r"[-_. ]", "", match.group(0).lower())
-        for match in _MODEL_FAMILY_RE.finditer(name)
-    }
+def _family_tokens(name: str) -> list[str]:
+    """The name tokens before the parameter-size token: the model family.
+
+    "Qwen3-VL-8B-..." -> qwen3 vl, "Qwen3.5-4B-..." -> qwen3 5,
+    "gemma-3-4b-it" -> gemma 3, "Huihui-Qwen3-VL-8B-..." -> huihui qwen3 vl.
+    Empty when the name has no size token, i.e. its family is unknown.
+    """
+    family = []
+    for t in _identity_tokens(Path(name).stem):
+        if _SIZE_TOKEN_RE.match(t):
+            return family
+        family.append(t)
+    return []
+
+
+def _same_family(a: str, b: str) -> bool:
+    """True when two filenames name the same model family.
+
+    Keeps Qwen3-VL, Qwen3.5, Qwen2.5-VL and Gemma 3 apart — at the same size
+    their encoders are still not interchangeable — while tolerating a
+    publisher prefix (Huihui-, Gliese-, noctrex-) on either side — or a
+    different one on each — and the joined "Qwen3VL" spelling. An unknown
+    family never matches.
+    """
+    fam_a, fam_b = _family_tokens(a), _family_tokens(b)
+    short, long_ = sorted((fam_a, fam_b), key=lambda f: len("".join(f)))
+    want = "".join(short)
+    if not any(ch.isalpha() for ch in want):
+        return False
+    # The shorter family must be whole trailing tokens of the longer one, so
+    # only a separate prefix token is ignored.
+    if _token_tail(long_, want) is not None:
+        return True
+    # A prefix on BOTH sides (Huihui-Qwen3-VL vs Qwen_Qwen3-VL): drop leading
+    # tokens from each. What is left must still hold a versioned name token
+    # such as "qwen3" or "gemma3n", so a bare "vl" or "5 vl" tail — shared by
+    # Keye-VL and Qwen3-VL, or Qwen2.5-VL and Qwen3.5-VL — never matches.
+    for i in range(1, len(fam_a)):
+        rest = fam_a[i:]
+        tail = _token_tail(fam_b[1:], "".join(rest))
+        if tail is not None and any(
+            _VERSIONED_NAME_RE.fullmatch(t) for t in rest + tail
+        ):
+            return True
+    return False
+
+
+def _token_tail(tokens: list[str], want: str) -> Optional[list[str]]:
+    """The trailing whole tokens of *tokens* that spell *want*, else None."""
+    tail = ""
+    for i in range(len(tokens) - 1, -1, -1):
+        tail = tokens[i] + tail
+        if len(tail) >= len(want):
+            return tokens[i:] if tail == want else None
+    return None
 
 
 def _is_generic_mmproj(path: Path) -> bool:
@@ -103,11 +175,7 @@ def _is_generic_mmproj(path: Path) -> bool:
     the model. Such a file carries no model identity of its own, so it can be
     paired only when the folder leaves no doubt which model it belongs to.
     """
-    rest = [
-        t for t in _tokens(path.stem)
-        if t != "mmproj" and not _QUANT_RE.match(t)
-    ]
-    return not rest
+    return not _identity_tokens(path.stem)
 
 
 def _mmproj_candidates(model_dir: Path) -> list[Path]:
@@ -145,8 +213,9 @@ def find_mmproj_file(
     Search for the vision encoder belonging to a model.
 
     When *model_path* is given the pairing is model-aware: an encoder is
-    accepted only when it names the same model, or when it is a bare
-    `mmproj-*.gguf` in a folder holding exactly one model. Taking any
+    accepted only when it names the same model, when it is a bare
+    `mmproj-*.gguf` in a folder holding exactly one model, or when it names
+    the same model family and parameter size. Taking any
     `*mmproj*.gguf` in the folder — the previous behaviour — silently paired a
     browsed model with a foreign encoder, which crashes llama.cpp natively on
     the first caption.
@@ -164,15 +233,25 @@ def find_mmproj_file(
     if not candidates or model_path is None:
         return candidates[0] if candidates else None
 
+    model_name = Path(model_path).name
     key = _model_key(Path(model_path).stem)
-    model_sizes = _size_tokens(Path(model_path).name)
-    model_families = _model_family_ids(Path(model_path).name)
+    model_sizes = _size_tokens(model_name)
 
     # 1. An encoder that names this model (the usual publisher layout,
-    #    "<model stem>.mmproj-f16.gguf").
-    for cand in candidates:
-        if key and key in _model_key(cand.stem):
-            return cand
+    #    "<model stem>.mmproj-f16.gguf"). An exact name beats one that only
+    #    contains it, such as an "-abliterated" sibling's encoder. Containment
+    #    alone is loose ("8B-Instruct" is inside "Qwen3-VL-8B-Instruct"), so
+    #    when the model states a size the family must agree as in stage 3.
+    if key:
+        cand_keys = [(cand, _model_key(cand.stem)) for cand in candidates]
+        for cand, cand_key in cand_keys:
+            if cand_key == key:
+                return cand
+        for cand, cand_key in cand_keys:
+            if key in cand_key and (
+                not model_sizes or _same_family(model_name, cand.name)
+            ):
+                return cand
 
     # 2. A bare "mmproj-F16.gguf" — only trustworthy when the folder holds a
     #    single model, otherwise it is anyone's encoder.
@@ -181,13 +260,14 @@ def find_mmproj_file(
             if _is_generic_mmproj(cand):
                 return cand
 
-    # 3. Same family and size, differing only in build tokens.
+    # 3. Same family and size under another publisher's name, e.g. a Huihui
+    #    Qwen3-VL-8B build with a prithivMLmods Qwen3-VL-8B encoder. Size alone
+    #    is not enough: Qwen3.5-4B and Gemma-3-4B are both "4B".
     for cand in candidates:
         cand_sizes = _size_tokens(cand.name)
-        cand_families = _model_family_ids(cand.name)
         if (
             cand_sizes and model_sizes and cand_sizes == model_sizes
-            and cand_families and cand_families == model_families
+            and _same_family(model_name, cand.name)
         ):
             return cand
 
