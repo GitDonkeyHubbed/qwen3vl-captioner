@@ -18,7 +18,7 @@ from PyQt6.QtCore import QCoreApplication, QEvent  # noqa: E402
 from PyQt6.QtTest import QTest  # noqa: E402
 from PyQt6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
-from gui.caption_io import caption_path, read_caption  # noqa: E402
+from gui.caption_io import CaptionFile, caption_path, read_caption  # noqa: E402
 from gui.main_window import MainWindow  # noqa: E402
 
 
@@ -60,6 +60,21 @@ class _FakeWorker:
 
     def __init__(self, image_path):
         self.image_path = image_path
+
+
+def _unreadable(monkeypatch, image):
+    """Make *image*'s sidecar read as present but locked (OneDrive, antivirus)."""
+    real = read_caption
+
+    def fake(path):
+        if path != image:
+            return real(path)
+        return CaptionFile(
+            text="", exists=True, mtime=None, decode_error=False,
+            read_error="[Errno 13] Permission denied",
+        )
+
+    monkeypatch.setattr("gui.main_window.read_caption", fake)
 
 
 # ── Dirty tracking ──────────────────────────────────────────────────────
@@ -256,6 +271,28 @@ def test_keeping_the_file_drops_the_cleared_generated_caption(
     assert win._caption_panel.get_caption() == "good caption on disk"
     assert not win._caption_panel.is_dirty()
     assert asked == []
+
+
+def test_clearing_a_generated_caption_asks_before_deleting_an_unreadable_file(
+    win, images, monkeypatch
+):
+    # A locked sidecar read as blank, so clearing the generated caption
+    # deleted a file whose content nobody had seen, without asking.
+    caption_path(images[0]).write_text("good caption on disk", encoding="utf-8")
+    win._on_image_selected(images[0])
+    win._caption_worker = _FakeWorker(images[0])
+    win._is_generating = True
+    monkeypatch.setattr(win._settings_panel, "get_auto_save", lambda: False)
+    _answer(monkeypatch, QMessageBox.StandardButton.No)
+    win._on_caption_finished("generated, declined")
+    win._caption_panel.delete_btn.click()
+    _unreadable(monkeypatch, images[0])
+
+    asked = []
+    _answer(monkeypatch, QMessageBox.StandardButton.No, asked)
+    assert win._save_current_caption() is True
+    assert asked == ["Delete Caption File"]
+    assert read_caption(images[0]).text == "good caption on disk"
 
 
 @pytest.mark.parametrize("error", ["cancelled", "RuntimeError: decode failed"])
@@ -460,6 +497,21 @@ def test_close_prompts_about_unsaved_captions(win, images, monkeypatch):
     assert event.ignored is True
 
 
+def test_close_counts_same_named_images_in_different_folders(win, images, tmp_path):
+    # Deduping by file name merged /other/a.jpg's unsaved caption with the
+    # hand-edit of /a.jpg, under-reporting what closing would lose.
+    other = tmp_path / "other" / "a.jpg"
+    other.parent.mkdir()
+    other.write_bytes(b"stub")
+    win._file_browser.add_images([other])
+    win._cache_caption(other, "generated but never saved", saved=False)
+
+    win._on_image_selected(images[0])
+    _type(win, "hand typed, never saved")
+
+    assert win._unsaved_summary() == ["a.jpg", "a.jpg"]
+
+
 # ── Write failures ──────────────────────────────────────────────────────
 
 def test_failed_sidecar_write_is_reported_and_not_marked_done(win, images, monkeypatch):
@@ -518,6 +570,83 @@ def test_cache_is_revalidated_against_disk(win, images):
     assert win._caption_panel.get_caption() == "edited elsewhere"
 
 
+def test_cache_notices_a_rewrite_that_kept_the_mtime(win, images):
+    # FAT/exFAT's coarse timestamps, or a sync tool that preserves mtimes,
+    # leave a rewritten sidecar with the cached mtime: the stale text showed.
+    import os
+    sidecar = caption_path(images[0])
+    sidecar.write_text("original", encoding="utf-8")
+    win._on_image_selected(images[0])
+    before = sidecar.stat()
+
+    sidecar.write_text("rewritten elsewhere", encoding="utf-8")
+    os.utime(sidecar, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert read_caption(images[0]).mtime == win._caption_mtimes[str(images[0])]
+
+    win._on_image_selected(images[1])
+    win._on_image_selected(images[0])
+    assert win._caption_panel.get_caption() == "rewritten elsewhere"
+
+
+def test_selection_refreshes_the_thumbnail_from_a_changed_sidecar(win, images):
+    # Only the editor used to pick up an outside change; the thumbnail kept
+    # its old preview and idle/done badge.
+    item = win._file_browser._items[str(images[0])]
+    win._on_image_selected(images[0])
+    assert win._file_browser.get_item_status(images[0]) == "idle"
+
+    caption_path(images[0]).write_text("written elsewhere", encoding="utf-8")
+    win._on_image_selected(images[1])
+    win._on_image_selected(images[0])
+    assert win._file_browser.get_item_status(images[0]) == "done"
+    assert item.preview_label.text() == "written elsewhere"
+
+    caption_path(images[0]).unlink()
+    win._on_image_selected(images[1])
+    win._on_image_selected(images[0])
+    assert win._file_browser.get_item_status(images[0]) == "idle"
+    assert item.preview_label.text() == ""
+
+    # A batch badge is left alone.
+    win._file_browser.set_item_status(images[1], "queued")
+    caption_path(images[1]).write_text("written elsewhere", encoding="utf-8")
+    win._on_image_selected(images[1])
+    assert win._file_browser.get_item_status(images[1]) == "queued"
+
+
+def test_selection_keeps_the_badge_of_a_declined_generated_caption(
+    win, images, monkeypatch
+):
+    # The caption is only in memory: a refresh from the cache would wear the
+    # green "written to disk" check.
+    win._on_image_selected(images[0])
+    win._caption_worker = _FakeWorker(images[0])
+    win._is_generating = True
+    monkeypatch.setattr(win._settings_panel, "get_auto_save", lambda: False)
+    _answer(monkeypatch, QMessageBox.StandardButton.No)
+    win._on_caption_finished("generated, declined")
+    assert not caption_path(images[0]).exists()
+
+    win._on_image_selected(images[1])
+    win._on_image_selected(images[0])
+    assert win._file_browser.get_item_status(images[0]) == "generated"
+
+
+def test_batch_selection_keeps_the_captioning_badge(win, images):
+    # _process_next_batch_item sets "processing" and then selects the item;
+    # the refresh used to reset it to idle/done and drop "Captioning...".
+    item = win._file_browser._items[str(images[1])]
+    caption_path(images[1]).write_text("old caption", encoding="utf-8")
+    win._batch_active = True
+    win._batch_queue = [images[1]]
+    win._process_next_batch_item()
+    # Its deferred start must find no batch if the timer ever fires.
+    win._batch_active = False
+
+    assert win._file_browser.get_item_status(images[1]) == "processing"
+    assert item.preview_label.text() == "Captioning..."
+
+
 def test_non_utf8_sidecar_is_shown_not_treated_as_missing(win, images):
     caption_path(images[0]).write_bytes(b"caf\xe9 scene")
     win._on_image_selected(images[0])
@@ -551,6 +680,40 @@ def test_export_does_not_clobber_a_differing_sidecar(win, images, monkeypatch):
 
     assert read_caption(images[0]).text == "hand written, keep me"
     assert read_caption(images[1]).text == "brand new"
+
+
+def test_export_does_not_treat_an_unreadable_sidecar_as_new(win, images, monkeypatch):
+    # A locked sidecar read as blank and was filed under "written safely".
+    caption_path(images[0]).write_text("hand written, keep me", encoding="utf-8")
+    win._cache_caption(images[0], "generated, declined", saved=False)
+    _unreadable(monkeypatch, images[0])
+
+    seen = []
+    monkeypatch.setattr(QMessageBox, "exec", lambda box: seen.append(box.windowTitle()))
+    monkeypatch.setattr(QMessageBox, "clickedButton", lambda box: box.defaultButton())
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: None))
+
+    win._export_all_captions()
+
+    assert seen == ["Existing Caption Files Differ"]
+    assert read_caption(images[0]).text == "hand written, keep me"
+
+
+def test_batch_counts_an_unreadable_sidecar_as_captioned(win, images, monkeypatch):
+    # It was left out of the prompt and queued for an unconditional save.
+    caption_path(images[0]).write_text("hand written, keep me", encoding="utf-8")
+    _unreadable(monkeypatch, images[0])
+    monkeypatch.setattr(type(win._engine), "is_loaded", property(lambda self: True))
+
+    seen = []
+    monkeypatch.setattr(QMessageBox, "exec", lambda box: seen.append(box.windowTitle()))
+    monkeypatch.setattr(QMessageBox, "clickedButton", lambda box: box.defaultButton())
+    monkeypatch.setattr(win, "_process_next_batch_item", lambda: None)
+
+    win._batch_caption_all()
+
+    assert seen == ["Existing Captions Found"]
+    assert win._batch_queue == [images[1]]
 
 
 def test_batch_offers_to_skip_already_captioned(win, images, monkeypatch):

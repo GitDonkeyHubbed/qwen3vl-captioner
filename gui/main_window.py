@@ -22,7 +22,9 @@ from PyQt6.QtWidgets import (
     QMessageBox, QSizePolicy, QStackedWidget, QProgressDialog,
 )
 
-from gui.caption_io import caption_path, delete_caption, read_caption, write_caption
+from gui.caption_io import (
+    CaptionFile, caption_path, delete_caption, read_caption, write_caption,
+)
 from gui.file_browser import FileBrowserPanel
 from gui.image_viewer import ImageViewer
 from gui.caption_panel import CaptionPanel
@@ -34,6 +36,16 @@ from engine.inference import Qwen3VLEngine
 from engine.model_downloader import (
     default_mmproj_fits, download_named_mmproj, ensure_mmproj, find_mmproj_file,
 )
+
+
+def _sidecar_is_protected(info: CaptionFile) -> bool:
+    """True when the sidecar holds text, or exists but could not be read.
+
+    An unreadable sidecar (held open by OneDrive or antivirus, say) reads as
+    blank, but its content is unknown: treating it as "uncaptioned" let a
+    batch or Export overwrite it without asking once the hold was released.
+    """
+    return info.has_caption or bool(info.read_error)
 
 
 # --- Worker for background model loading ---
@@ -745,7 +757,13 @@ class MainWindow(QMainWindow):
             return self._captions.get(key, "")
 
         info = read_caption(path)
-        if key in self._captions and info.mtime == self._caption_mtimes.get(key):
+        # Compare the text too: a coarse (FAT/exFAT) or preserved timestamp
+        # can leave a sidecar rewritten elsewhere with the cached mtime.
+        if (
+            key in self._captions
+            and info.mtime == self._caption_mtimes.get(key)
+            and info.text == self._captions[key]
+        ):
             return self._captions[key]
 
         if info.read_error:
@@ -839,6 +857,17 @@ class MainWindow(QMainWindow):
             self._caption_panel.set_caption(caption)
         else:
             self._caption_panel.clear_caption()
+
+        # The sidecar may have been created, edited or deleted outside the
+        # app: bring the thumbnail in line with what the editor now shows.
+        # Batch badges and unsaved generated captions keep their own state.
+        if (
+            str(path) not in self._unsaved
+            and self._file_browser.get_item_status(path)
+            not in ("queued", "processing")
+        ):
+            self._file_browser.set_item_caption(path, caption)
+            self._file_browser.set_item_status(path, "done" if caption else "idle")
 
     def _on_clear_all(self):
         """Reset the workspace — clear all images, captions, and viewer state."""
@@ -2086,7 +2115,7 @@ class MainWindow(QMainWindow):
 
         # Batch re-captions everything and overwrites every .txt sidecar,
         # hand-edited ones included. Ask before destroying existing work.
-        already = [p for p in all_paths if read_caption(p).has_caption]
+        already = [p for p in all_paths if _sidecar_is_protected(read_caption(p))]
         if already:
             box = QMessageBox(self)
             box.setWindowTitle("Existing Captions Found")
@@ -2288,7 +2317,7 @@ class MainWindow(QMainWindow):
         # The box showed a generated caption that was never saved, so the
         # caption on disk is one the user has not looked at in this box.
         # Don't delete it on the strength of clearing something else.
-        if key in self._unsaved and read_caption(img).has_caption:
+        if key in self._unsaved and _sidecar_is_protected(read_caption(img)):
             answer = QMessageBox.question(
                 self, "Delete Caption File",
                 f"You cleared a generated caption that was never saved, but "
@@ -2349,7 +2378,7 @@ class MainWindow(QMainWindow):
         for path_str, caption in self._captions.items():
             img_path = Path(path_str)
             info = read_caption(img_path)
-            if not info.has_caption:
+            if not _sidecar_is_protected(info):
                 new_files.append((img_path, caption))
             elif info.text == caption.strip():
                 unchanged += 1
@@ -2363,7 +2392,8 @@ class MainWindow(QMainWindow):
             box.setIcon(QMessageBox.Icon.Warning)
             box.setText(
                 f"{len(conflicts)} image(s) already have a .txt caption whose "
-                "text differs from the one held in the app."
+                "text differs from the one held in the app, or that could not "
+                "be read."
             )
             box.setInformativeText(
                 f"{len(new_files)} caption(s) have no file yet and can be "
@@ -2531,12 +2561,13 @@ class MainWindow(QMainWindow):
 
     def _unsaved_summary(self) -> List[str]:
         """Names of images holding a caption that is not on disk."""
-        names = [Path(k).name for k in sorted(self._unsaved)]
+        # Dedupe by full path: two folders can each hold a "photo.jpg".
+        keys = sorted(self._unsaved)
         if self._caption_panel.is_dirty() and self._current_image:
-            name = self._current_image.name
-            if name not in names:
-                names.insert(0, name)
-        return names
+            key = str(self._current_image)
+            if key not in self._unsaved:
+                keys.insert(0, key)
+        return [Path(k).name for k in keys]
 
     def closeEvent(self, event):
         """Clean up all threads on close."""
