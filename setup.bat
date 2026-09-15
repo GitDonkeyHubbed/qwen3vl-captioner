@@ -24,6 +24,11 @@ if %ERRORLEVEL% NEQ 0 (
     echo      uv not found. Installing uv...
     REM Pinned installer version - a moving install.ps1 would execute whatever
     REM the latest script happens to be at install time.
+    REM Launched from a PowerShell 7 terminal, cmd inherits pwsh's PSModulePath,
+    REM and Windows PowerShell 5.1 then cannot load Get-ExecutionPolicy, which
+    REM the installer calls. Clearing it (setlocal keeps this to this script)
+    REM lets 5.1 fall back to its own default module path.
+    set "PSModulePath="
     powershell -ExecutionPolicy Bypass -Command "irm https://astral.sh/uv/0.11.26/install.ps1 | iex"
     REM Delayed expansion is required here: a plain %ERRORLEVEL% inside a
     REM parenthesised block is substituted when the block is PARSED, i.e. with
