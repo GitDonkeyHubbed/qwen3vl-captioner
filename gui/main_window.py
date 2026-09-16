@@ -1421,11 +1421,15 @@ class MainWindow(QMainWindow):
         if answer != QMessageBox.StandardButton.Yes:
             return
 
-        # Queue the matching mmproj to auto-download right after the model
-        # (skipped if any mmproj already exists in the target dir)
+        # Queue the matching mmproj to auto-download right after the model.
+        # Ask for *this model's* encoder by name. Asking find_mmproj_file()
+        # with no model returns whichever encoder sorts first in the folder,
+        # so downloading a second model family into a directory that already
+        # held one skipped its encoder entirely and left it to load against a
+        # mismatched vision tower.
         self._pending_mmproj = None
         if not is_mlx and info.get("mmproj_filename"):
-            if find_mmproj_file(target_dir) is None:
+            if not model_file_exists(target_dir, info["mmproj_filename"]):
                 self._pending_mmproj = (
                     info["repo_id"], info["mmproj_filename"], target_dir
                 )
@@ -1511,11 +1515,15 @@ class MainWindow(QMainWindow):
         # Refresh the dropdown so the new model shows its ✓ marker
         self._refresh_model_list()
 
-        # Chain the matching vision encoder download if one was queued
+        # Chain the matching vision encoder download if one was queued.
+        # Same exact-name check as the queueing gate above: a different
+        # family's encoder sitting in the folder must not satisfy this one.
         if self._pending_mmproj and "mmproj" not in filename.lower():
+            from gui.model_download_manager import model_file_exists
+
             repo_id, mmproj_name, target_dir = self._pending_mmproj
             self._pending_mmproj = None
-            if find_mmproj_file(target_dir) is None:
+            if not model_file_exists(target_dir, mmproj_name):
                 QTimer.singleShot(
                     150,
                     lambda: self._start_file_download(

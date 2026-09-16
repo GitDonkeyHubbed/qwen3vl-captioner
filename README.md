@@ -2,11 +2,11 @@
   <img src="assets/VL_GGUF_Captioner GUI Screenshot 2.png" alt="QWEN 3 VL ABL Captioner" width="900"/>
 </p>
 
-<h1 align="center">QWEN 3 VL ABL Captioner V1.4.3 — GGUF + MLX Engines</h1>
+<h1 align="center">QWEN 3 VL ABL Captioner V1.4.4 — GGUF + MLX Engines</h1>
 <h3 align="center">Professional GPU-Accelerated Image Captioning for Datasets</h3>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.4.3-blue" alt="Version"/>
+  <img src="https://img.shields.io/badge/version-1.4.4-blue" alt="Version"/>
   <img src="https://img.shields.io/badge/python-3.12-blue?logo=python" alt="Python"/>
   <img src="https://img.shields.io/badge/GPU-CUDA%2012.4%E2%80%9313.x-green?logo=nvidia" alt="CUDA"/>
   <img src="https://img.shields.io/badge/Apple%20Silicon-Metal%20%2B%20MLX-black?logo=apple" alt="Apple Silicon"/>
@@ -38,6 +38,48 @@
 > 🪟 **Windows note:** you also need the NVIDIA **CUDA Toolkit** for GPU speed. If you don't have it, install it with one command: `winget install Nvidia.CUDA`
 
 <sub>🧰 <b>Power users:</b> prefer a specific tagged release? Grab it from the <a href="https://github.com/GitDonkeyHubbed/qwen3vl-captioner/releases/latest">Releases page</a>.</sub>
+
+---
+
+## 🧹 What's New in V1.4.4 — Everything That Was Sitting Untagged, Plus Two Dataset Fixes
+
+If you are on V1.4.3, this is a big one. A full-repository audit (59 verified
+defects) landed after V1.4.3 was tagged and was never released, so it reaches
+you here — together with two defects found while building the next feature.
+
+- **Your hand-edited captions survive.** Editing a caption and then changing
+  the selection, regenerating, or hitting Clear All used to destroy the edit
+  with no prompt. Every overwrite path now asks Save / Discard / Cancel.
+- **Captions can no longer land on the wrong image.** Selecting a different
+  image while one was generating could write the in-flight caption into the
+  newly selected image's `.txt`. Streamed text is now pinned to the image that
+  asked for it.
+- **A failed caption is no longer saved as a fake one.** With a prefix or
+  suffix configured, an image the model returned nothing for was saved as just
+  the affixes — `photo of  high quality` — and counted as a success. In a batch
+  run nobody is watching, so every failed image landed the same stock string in
+  your training set. Empty stays empty now, and the summary counts it failed.
+- **A second model family downloads its own vision encoder.** Downloading a
+  second family into your models folder used to skip its encoder and leave the
+  model loading against a mismatched vision tower.
+- **Mismatched encoders are refused, not guessed at.** Pairing is now
+  model- and family-aware instead of grabbing whichever `mmproj` was nearest —
+  the mismatch that crashed on the first caption.
+- **"Re-run setup" actually works.** `setup.bat` no longer aborts with
+  "Failed to install uv" right after installing uv, the venv is re-creatable,
+  and uv installs correctly from PowerShell 7. Verified on clean Windows.
+- **Light mode is usable.** Controls that rendered white-on-white are fixed,
+  and switching theme at runtime repaints instead of leaving frozen colours.
+- **Big folders stopped freezing the window** — thumbnails decode off the UI
+  thread, zoom no longer re-scales the full-resolution image on every wheel
+  notch, and Windows downloads no longer write gigabytes of zeros before
+  starting.
+- Test suite grew to **362 tests**; CI now HEAD-checks the pinned wheel URLs so a deleted release breaks CI (not your install), and every release tag is verified against the in-app version before it publishes.
+
+Known gaps: on datasets of a few thousand images, clearing a search filter and
+Clear All are still slow, and the file browser still builds a widget per image.
+
+See [CHANGELOG.md](CHANGELOG.md) for the complete list.
 
 ---
 
