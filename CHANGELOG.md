@@ -4,28 +4,45 @@ All notable changes to this project are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versions correspond to
 git tags (`V1.x.x`).
 
-## [1.5.0] — 2026-09-16
+## [Unreleased] — video captioning engine
 
-Feature release: video captioning on both backends, plus two new model
-families and the pairing/prompt fixes they exposed.
+**Not a release, and not a user-facing feature yet.** This section covers the
+*engine* half of issue #26: video captioning exists in `engine/` and in the
+test suite, but no GUI code calls it — `caption_video()`, `first_frame()` and
+`is_video_file()` have no caller outside `engine/` and `tests/`. The app
+still captions images only, `APP_VERSION` stays at the released **1.4.3**,
+and the GUI wiring (video files in the picker, a "Frames per video" control,
+video thumbnails, video-aware batch runs) is part 2 of #26.
 
-### Added
-- **Video captioning.** `.mp4`, `.mov`, `.mkv`, `.webm`, `.avi` and `.m4v`
-  are captioned by sampling evenly-spaced frames and sending them as one
-  multi-image chat turn — the only mechanism `mtmd` actually supports today
-  (the Qwen3-VL chat template still carries "# Video not supported yet").
-  Implemented once in `engine/video.py` and driven identically by the GGUF
-  and MLX engines; frame count (8 by default, 16 max) and frame size (640 px
-  longest side) are shared constants so the backends cannot drift apart.
+Validated by hand on an RTX 4080: frames arrive in temporal order, 16 frames
+take 9.1 s at 9.4 GB peak VRAM, the context preflight refuses cleanly and
+cancel leaves nothing running. The Qwen3-VL handler switch was A/B'd over 7
+images (OCR, chart-reading and fine-detail cases) with no caption regression.
+
+### Added (engine only — no GUI entry point)
+- **Video captioning in the engine.** `.mp4`, `.mov`, `.mkv`, `.webm`, `.avi`
+  and `.m4v` are captioned by sampling evenly-spaced frames and sending them
+  as one multi-image chat turn — the only mechanism `mtmd` actually supports
+  today (the Qwen3-VL chat template still carries "# Video not supported
+  yet"). Implemented once in `engine/video.py` and driven identically by the
+  GGUF and MLX engines; frame count (8 by default, 16 max) and frame size
+  (640 px longest side) are shared constants so the backends cannot drift
+  apart. Callable from Python only until the GUI lands.
 - **Two new model families in the download list**, with their own chat
   templates selected at load time: HauhauCS Qwen3.5 9B Uncensored
   (`qwen35`) and HauhauCS Gemma-4 E4B Uncensored (`gemma4`). The chat family
   is inferred from the filename and can be overridden explicitly.
 - **Up-front context-budget preflight for video.** Qwen3-VL's M-RoPE
-  disables llama.cpp's context shift, so overflowing `n_ctx` is a hard
-  `RuntimeError` partway through generation. The frame count, the measured
-  prompt and the generation budget are now checked against `n_ctx` before
-  anything is encoded, and the error names the setting to lower.
+  disables llama.cpp's context shift, so an `n_ctx` overflow cannot be
+  recovered from mid-generation. It is not a crash, though: measured without
+  the preflight on an RTX 4080, llama.cpp logs `decode: failed to find a
+  memory slot for batch of size 300` and the pinned wheel raises a catchable
+  `ValueError` ("Media evaluation failed with error code 1") after 2.56 s —
+  the process survives, but the user has paid for a doomed encode and the
+  message points at nothing actionable. The frame count, the measured prompt
+  and the generation budget are now checked against `n_ctx` before anything
+  is encoded: the check fails in 0.05 s, does no GPU work, and names the
+  argument to lower (`num_frames`).
 
 ### Fixed
 - **Reasoning traces could become the caption.** The pinned wheel builds
@@ -36,13 +53,6 @@ families and the pairing/prompt fixes they exposed.
   leading `<think>`/thought-channel block is stripped from the result if one
   appears anyway. An unclosed block is left intact rather than silently
   saving an empty sidecar.
-- **Single-image prompts changed by the new handlers.** `Qwen3VLChatHandler`
-  and `Qwen35ChatHandler` default to `add_vision_id=True`, prefixing every
-  image with `Picture N:` — which would have silently altered the prompt
-  every existing user captions with. It is now switched off; video states the
-  frame ordering in its text prompt instead, which also works for Gemma-4,
-  whose handler has no such flag. Unknown keywords are dropped on a
-  `TypeError` retry so other llama-cpp-python builds still load.
 - **Six of the eleven Gemma-4 quants downloaded without a vision encoder.**
   The `P` of a "pure" quant (`Q6_K_P`) was not recognised as part of the
   quant tag, so those builds' identity key ended in a stray `p` and never
@@ -56,15 +66,53 @@ families and the pairing/prompt fixes they exposed.
   the post-download re-check now match the registry's exact `mmproj_filename`.
   (Pairing a model with another model's `mmproj` does not fail cleanly; it
   crashes llama.cpp natively.)
+- **A frame count that *over*-reports silently shrank the sample.** The
+  sampler trusted
+  `CAP_PROP_FRAME_COUNT` and seeked to evenly-spaced indices from it. Seeking
+  past the real end of a truncated file *succeeds*, so the read that follows
+  simply failed and was skipped: on an AVI whose header claims 50 frames over
+  32 that decode, `num_frames=16` returned 10 frames, 8 returned 5 and 4
+  returned 3 — no error, and the surviving frames bunched into the part of
+  the index space that still existed. The indexed pass now reports how many
+  of the indices it was asked for actually decoded, and a **short** result
+  (not just an empty one, which was the old trigger) falls back to the
+  sequential pass, whose `grab()` count spans the real clip. Measured on that
+  same file the fixed sampler returns the full 4, 8 and 16 frames. A
+  genuinely short clip is unaffected: its index list is already clamped to
+  its own length, so it is never "short" and pays for no second pass. Only
+  the over-reporting direction is handled: a header that *under*-reports is
+  still trusted, every index built from it decodes, nothing looks short, and
+  the tail of the clip past the claimed count is never sampled. That gap is
+  documented in `sample_frames` and left for later.
 - **The sequential frame sampler under-delivered and skewed early.** For
   files whose header reports no frame count, or whose container cannot seek,
   the old rolling-halving pass kept whichever frames it happened to survive
   with — fewer than requested, and weighted toward the intro. It now counts
   frames with a decode-free `grab()` pass and then decodes only the midpoint
   indices, giving the same coverage as the seeking path. The unseekable
-  fallback had no test at all and now has one.
+  fallback had no test at all and now has one, and it gets its own warning
+  text: a container that refuses to seek usually has a perfectly truthful
+  header, and the shared message used to accuse that header of lying.
 
 ### Changed
+- **Single-image prompts change — deliberately.** Rendering the pinned
+  wheel's own jinja templates over the real message list shows the old path
+  (`Qwen25VLChatHandler`) emitting
+  `<|im_start|>user\nPicture 1: <|vision_start|> <img> <|vision_end|>PROMPT…`
+  — a hardcoded `Picture 1: ` prefix and a space either side of the
+  placeholder, with no flag to turn either off. The new `Qwen3VLChatHandler`
+  with `add_vision_id=False` emits
+  `<|im_start|>user\n<|vision_start|><img><|vision_end|>PROMPT…` and the
+  trailing newline after the assistant turn that the Qwen3-VL template
+  specifies. So this is a prompt change for every existing single-image user,
+  and a correctness fix rather than a no-op: an A/B over the same 7 images
+  scored 11/11 on OCR and 9/9 on chart reading on both sides, with no factual
+  regressions. `add_vision_id=False` is what keeps the *new* handlers
+  (`Qwen3VLChatHandler`, `Qwen35ChatHandler`, both defaulting to `True`) from
+  re-introducing `Picture N:`; video states its frame ordering in the text
+  prompt instead, which also works for Gemma-4, whose handler has no such
+  flag. Unknown keywords are dropped on a `TypeError` retry so other
+  llama-cpp-python builds still load.
 - `opencv-python-headless` is capped below the next major (`>=4.9,<6`).
   OpenCV 5.0 shipped during development and an unbounded range would upgrade
   every fresh install into it unannounced; the suite passes on 5.x.
@@ -72,7 +120,6 @@ families and the pairing/prompt fixes they exposed.
   single-image path — the chat handler re-encodes to JPEG regardless, so PNG
   only cost a slow compression pass and a much larger base64 payload, N times
   over per clip.
-- Test suite grew to 457 tests.
 
 ## [1.4.3] — 2026-07-30
 

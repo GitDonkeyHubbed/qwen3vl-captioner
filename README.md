@@ -2,11 +2,11 @@
   <img src="assets/VL_GGUF_Captioner GUI Screenshot 2.png" alt="QWEN 3 VL ABL Captioner" width="900"/>
 </p>
 
-<h1 align="center">QWEN 3 VL ABL Captioner V1.5.0 — GGUF + MLX Engines</h1>
+<h1 align="center">QWEN 3 VL ABL Captioner V1.4.3 — GGUF + MLX Engines</h1>
 <h3 align="center">Professional GPU-Accelerated Image Captioning for Datasets</h3>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.5.0-blue" alt="Version"/>
+  <img src="https://img.shields.io/badge/version-1.4.3-blue" alt="Version"/>
   <img src="https://img.shields.io/badge/python-3.12-blue?logo=python" alt="Python"/>
   <img src="https://img.shields.io/badge/GPU-CUDA%2012.4%E2%80%9313.x-green?logo=nvidia" alt="CUDA"/>
   <img src="https://img.shields.io/badge/Apple%20Silicon-Metal%20%2B%20MLX-black?logo=apple" alt="Apple Silicon"/>
@@ -41,33 +41,61 @@
 
 ---
 
-## 🎬 What's New in V1.5.0 — Video Captioning & Two New Model Families
+## 🎬 In development — video captioning **engine** (not in a release yet)
 
-- **Caption videos, not just images.** Point the app at an `.mp4`, `.mov`,
-  `.mkv`, `.webm`, `.avi` or `.m4v` and it samples evenly-spaced frames across
-  the whole clip and describes it in one pass. Both backends do it the same
-  way — GGUF (Windows/Linux CUDA, macOS Metal) and MLX (Apple Silicon).
-- **Two new model families you can pick from the download list**: HauhauCS's
-  uncensored **Qwen3.5 9B** and **Gemma-4 E4B**, alongside the existing
-  Qwen3-VL builds. Each family now loads with its own chat template.
+> **The app you download today captions images only.** The latest release is
+> **V1.4.3**. The video work below is the *engine* half: `engine/video.py`
+> plus `caption_video()` on both backends, covered by the test suite and
+> validated by hand on an RTX 4080 — but **nothing in the GUI calls it yet**.
+> The file picker accepting videos, the "Frames per video" control, video
+> thumbnails and video-aware batch runs are part 2 of
+> [issue #26](https://github.com/GitDonkeyHubbed/qwen3vl-captioner/issues/26)
+> and land in a later PR. Until then video captioning is reachable only from
+> Python, and there is no version bump for it.
+
+What has landed so far. The green button above downloads `main`, not a tagged
+release, so the model-list and prompt items below reach anyone who downloads
+the app as soon as this merges — there is simply no tagged release carrying
+them yet. The video items stay engine-only until part 2, whenever you
+downloaded:
+
+- **The engine captions a video by sampling frames.** Given an `.mp4`, `.mov`,
+  `.mkv`, `.webm`, `.avi` or `.m4v`, `caption_video()` decodes evenly-spaced
+  frames across the whole clip and describes it in one pass — from Python, not
+  from the app. Both backends do it the same way — GGUF
+  (Windows/Linux CUDA, macOS Metal) and MLX (Apple Silicon). Measured on an
+  RTX 4080: 16 frames in 9.1 s, 9.4 GB peak VRAM.
+- **Two new model families in the download list**: HauhauCS's uncensored
+  **Qwen3.5 9B** and **Gemma-4 E4B**, alongside the existing Qwen3-VL builds.
+  Each family now loads with its own chat template.
 - **Reasoning traces stay out of your captions.** The new families think
   before they answer; that monologue is switched off at load time and
   stripped if one appears anyway, so a `.txt` sidecar never gets a model
   arguing with itself instead of a description.
-- **Your single-image prompts are unchanged.** The per-image `Picture N:`
-  labelling the new handlers add by default is switched off; a video says
-  "these are frames of one clip" in plain text instead, which works on every
-  family.
+- **Single-image prompts *do* change — on purpose.** The Qwen2.5-VL handler
+  the app used before hardcoded a `Picture 1: ` prefix (and a space either
+  side of the image placeholder) into every single-image prompt, with no flag
+  to turn it off. The Qwen3-VL handler renders the template Qwen3-VL actually
+  ships: with `add_vision_id=False` the `Picture N:` label and the stray
+  spaces are gone, and the trailing newline the template specifies after the
+  assistant turn is present. So this is a deliberate correctness fix, not a
+  no-op — an A/B over the same 7 images before and after (OCR, chart reading
+  and fine-detail cases included) found no factual regressions. A video
+  states its frame ordering in the text prompt instead, which also works for
+  Gemma-4, whose handler has no such flag.
 - **Frame budget is checked up front.** Qwen3-VL cannot shift its context
-  window mid-generation, so too many frames used to be a hard crash partway
-  through. You now get a clear message telling you to lower "Frames per
-  video" before anything starts.
+  window mid-generation, so too many frames overflow `n_ctx`. Without the
+  check the app survives — llama.cpp fails the decode and the wheel raises a
+  catchable error — but only after ~2.5 s of GPU work, and the message
+  ("Media evaluation failed with error code 1") says nothing about frames.
+  The preflight refuses in ~0.05 s, before anything is encoded, and names the
+  argument to lower (`num_frames` — there is no GUI control for it yet).
 - **Every Gemma-4 quant finds its vision encoder.** Six of the eleven
   published builds use the `_K_P` "pure" naming, which the pairing logic did
   not recognise — so they downloaded without an encoder. Downloading a second
   model family into a folder no longer skips its encoder because another
   family's was already sitting there.
-- Test suite grew to **457 tests**; CI now HEAD-checks the pinned wheel URLs
+- Test suite grew to **475 tests**; CI now HEAD-checks the pinned wheel URLs
   so a deleted release breaks CI (not your install), and every release tag is
   verified against the in-app version before it publishes.
 
