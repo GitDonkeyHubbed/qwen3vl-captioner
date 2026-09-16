@@ -7,6 +7,14 @@ name: PR Checks
 #     the description turns it green without a new commit. To block merging
 #     on it, add "Require test plan" as a required status check in a branch
 #     ruleset.
+#
+# Bot-authored pull requests are exempt. Dependabot (and GitHub's other
+# bots) generate their descriptions from a fixed template -- release notes,
+# a commit list, a compatibility badge, the @dependabot command list -- and
+# have no way to add a heading to it, so the gate was asking them for
+# something they cannot produce and failed every bot PR. The exemption sits
+# on the step rather than the job so the job still reports success and keeps
+# satisfying the required status check.
 
 on:
   pull_request:
@@ -28,6 +36,16 @@ jobs:
     permissions: {}
     steps:
       - name: Require PR Test Plan
+        # Bots cannot edit their own generated descriptions; see the note
+        # at the top of this file. Two independent signals, so the exemption
+        # does not hinge on either one alone: `user.type` is set by GitHub
+        # from the account that opened the PR, and the `[bot]` login suffix
+        # is reserved for App accounts (GitHub rejects `[` in a username, so
+        # no human can hold such a login). Both come from the account, not
+        # from anything the PR body carries.
+        if: >-
+          github.event.pull_request.user.type != 'Bot' &&
+          !endsWith(github.event.pull_request.user.login, '[bot]')
         # The body is passed through env (never interpolated into the script)
         # so PR text cannot inject shell.
         env:
