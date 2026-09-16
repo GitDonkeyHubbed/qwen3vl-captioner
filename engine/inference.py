@@ -227,7 +227,22 @@ def _construct_chat_handler(handler_cls, mmproj_path, verbose: bool):
 
 
 def estimate_vision_tokens(width: int, height: int) -> int:
-    """Estimate vision tokens for one frame (Qwen3-VL: one per 32x32 patch)."""
+    """Estimate vision tokens for one frame (Qwen3-VL: one per 32x32 patch).
+
+    Calibrated for Qwen3-VL and applied to every family, which is a known
+    approximation: Gemma's vision encoder resamples to its own budget rather
+    than emitting one token per 32x32 patch, so this number is wrong for a
+    gemma3/gemma4 load. Measuring the real figure needs a Gemma model in
+    front of you, so it is deliberately left for part 2 of #26 rather than
+    guessed at here.
+
+    Both directions of error are survivable, which is why an approximation is
+    acceptable in the meantime. Over-counting makes the caller's preflight
+    refuse a clip that would have fit — visible, and the message names the
+    setting to lower. Under-counting makes it pass, and the caption then
+    fails exactly as it did before any preflight existed. The preflight is a
+    best-effort early-out, not a guarantee anything downstream relies on.
+    """
     return math.ceil(width / 32) * math.ceil(height / 32)
 
 
@@ -514,7 +529,10 @@ class Qwen3VLEngine:
         # pictures (shared with the MLX backend so both frame it identically).
         framed_prompt = frame_video_prompt(prompt, len(clamped))
 
-        # Preflight the context budget: Qwen3-VL's M-RoPE cannot context-shift,
+        # Preflight the context budget. The vision figure is a Qwen3-VL
+        # estimate applied to every family — see estimate_vision_tokens for
+        # why that approximation is tolerable and what it would take to fix.
+        # Qwen3-VL's M-RoPE cannot context-shift,
         # so overflowing n_ctx loses the caption — llama.cpp logs "decode:
         # failed to find a memory slot for batch" and the wheel raises after
         # seconds of wasted GPU work (measured: 2.6 s; the process survives,
