@@ -141,18 +141,33 @@ _THINK_BLOCK = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 
+# The same opening markers with no closing tag anywhere: the model started
+# reasoning and hit its token limit still inside the block.
+_UNCLOSED_THINK = re.compile(
+    r"\A\s*(?:<think>|<\|channel\|>\s*think)",
+    re.IGNORECASE,
+)
+
 
 def strip_reasoning(caption: str) -> str:
     """Remove a leading <think>...</think> (or Gemma thought-channel) block.
 
-    Returns the text after the block. An unclosed block means the model spent
-    its whole budget reasoning, so there is no caption to recover: the text is
-    returned unchanged for the caller to surface rather than silently saving a
-    monologue.
+    Returns the text after the block, or "" when the whole response *is*
+    reasoning — either a complete block with nothing after it, or a block the
+    model never closed because it hit its token limit mid-thought.
+
+    An unclosed block returned its text unchanged at first, on the reasoning
+    that a visible monologue beats an empty caption box. That holds only while
+    a human is looking at the box. A batch run with auto-save on writes every
+    non-empty result straight to a .txt sidecar with nobody watching, so the
+    trace would land in the dataset — the exact outcome this function exists
+    to prevent. A response with no caption in it now yields no caption.
     """
     stripped = _THINK_BLOCK.sub("", caption, count=1)
     if stripped != caption:
         return stripped
+    if _UNCLOSED_THINK.match(caption):
+        return ""
     return caption
 
 
@@ -177,7 +192,17 @@ def clean_caption(caption: str) -> str:
 
 
 def apply_prefix_suffix(caption: str, prefix: str = "", suffix: str = "") -> str:
-    """Apply the user's fixed prefix/suffix to a cleaned caption."""
+    """Apply the user's fixed prefix/suffix to a cleaned caption.
+
+    An empty caption stays empty. Affixes decorate a description; with no
+    description there is nothing to decorate, and a configured prefix would
+    otherwise manufacture a truthy string ("photo of ") out of a generation
+    that produced nothing — which auto-save then writes to a sidecar as if it
+    were a caption. Guarding here rather than at each call site keeps the
+    invariant in one place for both backends and both caption methods.
+    """
+    if not caption.strip():
+        return ""
     if prefix:
         caption = prefix.strip() + " " + caption
     if suffix:

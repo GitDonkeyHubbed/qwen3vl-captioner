@@ -28,6 +28,18 @@ images (OCR, chart-reading and fine-detail cases) with no caption regression.
   The fallback now restores the post-reasoning text, so a reasoning-only
   response cleans to `""` (the GUI shows "Nothing to save") while a
   prefix-only one is still preserved.
+- **A configured prefix manufactured a caption out of nothing.** Emptying a
+  reasoning-only response only helps if the emptiness survives: with a prefix
+  set, `apply_prefix_suffix("")` returned `"photo of "`, a truthy string that
+  batch auto-save writes to a sidecar. The caption a user got was their own
+  prefix with nothing from the image. Affixes now leave an empty caption
+  empty, guarded once for both backends and both caption methods.
+- **An unclosed reasoning block still reached sidecars.** It was returned
+  unchanged on the reasoning that a visible monologue beats an empty caption
+  box — true only while a human is looking at the box. A batch run with
+  auto-save writes every non-empty result unwatched, so the trace landed in
+  the dataset. A response that is entirely reasoning, closed or not, now
+  yields no caption.
 - **`n_ctx=0` made every video refusable.** llama.cpp reads 0 as "use the
   model's native context", but the engine recorded the raw argument — so the
   preflight compared a positive budget against a zero-token window and

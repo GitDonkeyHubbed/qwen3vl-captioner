@@ -103,14 +103,16 @@ def test_strip_reasoning_leaves_ordinary_captions_alone():
     assert strip_reasoning("A sign reading <OPEN>.") == "A sign reading <OPEN>."
 
 
-def test_strip_reasoning_keeps_an_unclosed_block():
-    """Budget exhausted mid-thought: there is no caption to recover.
+def test_strip_reasoning_drops_an_unclosed_block():
+    """Budget exhausted mid-thought: the response is all reasoning.
 
-    Returning "" here would silently write an empty sidecar; returning the
-    trace lets the caller see what happened.
+    This originally returned the trace unchanged, arguing a visible monologue
+    beats an empty caption box. That only holds while a human is looking at
+    the box — a batch run with auto-save writes every non-empty result to a
+    .txt sidecar unwatched, so the trace landed in the dataset.
     """
-    raw = "<think>\nStill reasoning when the token budget ran out"
-    assert strip_reasoning(raw) == raw
+    assert strip_reasoning("<think>\nStill reasoning when the budget ran out") == ""
+    assert strip_reasoning("<|channel|>think\nstill weighing options") == ""
 
 
 def test_clean_caption_strips_a_think_block_then_its_prefix():
@@ -164,7 +166,42 @@ def test_clean_caption_still_protects_a_prefix_only_caption():
     assert clean_caption("<think>x</think>Caption:") == "Caption:"
 
 
-def test_clean_caption_keeps_an_unclosed_block_intact():
-    """Budget exhausted mid-thought: nothing was stripped, nothing restored."""
-    raw = "<think>still reasoning when the budget ran out"
-    assert clean_caption(raw) == raw
+def test_clean_caption_drops_an_unclosed_block():
+    """The whole response is reasoning, so there is no caption."""
+    assert clean_caption("<think>still reasoning when the budget ran out") == ""
+
+
+# ── Affixes must not manufacture a caption out of nothing ────────────────
+
+@pytest.mark.parametrize("prefix,suffix", [
+    ("photo of", ""), ("", "indoors"), ("photo of", "indoors"), ("", ""),
+])
+def test_affixes_on_an_empty_caption_stay_empty(prefix, suffix):
+    """A configured prefix used to turn "" into a truthy "photo of ".
+
+    clean_caption deliberately empties a reasoning-only response, but
+    apply_prefix_suffix then rebuilt a non-empty string from the affixes
+    alone — and auto-save writes any non-empty result to a sidecar. The
+    caption a user got was their own prefix, with nothing from the image.
+    """
+    assert apply_prefix_suffix("", prefix, suffix) == ""
+    assert apply_prefix_suffix("   ", prefix, suffix) == ""
+
+
+@pytest.mark.parametrize("raw", [
+    "<think>examining the image</think>",
+    "<think>budget ran out mid-thought",
+    "<|channel|>think\nweighing it up<|channel|>",
+    "",
+    "   ",
+])
+def test_no_caption_survives_the_full_pipeline_with_affixes(raw):
+    """End to end: nothing in, nothing out, whatever the affixes."""
+    assert apply_prefix_suffix(clean_caption(raw), "photo of", "indoors") == ""
+
+
+def test_a_real_caption_still_gets_its_affixes():
+    """The guard must not swallow ordinary captions."""
+    assert apply_prefix_suffix(
+        clean_caption("<think>plan</think> A cat."), "photo of", "indoors"
+    ) == "photo of A cat. indoors"
