@@ -53,7 +53,9 @@ jobs:
       - name: Install test dependencies
         # opencv + numpy so tests/test_video.py actually runs instead of
         # module-skipping — engine/video.py would otherwise ship untested.
-        run: pip install --quiet -r requirements-dev.txt "PyQt6>=6.7" "Pillow>=12.2.0" "opencv-python-headless>=4.9" "numpy>=1.26"
+        # The opencv range must match requirements.txt / pyproject.toml
+        # (>=4.9,<6) or CI tests a version the app refuses to install.
+        run: pip install --quiet -r requirements-dev.txt "PyQt6>=6.7" "Pillow>=12.2.0" "opencv-python-headless>=4.9,<6" "numpy>=1.26"
 
       - name: Run pytest (core logic, headless)
         env:

@@ -131,9 +131,8 @@ def test_message_structure_and_temporal_order(monkeypatch, tmp_path):
     parts = messages[1]["content"]
     assert [p["type"] for p in parts] == ["image_url"] * 4 + ["text"]
     # The frames are framed as one clip in the text, because add_vision_id
-    # ("Picture N:") is switched off to keep the single-image prompt stable
-    # and Gemma-4's handler has no such flag. The user's prompt is appended
-    # verbatim.
+    # ("Picture N:") is switched off and Gemma-4's handler has no such flag
+    # at all. The user's prompt is appended verbatim.
     assert parts[-1]["text"] == (
         "The 4 images above are frames sampled in order from a single video "
         "clip. Describe the video."
@@ -195,7 +194,9 @@ def test_context_budget_counts_vision_tokens(monkeypatch, tmp_path):
 
     assert "8 video frames" in str(excinfo.value)
     assert "2500" in str(excinfo.value)
-    assert 'Lower "Frames per video"' in str(excinfo.value)
+    # The remedy names the engine argument, not a GUI control: this PR ships
+    # the engine only, so there is no "frames per video" widget to point at.
+    assert "num_frames" in str(excinfo.value)
     assert eng.model.calls == []  # refused before touching the model
 
 
@@ -298,6 +299,16 @@ def test_missing_file_raises(tmp_path):
     ("gemma-3-27b-it.Q4_K_M.gguf", "gemma3"),
     ("gemma3-4b.gguf", "gemma3"),
     ("gemma4-experimental.gguf", "gemma4"),
+    # Legacy Qwen2-VL / Qwen2.5-VL files a user may browse to keep the
+    # Qwen2.5-VL handler instead of falling through to the Qwen3-VL template.
+    ("Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf", "qwen25vl"),
+    ("qwen2_5-vl-3b.gguf", "qwen25vl"),
+    ("Qwen2-VL-7B-Instruct-Q4_K_M.gguf", "qwen25vl"),
+    ("qwen2vl-2b-instruct.Q8_0.gguf", "qwen25vl"),
+    ("qwen2_vl-7b.gguf", "qwen25vl"),
+    # The plain-Qwen2 tags must not swallow the newer lines.
+    ("Qwen3-VL-2B-Instruct.gguf", "qwen3vl"),
+    ("Qwen3.5-VL-4B.gguf", "qwen35"),
     ("SomeOther-Model.Q4_K_M.gguf", "qwen3vl"),
 ])
 def test_infer_chat_family(filename, family):

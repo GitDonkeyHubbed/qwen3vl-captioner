@@ -80,8 +80,12 @@ def infer_chat_family(model_path: str | Path) -> str:
     # The Qwen35 handler covers both the 3.5 and 3.6 model lines.
     if any(tag in name for tag in ("qwen3.5", "qwen3_5", "qwen35", "qwen3.6", "qwen3_6")):
         return "qwen35"
-    # Browsed legacy Qwen2.5-VL files keep their original handler.
-    if any(tag in name for tag in ("qwen2.5", "qwen2_5", "qwen25")):
+    # Browsed legacy Qwen2-VL / Qwen2.5-VL files keep the Qwen2.5-VL handler —
+    # without the plain-Qwen2 tags they would fall through to the Qwen3-VL
+    # template. The Qwen2-VL tags spell out the "-vl" so they cannot swallow
+    # "qwen2.5"/"qwen2_5" names, and no Qwen3 name contains them.
+    if any(tag in name for tag in ("qwen2.5", "qwen2_5", "qwen25",
+                                   "qwen2-vl", "qwen2vl", "qwen2_vl")):
         return "qwen25vl"
     return "qwen3vl"
 
@@ -115,11 +119,21 @@ def _construct_chat_handler(handler_cls, mmproj_path, verbose: bool):
       before any description appears.
     * ``add_vision_id=True`` (Qwen3VLChatHandler, Qwen35ChatHandler) prefixes
       every image with ``Picture N:``. That labelling is aimed at multi-image
-      prompts, but switching Qwen3-VL to its own handler would otherwise apply
-      it to the single-image path too, silently changing the prompt every
-      existing user has been captioning with. ``caption_video`` states the
-      frame ordering in its text prompt instead, which also works for
-      Gemma-4, whose handler has no such flag.
+      prompts, and on the single-image path it is redundant noise.
+      ``caption_video`` states the frame ordering in its text prompt instead,
+      which also works for Gemma-4, whose handler has no such flag.
+
+    Switching Qwen3-VL to its own handler DOES change the single-image prompt
+    (it is a deliberate correctness fix, not a no-op). Rendered from the
+    pinned wheel's jinja templates on the same message list, the old
+    Qwen25VLChatHandler emitted
+    ``<|im_start|>user\\nPicture 1: <|vision_start|> <img> <|vision_end|>PROMPT``
+    and Qwen3VLChatHandler with ``add_vision_id=False`` emits
+    ``<|im_start|>user\\n<|vision_start|><img><|vision_end|>PROMPT`` — the
+    hardcoded prefix and the spaces around the placeholder are gone, and the
+    trailing newline after ``<|im_start|>assistant`` that Qwen3-VL's template
+    specifies is added. An A/B over 7 images (including OCR and chart reading)
+    found no factual regression from the change.
 
     Unknown keywords are dropped on a TypeError retry so other
     llama-cpp-python builds, whose handlers may not accept them, still load.
@@ -402,11 +416,14 @@ class Qwen3VLEngine:
         framed_prompt = frame_video_prompt(prompt, len(image_parts))
 
         # Preflight the context budget: Qwen3-VL's M-RoPE cannot context-shift,
-        # so overflowing n_ctx would be a hard crash mid-generation — refuse up
-        # front instead. 1.15x covers vision-encoder/template overhead; the
-        # text prompts are measured (they are user-editable and unbounded, so
-        # a flat allowance would let a long prompt slip past the check); 128
-        # covers chat scaffolding.
+        # so overflowing n_ctx loses the caption — llama.cpp logs "decode:
+        # failed to find a memory slot for batch" and the wheel raises after
+        # seconds of wasted GPU work (measured: 2.6 s; the process survives,
+        # so this is a failed caption rather than a crash). Refusing up front
+        # costs ~0.05 s and says why. 1.15x covers vision-encoder/template
+        # overhead; the text prompts are measured (they are user-editable and
+        # unbounded, so a flat allowance would let a long prompt slip past the
+        # check); 128 covers chat scaffolding.
         text_tokens = self._count_text_tokens(system_prompt + "\n" + framed_prompt)
         needed = math.ceil(1.15 * vision_tokens) + max_tokens + text_tokens + 128
         if needed > self._n_ctx:
@@ -414,7 +431,8 @@ class Qwen3VLEngine:
                 f"{len(image_parts)} video frames need ~{needed} context "
                 f"tokens (vision + {text_tokens} prompt + {max_tokens} "
                 f"generation), but the context window is only {self._n_ctx}. "
-                f"Lower \"Frames per video\" and try again."
+                f"Caption fewer frames (num_frames) or load the model with a "
+                f"larger context window."
             )
 
         messages = [

@@ -71,11 +71,13 @@ def frame_video_prompt(prompt: str, n_frames: int) -> str:
 
     Without it the model sees N unrelated pictures and describes them one by
     one. The chat handlers' own ``add_vision_id`` labelling ("Picture N:")
-    would say something similar, but it is switched off so the single-image
-    prompt every existing user captions with is unchanged — and Gemma-4's
-    handler has no such flag at all. Stating it in the text works for every
-    family and for both backends, which is why it lives here rather than in
-    either engine.
+    would say something similar, but it is switched off because it is
+    redundant noise on the single-image path (see ``_construct_chat_handler``
+    in engine/inference.py, which also documents how the single-image prompt
+    changed when Qwen3-VL moved to its own handler) — and Gemma-4's handler
+    has no such flag at all. Stating it in the text works for every family and
+    for both backends, which is why it lives here rather than in either
+    engine.
     """
     return (
         f"The {n_frames} images above are frames sampled in order from a "
