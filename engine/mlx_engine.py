@@ -26,6 +26,7 @@ from engine.base import (
     VIDEO_FRAME_MAX_DIM,
     apply_prefix_suffix,
     clamp_image_dim,
+    VideoCancelled,
     clean_caption,
     frame_video_prompt,
     load_image_for_inference,
@@ -289,7 +290,16 @@ class MlxVlmEngine:
 
         from engine.video import sample_frames
 
-        frames = sample_frames(video_path, num_frames)
+        # Extraction runs before any token loop exists to notice a cancel, and
+        # this backend then resizes and writes every frame to disk on top of
+        # that. A cancel anywhere in here returns "" exactly as one during
+        # generation does.
+        try:
+            frames = sample_frames(
+                video_path, num_frames, cancel_check=cancel_check
+            )
+        except VideoCancelled:
+            return ""
 
         # mlx-vlm loads images from paths, so stage the frames as PNGs in a
         # temp dir; cleaned up in the finally even on errors/cancel.
@@ -297,6 +307,8 @@ class MlxVlmEngine:
         try:
             frame_paths: list[Path] = []
             for i, frame in enumerate(frames):
+                if cancel_check and cancel_check():
+                    return ""
                 # Downscale before saving — N full-size frames would multiply
                 # the vision-encoding footprint on unified-memory Macs. Uses
                 # the shared clamp so both backends size frames identically

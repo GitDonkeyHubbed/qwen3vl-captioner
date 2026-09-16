@@ -49,6 +49,17 @@ MAX_VIDEO_FRAMES = 16
 MAX_IMAGE_DIM = 1280
 
 
+class VideoCancelled(RuntimeError):
+    """Raised when cancel_check() goes true during video frame extraction.
+
+    Lives here rather than in engine/video.py for two reasons: the engines
+    must be able to catch it without importing the cv2-dependent module, and
+    it is part of the shared engine contract — both backends translate it
+    into the same "" result a cancel during generation produces, so callers
+    see one cancellation contract for the whole operation.
+    """
+
+
 def clamp_image_dim(img: Image.Image, max_dim: int) -> Image.Image:
     """Downscale a decoded image so neither side exceeds max_dim.
 
@@ -147,14 +158,22 @@ def strip_reasoning(caption: str) -> str:
 
 def clean_caption(caption: str) -> str:
     """Strip chat-template artifacts from a generated caption."""
-    cleaned = strip_reasoning(caption).strip()
+    # The fallback below restores THIS, not the original: a response that is
+    # nothing but a closed reasoning block strips to "", and falling back to
+    # `caption` would hand the trace straight back and save it to a sidecar —
+    # the exact outcome strip_reasoning exists to prevent. Falling back to the
+    # post-reasoning text still protects a prefix-only caption ("Caption:"),
+    # which is what the fallback was for.
+    without_reasoning = strip_reasoning(caption).strip()
+
+    cleaned = without_reasoning
     for pfx in _STRIP_PREFIXES:
         if cleaned.lower().startswith(pfx):
             cleaned = cleaned[len(pfx):]
             break
     # Strip any remaining leading colons, dashes, dots, asterisks, whitespace
     cleaned = cleaned.lstrip(":;-–—.*• \t\n")
-    return cleaned if cleaned else caption.strip()
+    return cleaned if cleaned else without_reasoning
 
 
 def apply_prefix_suffix(caption: str, prefix: str = "", suffix: str = "") -> str:

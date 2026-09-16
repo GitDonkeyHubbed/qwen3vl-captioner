@@ -16,6 +16,15 @@ from pathlib import Path
 
 from PIL import Image
 
+from engine.base import VideoCancelled
+
+# How often the scan loops poll cancel_check. Often enough that a cancel
+# feels instant on a long clip, rare enough that the callback is not itself
+# the cost of the scan. Named so tests can shorten it — a clip under this
+# many frames never polls mid-count, which is fine (that count is instant)
+# but makes the behaviour untestable with a small fixture.
+CANCEL_POLL_INTERVAL = 64
+
 # Supported video file extensions
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
 
@@ -23,6 +32,11 @@ VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
 def is_video_file(path: Path) -> bool:
     """Check if a file path has a supported video extension."""
     return path.suffix.lower() in VIDEO_EXTENSIONS
+
+
+def _check_cancelled(cancel_check):
+    if cancel_check is not None and cancel_check():
+        raise VideoCancelled("cancelled during video frame extraction")
 
 
 def _require_cv2():
@@ -43,7 +57,7 @@ def _to_pil(cv2, frame) -> Image.Image:
 
 
 def _sample_by_index(
-    cv2, cap, indices: list[int]
+    cv2, cap, indices: list[int], cancel_check=None
 ) -> tuple[list[Image.Image], bool]:
     """Seek to each index and decode it.
 
@@ -63,6 +77,7 @@ def _sample_by_index(
     """
     frames: list[Image.Image] = []
     for idx in indices:
+        _check_cancelled(cancel_check)
         if not cap.set(cv2.CAP_PROP_POS_FRAMES, idx):
             # This container can't seek — reads after a failed seek would
             # just decode consecutive frames from wherever the decoder sits,
@@ -89,8 +104,12 @@ def _midpoint_indices(total: int, num_frames: int) -> list[int]:
     return indices
 
 
-def _count_frames(cv2, video_path: Path) -> int:
-    """Count decodable frames with a grab-only pass (no decode cost)."""
+def _count_frames(cv2, video_path: Path, cancel_check=None) -> int:
+    """Count decodable frames with a grab-only pass (no decode cost).
+
+    Cheap per frame, but unbounded in their number — a two-hour clip is a
+    long time to ignore a cancel, so the loop checks periodically.
+    """
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         cap.release()  # a failed open still allocates the capture object
@@ -99,12 +118,16 @@ def _count_frames(cv2, video_path: Path) -> int:
         total = 0
         while cap.grab():
             total += 1
+            if total % CANCEL_POLL_INTERVAL == 0:
+                _check_cancelled(cancel_check)
         return total
     finally:
         cap.release()
 
 
-def _sample_sequential(cv2, video_path: Path, num_frames: int) -> list[Image.Image]:
+def _sample_sequential(
+    cv2, video_path: Path, num_frames: int, cancel_check=None
+) -> list[Image.Image]:
     """Two-pass sampler for files whose frame count or seeking is unusable.
 
     Counts frames with grab() (which skips decoding), then re-reads from the
@@ -116,7 +139,7 @@ def _sample_sequential(cv2, video_path: Path, num_frames: int) -> list[Image.Ima
     Memory stays bounded at the sampled frames; passes are grab-only except
     at the indices actually kept.
     """
-    total = _count_frames(cv2, video_path)
+    total = _count_frames(cv2, video_path, cancel_check)
     if total <= 0:
         return []
 
@@ -131,6 +154,8 @@ def _sample_sequential(cv2, video_path: Path, num_frames: int) -> list[Image.Ima
         decoded: dict[int, Image.Image] = {}
         idx = 0
         while idx <= wanted[-1]:
+            if idx % CANCEL_POLL_INTERVAL == 0:
+                _check_cancelled(cancel_check)
             if not cap.grab():
                 break
             if idx in targets:
@@ -145,7 +170,7 @@ def _sample_sequential(cv2, video_path: Path, num_frames: int) -> list[Image.Ima
 
 
 def sample_frames(
-    video_path: str | Path, num_frames: int = 8
+    video_path: str | Path, num_frames: int = 8, cancel_check=None
 ) -> list[Image.Image]:
     """
     Decode up to ``num_frames`` evenly-spaced RGB frames from a video.
@@ -187,8 +212,16 @@ def sample_frames(
         PIL images in temporal order. May be shorter than ``num_frames`` for
         very short videos, but never empty.
 
+    Args:
+        video_path: the clip to sample.
+        num_frames: how many evenly-spaced frames to return (>= 1).
+        cancel_check: optional zero-arg predicate polled during the scans.
+            Extraction can run for seconds on a long clip with no token loop
+            to notice a cancel, so both passes check it.
+
     Raises:
         ValueError: num_frames < 1.
+        VideoCancelled: cancel_check() went true mid-extraction.
         RuntimeError: the file can't be opened, no frame decodes, or cv2 is
             not installed.
     """
@@ -209,7 +242,8 @@ def sample_frames(
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         wanted = _midpoint_indices(total, num_frames) if total > 0 else []
         seeked, seek_refused = (
-            _sample_by_index(cv2, cap, wanted) if wanted else ([], False)
+            _sample_by_index(cv2, cap, wanted, cancel_check)
+            if wanted else ([], False)
         )
     finally:
         # Released before any sequential pass, so only one capture is ever
@@ -221,7 +255,9 @@ def sample_frames(
         # Either the header gave us nothing to seek by, or it promised more
         # than decoded. _sample_sequential opens its own captures and is the
         # decoder of last resort.
-        resampled = _sample_sequential(cv2, video_path, num_frames)
+        resampled = _sample_sequential(
+            cv2, video_path, num_frames, cancel_check
+        )
         if len(resampled) >= len(frames):
             frames = resampled
         if wanted:

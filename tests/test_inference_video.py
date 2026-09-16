@@ -18,7 +18,7 @@ from PIL import Image
 
 import engine
 from engine import inference
-from engine.base import DEFAULT_SYSTEM_PROMPT
+from engine.base import DEFAULT_SYSTEM_PROMPT, VideoCancelled
 from engine.inference import MAX_VIDEO_FRAMES, Qwen3VLEngine, infer_chat_family
 
 
@@ -57,9 +57,14 @@ def _install_fake_video(monkeypatch, frame_size=(64, 48)):
     """Inject a stub engine.video module; returns a dict recording the call."""
     seen = {}
 
-    def sample_frames(video_path, num_frames=8):
+    def sample_frames(video_path, num_frames=8, cancel_check=None):
         seen["video_path"] = video_path
         seen["num_frames"] = num_frames
+        seen["cancel_check"] = cancel_check
+        if cancel_check and cancel_check():
+            # Mirrors the real extractor, which raises rather than returning
+            # a short sample when cancelled mid-scan.
+            raise VideoCancelled("cancelled during video frame extraction")
         return [
             Image.new("RGB", frame_size, _FRAME_COLORS[i % len(_FRAME_COLORS)])
             for i in range(num_frames)
@@ -514,3 +519,85 @@ def test_construct_chat_handler_surfaces_a_real_typeerror():
 
     with pytest.raises(TypeError, match="not a vision encoder"):
         inference._construct_chat_handler(Handler, Path("/m/mmproj.gguf"), False)
+
+
+# ── Cancelling during extraction, before any token loop exists ───────────
+
+def test_caption_video_returns_empty_when_cancelled_during_extraction(
+    monkeypatch, tmp_path
+):
+    """A cancel mid-scan must look like a cancel mid-generation: "".
+
+    Extraction of a header-less clip scans the file twice end to end. Before
+    this, cancel_check was not consulted until the token loop, so both scans
+    and every frame encode ran to completion after the user cancelled.
+    """
+    _install_fake_video(monkeypatch)
+    eng = _make_engine(response=_CANNED_RESPONSE)
+
+    caption = eng.caption_video(
+        _video_file(tmp_path), "p", num_frames=4, cancel_check=lambda: True
+    )
+
+    assert caption == ""
+    # Cancelled before the model was ever called.
+    assert eng.model.calls == []
+
+
+def test_caption_video_passes_cancel_check_down_to_the_sampler(
+    monkeypatch, tmp_path
+):
+    """The predicate must reach the sampler, not just be checked after it."""
+    seen = _install_fake_video(monkeypatch)
+    eng = _make_engine(response=_CANNED_RESPONSE)
+    sentinel = lambda: False  # noqa: E731
+
+    eng.caption_video(
+        _video_file(tmp_path), "p", num_frames=4, cancel_check=sentinel
+    )
+
+    assert seen["cancel_check"] is sentinel
+
+
+def test_caption_video_stops_encoding_when_cancelled_between_frames(
+    monkeypatch, tmp_path
+):
+    """Each frame costs a JPEG encode; a cancel must not pay for the rest."""
+    _install_fake_video(monkeypatch)
+    eng = _make_engine(response=_CANNED_RESPONSE)
+    encoded = []
+    real_encode = inference._encode_data_uri
+
+    def counting_encode(img):
+        encoded.append(1)
+        return real_encode(img)
+
+    monkeypatch.setattr(inference, "_encode_data_uri", counting_encode)
+    # False for the sampler's own polling, then true once encoding starts.
+    calls = []
+
+    def cancel_after_first_frame():
+        calls.append(1)
+        return len(encoded) >= 1
+
+    caption = eng.caption_video(
+        _video_file(tmp_path), "p", num_frames=8,
+        cancel_check=cancel_after_first_frame,
+    )
+
+    assert caption == ""
+    assert len(encoded) == 1, "kept encoding frames after the cancel"
+    assert eng.model.calls == []
+
+
+def test_caption_video_uncancelled_run_is_unchanged(monkeypatch, tmp_path):
+    """A live-but-false predicate must not alter a normal run."""
+    _install_fake_video(monkeypatch)
+    eng = _make_engine(response=_CANNED_RESPONSE)
+
+    caption = eng.caption_video(
+        _video_file(tmp_path), "p", num_frames=4, cancel_check=lambda: False
+    )
+
+    assert caption == "a cat walks by"
+    assert len(eng.model.calls) == 1

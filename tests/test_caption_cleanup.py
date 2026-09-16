@@ -139,3 +139,32 @@ def test_frame_video_prompt_is_shared_by_both_backends():
 
     assert inference.frame_video_prompt is frame_video_prompt
     assert mlx_engine.frame_video_prompt is frame_video_prompt
+
+
+def test_clean_caption_does_not_resurrect_a_reasoning_only_response():
+    """A response that is ONLY a closed think block must clean to empty.
+
+    clean_caption's empty-result fallback exists to protect a prefix-only
+    caption ("Caption:") from collapsing to "". A reasoning-only response
+    also cleans to "", and falling back to the ORIGINAL text handed the
+    trace straight back — so the very thing strip_reasoning exists to keep
+    out of a .txt sidecar became the caption. The fallback now restores the
+    post-reasoning text instead.
+    """
+    assert clean_caption("<think>examining the image</think>") == ""
+    assert clean_caption("<think>a</think>   ") == ""
+    # The GUI shows "Nothing to save" for an empty caption, so this surfaces
+    # rather than silently writing a monologue.
+
+
+def test_clean_caption_still_protects_a_prefix_only_caption():
+    """The case the fallback was written for must keep working."""
+    assert clean_caption("Caption:") == "Caption:"
+    # ...including once a reasoning block is stripped off the front of it.
+    assert clean_caption("<think>x</think>Caption:") == "Caption:"
+
+
+def test_clean_caption_keeps_an_unclosed_block_intact():
+    """Budget exhausted mid-thought: nothing was stripped, nothing restored."""
+    raw = "<think>still reasoning when the budget ran out"
+    assert clean_caption(raw) == raw

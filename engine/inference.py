@@ -24,6 +24,7 @@ from engine.base import (
     VIDEO_FRAME_MAX_DIM,
     apply_prefix_suffix,
     clamp_image_dim,
+    VideoCancelled,
     clean_caption,
     frame_video_prompt,
     load_image_for_inference,
@@ -398,18 +399,31 @@ class Qwen3VLEngine:
         # optional dependency for image-only use.
         from engine import video as video_module
 
-        frames = video_module.sample_frames(video_path, num_frames=num_frames)
+        # Extraction and encoding run before any token loop exists to notice
+        # a cancel — on a long clip that is seconds of scanning plus one JPEG
+        # encode per frame. A cancel here returns "" like one during
+        # generation, so the caller sees a single cancellation contract.
+        try:
+            frames = video_module.sample_frames(
+                video_path, num_frames=num_frames, cancel_check=cancel_check
+            )
 
-        image_parts = []
-        vision_tokens = 0
-        for frame in frames:
-            # Clamp explicitly rather than letting the encoder do it, so the
-            # token estimate below measures the size actually sent.
-            frame = clamp_image_dim(frame, VIDEO_FRAME_MAX_DIM)
-            uri = _encode_data_uri(frame)
-            w, h = frame.size
-            vision_tokens += estimate_vision_tokens(w, h)
-            image_parts.append({"type": "image_url", "image_url": {"url": uri}})
+            image_parts = []
+            vision_tokens = 0
+            for frame in frames:
+                if cancel_check and cancel_check():
+                    return ""
+                # Clamp explicitly rather than letting the encoder do it, so
+                # the token estimate below measures the size actually sent.
+                frame = clamp_image_dim(frame, VIDEO_FRAME_MAX_DIM)
+                uri = _encode_data_uri(frame)
+                w, h = frame.size
+                vision_tokens += estimate_vision_tokens(w, h)
+                image_parts.append(
+                    {"type": "image_url", "image_url": {"url": uri}}
+                )
+        except VideoCancelled:
+            return ""
 
         # Tell the model the images are one clip rather than unrelated
         # pictures (shared with the MLX backend so both frame it identically).

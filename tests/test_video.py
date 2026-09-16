@@ -27,6 +27,7 @@ import pytest
 
 from PIL import Image
 
+from engine.base import VideoCancelled
 from engine.video import (
     VIDEO_EXTENSIONS,
     first_frame,
@@ -383,7 +384,7 @@ def test_lying_header_keeps_seeked_frames_if_resample_finds_less(
     _lying_header_capture(monkeypatch, header=50, real=20)
     calls = []
 
-    def dud_sequential(cv2_mod, path, n):
+    def dud_sequential(cv2_mod, path, n, cancel_check=None):
         calls.append(n)
         return []
 
@@ -472,3 +473,80 @@ def test_is_video_file_supported(ext):
 @pytest.mark.parametrize("name", ["photo.jpg", "clip.gif", "notes.txt", "clip"])
 def test_is_video_file_rejected(name):
     assert not is_video_file(Path(name))
+
+
+# ── Cancellation during extraction ───────────────────────────────────────
+#
+# Extraction can run for seconds before any token loop exists to notice a
+# cancel: a header-less file is scanned twice end to end. These drive the
+# real sampler against a real (short) clip, so they assert the wiring, and
+# the counter checks prove the scan stopped rather than merely reporting so.
+
+
+def test_sample_frames_raises_when_cancelled_on_the_indexed_path(video_path):
+    calls = []
+
+    def cancel_check():
+        calls.append(1)
+        return True
+
+    with pytest.raises(VideoCancelled):
+        sample_frames(video_path, num_frames=8, cancel_check=cancel_check)
+    assert calls, "cancel_check was never consulted"
+
+
+def test_sample_frames_raises_when_cancelled_on_the_sequential_path(
+    video_path, monkeypatch
+):
+    """The counting pass is the longest run with nothing else watching."""
+    _break_capture(monkeypatch, frame_count=0.0)
+    with pytest.raises(VideoCancelled):
+        sample_frames(video_path, num_frames=8, cancel_check=lambda: True)
+
+
+def test_sample_frames_completes_when_cancel_check_stays_false(video_path):
+    """A live-but-false predicate must not disturb a normal run."""
+    polled = []
+    frames = sample_frames(
+        video_path, num_frames=8,
+        cancel_check=lambda: (polled.append(1), False)[1],
+    )
+    assert len(frames) == 8
+    assert polled, "cancel_check was never consulted"
+
+
+def test_sample_frames_without_cancel_check_is_unchanged(video_path):
+    """The argument is optional; omitting it keeps the original behaviour."""
+    assert len(sample_frames(video_path, num_frames=8)) == 8
+
+
+def test_count_frames_polls_cancel_during_a_long_scan(video_path, monkeypatch):
+    """The grab-only count checks periodically, not just at the ends.
+
+    The 30-frame fixture is shorter than the 64-frame poll interval, so drop
+    the interval to 1 to prove the check is inside the loop rather than
+    bolted on after it.
+    """
+    import engine.video as video_module
+
+    grabs = []
+    real_capture = cv2.VideoCapture
+
+    class CountingCapture:
+        def __init__(self, source):
+            self._cap = real_capture(source)
+
+        def grab(self):
+            grabs.append(1)
+            return self._cap.grab()
+
+        def __getattr__(self, name):
+            return getattr(self._cap, name)
+
+    monkeypatch.setattr(cv2, "VideoCapture", CountingCapture)
+    monkeypatch.setattr(video_module, "CANCEL_POLL_INTERVAL", 1)
+
+    with pytest.raises(VideoCancelled):
+        video_module._count_frames(cv2, video_path, cancel_check=lambda: True)
+    # Stopped on the first poll rather than grabbing all 30 frames first.
+    assert 0 < len(grabs) < TOTAL_FRAMES

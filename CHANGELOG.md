@@ -19,6 +19,24 @@ take 9.1 s at 9.4 GB peak VRAM, the context preflight refuses cleanly and
 cancel leaves nothing running. The Qwen3-VL handler switch was A/B'd over 7
 images (OCR, chart-reading and fine-detail cases) with no caption regression.
 
+### Fixed (review findings on the engine work)
+- **A reasoning-only response came back as the caption.** `clean_caption`
+  falls back to the original text when cleaning empties it, which protects a
+  prefix-only caption like `"Caption:"`. A response that is *nothing but* a
+  closed `<think>` block also cleans to empty — so the fallback handed the
+  trace straight back, the one outcome `strip_reasoning` exists to prevent.
+  The fallback now restores the post-reasoning text, so a reasoning-only
+  response cleans to `""` (the GUI shows "Nothing to save") while a
+  prefix-only one is still preserved.
+- **Cancelling was ignored until generation started.** Frame extraction can
+  run for seconds before any token loop exists to notice a cancel: a clip
+  whose header reports no frame count is scanned twice end to end, and both
+  backends then encode or stage every sampled frame. `sample_frames` now
+  takes an optional `cancel_check`, polled every `CANCEL_POLL_INTERVAL`
+  frames in both scans and between frames while encoding; it raises
+  `VideoCancelled`, which each engine turns into the same `""` a cancel
+  during generation produces.
+
 ### Added (engine only — no GUI entry point)
 - **Video captioning in the engine.** `.mp4`, `.mov`, `.mkv`, `.webm`, `.avi`
   and `.m4v` are captioned by sampling evenly-spaced frames and sending them
