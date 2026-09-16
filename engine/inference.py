@@ -8,6 +8,7 @@ configurable generation parameters. Thread-safe for Qt signal integration.
 """
 
 import base64
+import inspect
 import io
 import math
 import time
@@ -136,20 +137,27 @@ def _construct_chat_handler(handler_cls, mmproj_path, verbose: bool):
     specifies is added. An A/B over 7 images (including OCR and chart reading)
     found no factual regression from the change.
 
-    Unknown keywords are dropped on a TypeError retry so other
-    llama-cpp-python builds, whose handlers may not accept them, still load.
+    Unknown keywords are dropped by inspecting the constructor signature so
+    other llama-cpp-python builds, whose handlers may not accept them, still
+    load. Filtering up front (rather than retrying on TypeError) means a
+    TypeError raised from *inside* a compatible constructor propagates on the
+    first attempt instead of triggering silent retries that could repeat the
+    constructor's side effects before surfacing the real error.
     """
     kwargs = {"clip_model_path": str(mmproj_path), "verbose": verbose}
-    for extra in ({"enable_thinking": False, "add_vision_id": False},
-                  {"enable_thinking": False},
-                  {"add_vision_id": False},
-                  {}):
-        try:
-            return handler_cls(**kwargs, **extra)
-        except TypeError:
-            continue
-    # Every combination was rejected — let the plain construction raise.
-    return handler_cls(**kwargs)
+    extra = {"enable_thinking": False, "add_vision_id": False}
+    try:
+        params = inspect.signature(handler_cls).parameters
+    except (TypeError, ValueError):
+        # Signature unavailable (e.g. a C-level constructor) — fall back to
+        # passing every flag and letting the handler reject what it can't take.
+        params = None
+    if params is not None and not any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+    ):
+        # No **kwargs catch-all, so only pass flags the constructor names.
+        extra = {k: v for k, v in extra.items() if k in params}
+    return handler_cls(**kwargs, **extra)
 
 
 def estimate_vision_tokens(width: int, height: int) -> int:

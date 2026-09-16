@@ -521,6 +521,26 @@ def test_construct_chat_handler_surfaces_a_real_typeerror():
         inference._construct_chat_handler(Handler, Path("/m/mmproj.gguf"), False)
 
 
+def test_construct_chat_handler_runs_the_constructor_only_once_on_a_body_error():
+    """A body TypeError must surface on the first attempt, not after retries.
+
+    Filtering kwargs by signature (rather than retrying on TypeError) means a
+    compatible constructor that raises internally is called exactly once, so
+    any side effects before the raise are not repeated.
+    """
+    calls = []
+
+    class Handler:
+        def __init__(self, clip_model_path, verbose=False,
+                     enable_thinking=True, add_vision_id=True):
+            calls.append(1)
+            raise TypeError("mmproj is not a vision encoder")
+
+    with pytest.raises(TypeError, match="not a vision encoder"):
+        inference._construct_chat_handler(Handler, Path("/m/mmproj.gguf"), False)
+    assert calls == [1]
+
+
 # ── Cancelling during extraction, before any token loop exists ───────────
 
 def test_caption_video_returns_empty_when_cancelled_during_extraction(
