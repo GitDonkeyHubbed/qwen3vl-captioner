@@ -2,11 +2,11 @@
   <img src="assets/VL_GGUF_Captioner GUI Screenshot 2.png" alt="QWEN 3 VL ABL Captioner" width="900"/>
 </p>
 
-<h1 align="center">QWEN 3 VL ABL Captioner V1.4.3 — GGUF + MLX Engines</h1>
+<h1 align="center">QWEN 3 VL ABL Captioner V1.4.4 — GGUF + MLX Engines</h1>
 <h3 align="center">Professional GPU-Accelerated Image Captioning for Datasets</h3>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.4.3-blue" alt="Version"/>
+  <img src="https://img.shields.io/badge/version-1.4.4-blue" alt="Version"/>
   <img src="https://img.shields.io/badge/python-3.12-blue?logo=python" alt="Python"/>
   <img src="https://img.shields.io/badge/GPU-CUDA%2012.4%E2%80%9313.x-green?logo=nvidia" alt="CUDA"/>
   <img src="https://img.shields.io/badge/Apple%20Silicon-Metal%20%2B%20MLX-black?logo=apple" alt="Apple Silicon"/>
@@ -38,6 +38,30 @@
 > 🪟 **Windows note:** you also need the NVIDIA **CUDA Toolkit** for GPU speed. If you don't have it, install it with one command: `winget install Nvidia.CUDA`
 
 <sub>🧰 <b>Power users:</b> prefer a specific tagged release? Grab it from the <a href="https://github.com/GitDonkeyHubbed/qwen3vl-captioner/releases/latest">Releases page</a>.</sub>
+
+---
+
+## 🧹 What's New in V1.4.4 — Caption & Download Fixes
+
+No new models and no new features — two defects found while building the next
+release, both of which quietly damage a dataset rather than showing an error.
+
+- **A failed caption no longer writes a fake one.** With a prefix or suffix
+  configured, an image the model returned nothing for was saved as just the
+  affixes — `photo of  high quality` — and counted as a success. In a batch
+  run nobody is watching the caption box, so every failed image landed the
+  same stock string in the training set. An empty caption now stays empty and
+  is skipped, and the batch summary counts it as failed.
+- **A second model family now downloads its own vision encoder.** The check
+  for "do we already have an encoder?" accepted *any* `mmproj` file already in
+  the models folder, so downloading a second family into it skipped that
+  model's encoder entirely and left it to load against a mismatched vision
+  tower. Both gates now ask for the encoder that model actually needs, by
+  name.
+- Test suite grew to **362 tests**; both fixes were reproduced before being
+  changed, and every new test verified to fail against the old code.
+
+See [CHANGELOG.md](CHANGELOG.md) for the complete list.
 
 ---
 

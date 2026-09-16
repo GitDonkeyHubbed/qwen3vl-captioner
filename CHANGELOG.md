@@ -4,6 +4,44 @@ All notable changes to this project are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versions correspond to
 git tags (`V1.x.x`).
 
+## [1.4.4] — 2026-09-16
+
+Patch release. Two defects found while developing the next feature release,
+both of which corrupt a dataset silently rather than raising an error. No new
+models, no new features, no behaviour change for a caption that succeeds.
+
+### Fixed
+- **Prefix/suffix manufactured a caption out of a failed generation.**
+  `apply_prefix_suffix("")` returned the affixes joined around nothing —
+  `"photo of  high quality"` — which is truthy, so `_auto_save_caption` wrote
+  it to the `.txt` sidecar, cached it as saved and marked the image done. A
+  single image shows it in the caption box, but a batch run with auto-save is
+  unattended, so every image the model failed on received the same stock
+  string and was counted in the "saved" total. An empty caption now stays
+  empty at the single point both engines funnel through, so the existing
+  falsy-caption guard in `_auto_save_caption` refuses it and the batch
+  summary counts it as failed.
+- **Downloading a second model family skipped its vision encoder.** Both
+  gates that decide whether to queue an `mmproj` asked
+  `find_mmproj_file(target_dir)` with no model, which accepts whichever
+  encoder is already in the folder. The registry ships four GGUF families
+  with four different encoders, so a user who downloaded any second family
+  into the same folder got no encoder for it and a model loading against a
+  foreign vision tower. Both gates now match the registry's exact
+  `mmproj_filename`. An encoder that is genuinely already present is still
+  skipped, so no redundant download is introduced.
+
+### Tests
+- `tests/test_mmproj_queue.py` (new) drives the real `MainWindow` offscreen
+  with the download stubbed, covering both gates in both directions: a
+  foreign encoder no longer satisfies the check, and an exact-name match
+  still skips. The two families are picked out of the registry rather than
+  hardcoded, so renaming a model cannot turn the test into a no-op.
+- `tests/test_caption_cleanup.py` covers the affix guard over empty and
+  whitespace-only results for prefix, suffix and both, asserts the result is
+  falsy (the property `_auto_save_caption` relies on), and pins that a real
+  caption is unaffected.
+
 ## [1.4.3] — 2026-07-30
 
 Maintenance release from a full repository health check, followed by a second
