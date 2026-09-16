@@ -68,7 +68,7 @@ jobs:
       - name: TestingBot Maestro
         id: maestro
         if: env.TESTINGBOT_KEY != '' && env.TESTINGBOT_SECRET != ''
-        uses: testingbot/maestro-action@43032ed8267ae213bcfc6d1dc6e2296464be67bd # v1.0.0
+        uses: testingbot/maestro-action@51602a8309fdf5b795370a1ba50584d60195c1cf # v1.1.0
         with:
           api-key: ${{ secrets.TESTINGBOT_KEY }}
           api-secret: ${{ secrets.TESTINGBOT_SECRET }}
