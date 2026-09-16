@@ -24,8 +24,16 @@ if %ERRORLEVEL% NEQ 0 (
     echo      uv not found. Installing uv...
     REM Pinned installer version - a moving install.ps1 would execute whatever
     REM the latest script happens to be at install time.
+    REM Launched from a PowerShell 7 terminal, cmd inherits pwsh's PSModulePath,
+    REM and Windows PowerShell 5.1 then cannot load Get-ExecutionPolicy, which
+    REM the installer calls. Clearing it (setlocal keeps this to this script)
+    REM lets 5.1 fall back to its own default module path.
+    set "PSModulePath="
     powershell -ExecutionPolicy Bypass -Command "irm https://astral.sh/uv/0.11.26/install.ps1 | iex"
-    if %ERRORLEVEL% NEQ 0 (
+    REM Delayed expansion is required here: a plain %ERRORLEVEL% inside a
+    REM parenthesised block is substituted when the block is PARSED, i.e. with
+    REM the exit code of `where uv` above, so this check would always fire.
+    if !ERRORLEVEL! NEQ 0 (
         echo [ERROR] Failed to install uv. Please install manually from https://astral.sh/uv
         pause
         exit /b 1
@@ -52,7 +60,8 @@ REM --- Step 3: Create virtual environment and install deps ---
 echo [3/6] Creating virtual environment and installing dependencies...
 cd /d "%~dp0"
 
-uv venv --python 3.12 .venv
+REM --clear keeps setup re-runnable: uv refuses to reuse an existing .venv.
+uv venv --clear --python 3.12 .venv
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Failed to create virtual environment.
     pause
@@ -117,7 +126,7 @@ if %ERRORLEVEL% NEQ 0 (
     echo           CUDA 13.1+ -^> cu131     CUDA 13.0  -^> cu130
     echo           CUDA 12.8+ -^> cu128     CUDA 12.6+ -^> cu126
     echo           CUDA 12.4+ -^> cu124
-    echo        2. Install with: .venv\Scripts\pip.exe install [downloaded-file.whl]
+    echo        2. Install with: uv pip install --python .venv\Scripts\python.exe [downloaded-file.whl]
     echo.
     pause
     exit /b 1

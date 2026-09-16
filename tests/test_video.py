@@ -74,7 +74,7 @@ def test_sample_frames_temporal_order(video_path):
     indices = [_frame_index(f) for f in frames]
     # Adjacent samples are ~30/8 indices apart; compression error is well
     # under one index, so strict inequality is safe.
-    assert all(b > a for a, b in zip(indices, indices[1:]))
+    assert all(b > a for a, b in zip(indices, indices[1:], strict=False))
 
 
 def test_sample_frames_midpoint_spacing(video_path):
@@ -82,7 +82,7 @@ def test_sample_frames_midpoint_spacing(video_path):
     frames = sample_frames(video_path, num_frames=3)
     assert len(frames) == 3
     indices = [_frame_index(f) for f in frames]
-    for got, expected in zip(indices, (5, 15, 25)):
+    for got, expected in zip(indices, (5, 15, 25), strict=True):
         assert got == pytest.approx(expected, abs=2)
     # Start-anchored sampling (round(i*total/n)) would pick {0, 10, 20};
     # the midpoint of the first span never touches the intro frames.
@@ -93,30 +93,85 @@ def test_sample_frames_more_than_total(video_path):
     frames = sample_frames(video_path, num_frames=100)
     assert 1 <= len(frames) <= TOTAL_FRAMES
     indices = [_frame_index(f) for f in frames]
-    assert all(b > a for a, b in zip(indices, indices[1:]))
+    assert all(b > a for a, b in zip(indices, indices[1:], strict=False))
 
 
-def test_sample_frames_sequential_fallback(video_path, monkeypatch):
-    """A capture reporting frame count 0 must trigger the sequential pass."""
+def _break_capture(monkeypatch, *, frame_count=None, seekable=True):
+    """Patch cv2.VideoCapture with a delegating fake that misbehaves.
+
+    ``frame_count`` overrides CAP_PROP_FRAME_COUNT (0.0 and -1.0 are what
+    VFR webm files really report); ``seekable=False`` makes every
+    CAP_PROP_POS_FRAMES seek fail, which is how an unseekable container
+    behaves. Everything else is forwarded to the real capture, so the
+    fallback paths still decode genuine frames.
+    """
     real_capture = cv2.VideoCapture
 
-    class NoCountCapture:
+    class BrokenCapture:
         def __init__(self, source):
             self._cap = real_capture(source)
 
         def get(self, prop):
-            if prop == cv2.CAP_PROP_FRAME_COUNT:
-                return 0.0
+            if frame_count is not None and prop == cv2.CAP_PROP_FRAME_COUNT:
+                return frame_count
             return self._cap.get(prop)
+
+        def set(self, prop, value):
+            if not seekable and prop == cv2.CAP_PROP_POS_FRAMES:
+                return False
+            return self._cap.set(prop, value)
 
         def __getattr__(self, name):
             return getattr(self._cap, name)
 
-    monkeypatch.setattr(cv2, "VideoCapture", NoCountCapture)
+    monkeypatch.setattr(cv2, "VideoCapture", BrokenCapture)
+
+
+def test_sample_frames_sequential_fallback(video_path, monkeypatch):
+    """A capture reporting frame count 0 must trigger the sequential pass.
+
+    The sequential sampler counts frames itself, so it owes the caller the
+    full ``num_frames`` — the old rolling-halving implementation returned
+    fewer, and ``<= 8`` let that pass.
+    """
+    _break_capture(monkeypatch, frame_count=0.0)
     frames = sample_frames(video_path, num_frames=8)
-    assert 1 <= len(frames) <= 8
+    assert len(frames) == 8
     indices = [_frame_index(f) for f in frames]
-    assert all(b > a for a, b in zip(indices, indices[1:]))
+    assert all(b > a for a, b in zip(indices, indices[1:], strict=False))
+
+
+def test_sequential_fallback_keeps_midpoint_coverage(video_path, monkeypatch):
+    """The sequential pass must span the whole clip, not just its start.
+
+    Rolling-halving kept whichever frames survived its decimation, which
+    skewed the sample toward the intro. Counting first and then decoding the
+    midpoint indices gives the same {5, 15, 25} the seeking path picks.
+    """
+    _break_capture(monkeypatch, frame_count=-1.0)
+    frames = sample_frames(video_path, num_frames=3)
+    assert len(frames) == 3
+    indices = [_frame_index(f) for f in frames]
+    for got, expected in zip(indices, (5, 15, 25), strict=True):
+        assert got == pytest.approx(expected, abs=2)
+
+
+def test_sample_frames_unseekable_falls_back(video_path, monkeypatch):
+    """A header-claimed frame count plus failing seeks must still sample.
+
+    _sample_by_index bails out to [] the moment a seek fails, because reads
+    after a failed seek just decode wherever the decoder happens to sit.
+    sample_frames then re-runs the sequential pass — a path nothing covered
+    before, so a regression there would have shipped silently.
+    """
+    _break_capture(monkeypatch, seekable=False)
+    frames = sample_frames(video_path, num_frames=4)
+    assert len(frames) == 4
+    indices = [_frame_index(f) for f in frames]
+    assert all(b > a for a, b in zip(indices, indices[1:], strict=False))
+    # Midpoints of 4 equal spans over 30 frames: ~4, 11, 19, 26.
+    for got, expected in zip(indices, (4, 11, 19, 26), strict=True):
+        assert got == pytest.approx(expected, abs=2)
 
 
 def test_sample_frames_zero_raises(video_path):

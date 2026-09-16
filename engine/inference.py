@@ -14,16 +14,19 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
-from PIL import Image, ImageOps
-
+from PIL import Image
 
 from engine.base import (
     DEFAULT_SYSTEM_PROMPT,
     DEFAULT_VIDEO_FRAMES,
+    MAX_IMAGE_DIM,
     MAX_VIDEO_FRAMES,
     VIDEO_FRAME_MAX_DIM,
     apply_prefix_suffix,
+    clamp_image_dim,
     clean_caption,
+    frame_video_prompt,
+    load_image_for_inference,
 )
 from engine.cuda_setup import setup_cuda_dll_path, startup_failure_advice
 
@@ -101,46 +104,59 @@ def _resolve_chat_handler_cls(family: str):
     return Qwen25VLChatHandler
 
 
+def _construct_chat_handler(handler_cls, mmproj_path, verbose: bool):
+    """Build a vision chat handler with caption-safe defaults.
+
+    Two of the pinned wheel's defaults are wrong for captioning:
+
+    * ``enable_thinking=True`` (Qwen35ChatHandler, Gemma4ChatHandler) ends the
+      generation prompt inside an open ``<think>`` block, so the model's
+      reasoning trace IS the caption and usually exhausts the token budget
+      before any description appears.
+    * ``add_vision_id=True`` (Qwen3VLChatHandler, Qwen35ChatHandler) prefixes
+      every image with ``Picture N:``. That labelling is aimed at multi-image
+      prompts, but switching Qwen3-VL to its own handler would otherwise apply
+      it to the single-image path too, silently changing the prompt every
+      existing user has been captioning with. ``caption_video`` states the
+      frame ordering in its text prompt instead, which also works for
+      Gemma-4, whose handler has no such flag.
+
+    Unknown keywords are dropped on a TypeError retry so other
+    llama-cpp-python builds, whose handlers may not accept them, still load.
+    """
+    kwargs = {"clip_model_path": str(mmproj_path), "verbose": verbose}
+    for extra in ({"enable_thinking": False, "add_vision_id": False},
+                  {"enable_thinking": False},
+                  {"add_vision_id": False},
+                  {}):
+        try:
+            return handler_cls(**kwargs, **extra)
+        except TypeError:
+            continue
+    # Every combination was rejected — let the plain construction raise.
+    return handler_cls(**kwargs)
+
+
 def estimate_vision_tokens(width: int, height: int) -> int:
     """Estimate vision tokens for one frame (Qwen3-VL: one per 32x32 patch)."""
     return math.ceil(width / 32) * math.ceil(height / 32)
 
 
-def _clamp_to_max_dim(img: Image.Image, max_dim: int) -> Image.Image:
-    """Downscale so neither dimension exceeds max_dim, keeping aspect ratio."""
-    # Clamp to >=1 px so an extreme aspect ratio (e.g. 10000x1) can't scale a
-    # side to zero and crash resize.
-    w, h = img.size
-    if w > max_dim or h > max_dim:
-        scale = max_dim / max(w, h)
-        new_w = max(1, int(w * scale))
-        new_h = max(1, int(h * scale))
-        img = img.resize((new_w, new_h), Image.LANCZOS)
-    return img
+def _encode_data_uri(img: Image.Image) -> str:
+    """Encode a clamped image as a JPEG q95 base64 data URI.
 
-
-def pil_image_to_data_uri(img: Image.Image, max_dim: int = 1280) -> str:
+    JPEG rather than PNG: the chat handler decodes whatever it is given and
+    re-encodes to JPEG q95 itself before handing bytes to llama.cpp, so a PNG
+    here bought nothing and cost a slow, entropy-coded compression pass (plus
+    several times the base64 payload) on every caption.
     """
-    Resize a decoded image if needed (keeping aspect ratio) and convert to
-    a base64 data URI suitable for llama-cpp-python vision input.
-
-    Args:
-        img: The PIL image (callers handle EXIF orientation before this).
-        max_dim: Maximum dimension (width or height) to resize to.
-
-    Returns:
-        A data URI string like 'data:image/png;base64,...'
-    """
-    img = _clamp_to_max_dim(img, max_dim)
-
-    # Convert to PNG bytes then base64
     buffer = io.BytesIO()
-    img.save(buffer, format="PNG")
+    img.save(buffer, format="JPEG", quality=95)
     b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
-    return f"data:image/png;base64,{b64}"
+    return f"data:image/jpeg;base64,{b64}"
 
 
-def image_to_data_uri(image_path: Path, max_dim: int = 1280) -> str:
+def image_to_data_uri(image_path: Path, max_dim: int = MAX_IMAGE_DIM) -> str:
     """
     Load an image, resize if needed (keeping aspect ratio), and convert to
     a base64 data URI suitable for llama-cpp-python vision input.
@@ -150,21 +166,11 @@ def image_to_data_uri(image_path: Path, max_dim: int = 1280) -> str:
         max_dim: Maximum dimension (width or height) to resize to.
 
     Returns:
-        A data URI string like 'data:image/png;base64,...'
+        A data URI string like 'data:image/jpeg;base64,...'
     """
-    # Open inside a context manager so the source file handle is released
-    # deterministically — exif_transpose + convert() force the pixel load, so
-    # the detached RGB copy needs no further access to the file. (Prevents a
-    # descriptor leak / Windows file lock during batch runs.)
-    #
-    # exif_transpose applies the EXIF Orientation tag (3/6/8 — ubiquitous in
-    # phone/camera JPEGs). Without it the model receives sideways pixels and
-    # captions a rotated scene — invisibly, because the Qt preview applies
-    # orientation on its own.
-    with Image.open(image_path) as src:
-        img = ImageOps.exif_transpose(src).convert("RGB")
+    img = load_image_for_inference(image_path, max_dim)
 
-    return pil_image_to_data_uri(img, max_dim=max_dim)
+    return _encode_data_uri(img)
 
 
 class Qwen3VLEngine:
@@ -246,9 +252,8 @@ class Qwen3VLEngine:
         # Qwen3-VL models get Qwen3VLChatHandler — their proper template,
         # verified multi-image — instead of the former Qwen2.5-VL one.
         handler_cls = _resolve_chat_handler_cls(family)
-        self.chat_handler = handler_cls(
-            clip_model_path=str(mmproj_path),
-            verbose=verbose,
+        self.chat_handler = _construct_chat_handler(
+            handler_cls, mmproj_path, verbose
         )
 
         if progress_callback:
@@ -384,11 +389,17 @@ class Qwen3VLEngine:
         image_parts = []
         vision_tokens = 0
         for frame in frames:
-            frame = _clamp_to_max_dim(frame, VIDEO_FRAME_MAX_DIM)
-            uri = pil_image_to_data_uri(frame, max_dim=VIDEO_FRAME_MAX_DIM)
+            # Clamp explicitly rather than letting the encoder do it, so the
+            # token estimate below measures the size actually sent.
+            frame = clamp_image_dim(frame, VIDEO_FRAME_MAX_DIM)
+            uri = _encode_data_uri(frame)
             w, h = frame.size
             vision_tokens += estimate_vision_tokens(w, h)
             image_parts.append({"type": "image_url", "image_url": {"url": uri}})
+
+        # Tell the model the images are one clip rather than unrelated
+        # pictures (shared with the MLX backend so both frame it identically).
+        framed_prompt = frame_video_prompt(prompt, len(image_parts))
 
         # Preflight the context budget: Qwen3-VL's M-RoPE cannot context-shift,
         # so overflowing n_ctx would be a hard crash mid-generation — refuse up
@@ -396,7 +407,7 @@ class Qwen3VLEngine:
         # text prompts are measured (they are user-editable and unbounded, so
         # a flat allowance would let a long prompt slip past the check); 128
         # covers chat scaffolding.
-        text_tokens = self._count_text_tokens(system_prompt + "\n" + prompt)
+        text_tokens = self._count_text_tokens(system_prompt + "\n" + framed_prompt)
         needed = math.ceil(1.15 * vision_tokens) + max_tokens + text_tokens + 128
         if needed > self._n_ctx:
             raise RuntimeError(
@@ -411,7 +422,7 @@ class Qwen3VLEngine:
             {
                 "role": "user",
                 # Frames in temporal order, then the instruction.
-                "content": image_parts + [{"type": "text", "text": prompt}],
+                "content": image_parts + [{"type": "text", "text": framed_prompt}],
             },
         ]
 

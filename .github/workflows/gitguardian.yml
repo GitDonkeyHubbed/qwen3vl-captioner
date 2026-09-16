@@ -1,0 +1,46 @@
+name: GitGuardian
+
+# Scans every pushed commit and every PR for leaked secrets with GitGuardian's
+# ggshield (450+ detectors, validity checks). Complements GitHub's built-in
+# secret scanning / push protection, which is already enabled on this repo.
+#
+# To activate: create a free GitGuardian workspace (sign in with GitHub at
+# https://dashboard.gitguardian.com), then API -> Personal access tokens ->
+# create one with the `scan` scope and store it as the repo secret
+# GITGUARDIAN_API_KEY. Until the secret exists the job skips with a warning.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: GitGuardian secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GITGUARDIAN_API_KEY: ${{ secrets.GITGUARDIAN_API_KEY }}
+    steps:
+      - name: Checkout (full history so every new commit is scanned)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check GitGuardian credentials
+        if: env.GITGUARDIAN_API_KEY == ''
+        run: echo "::warning::GITGUARDIAN_API_KEY secret is not set; skipping the GitGuardian scan."
+
+      - name: GitGuardian scan
+        if: env.GITGUARDIAN_API_KEY != ''
+        uses: GitGuardian/ggshield-action@v1.54.0
+        env:
+          GITHUB_PUSH_BEFORE_SHA: ${{ github.event.before }}
+          GITHUB_PUSH_BASE_SHA: ${{ github.event.base }}
+          GITHUB_PULL_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GITGUARDIAN_API_KEY: ${{ secrets.GITGUARDIAN_API_KEY }}

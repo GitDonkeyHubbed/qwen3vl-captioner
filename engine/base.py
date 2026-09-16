@@ -27,6 +27,10 @@ Every engine implements:
   last_inference_time -> float (property)
 """
 
+import re
+
+from PIL import Image, ImageOps
+
 DEFAULT_SYSTEM_PROMPT = (
     "You are a helpful assistant that describes images accurately and in detail."
 )
@@ -39,6 +43,76 @@ VIDEO_FRAME_MAX_DIM = 640
 DEFAULT_VIDEO_FRAMES = 8
 MAX_VIDEO_FRAMES = 16
 
+# Longest side, in pixels, an image is scaled to before it reaches a vision
+# encoder. Every backend must apply it: a native-resolution 16.7 MP photo costs
+# seconds of encode time and gives no better caption than the clamped one.
+MAX_IMAGE_DIM = 1280
+
+
+def clamp_image_dim(img: Image.Image, max_dim: int) -> Image.Image:
+    """Downscale a decoded image so neither side exceeds max_dim.
+
+    Shared by the file path (load_image_for_inference) and the video paths,
+    which clamp already-decoded frames. Sides are clamped to >=1 px so an
+    extreme aspect ratio (e.g. 10000x1) can't scale one to zero and crash
+    resize.
+    """
+    w, h = img.size
+    if max(w, h) <= max_dim:
+        return img
+    scale = max_dim / max(w, h)
+    return img.resize(
+        (max(1, int(w * scale)), max(1, int(h * scale))), Image.LANCZOS
+    )
+
+
+def frame_video_prompt(prompt: str, n_frames: int) -> str:
+    """Prefix a caption prompt with the fact that the images are one clip.
+
+    Without it the model sees N unrelated pictures and describes them one by
+    one. The chat handlers' own ``add_vision_id`` labelling ("Picture N:")
+    would say something similar, but it is switched off so the single-image
+    prompt every existing user captions with is unchanged — and Gemma-4's
+    handler has no such flag at all. Stating it in the text works for every
+    family and for both backends, which is why it lives here rather than in
+    either engine.
+    """
+    return (
+        f"The {n_frames} images above are frames sampled in order from a "
+        f"single video clip. {prompt}"
+    )
+
+
+def load_image_for_inference(image_path, max_dim: int = MAX_IMAGE_DIM) -> Image.Image:
+    """Open an image, apply EXIF orientation, and clamp its longest side.
+
+    JPEG sources are decoded through `draft()`, which lets libjpeg downscale
+    by 1/2, 1/4 or 1/8 *while decoding*. Without it a 40 MP photo was fully
+    decoded and then LANCZOS-resized from full resolution on the caption
+    worker — roughly half a second of pure CPU per image, straight onto batch
+    wall time.
+
+    exif_transpose applies the EXIF Orientation tag (3/6/8 — ubiquitous in
+    phone/camera JPEGs). Without it the model receives sideways pixels and
+    captions a rotated scene, invisibly, because the Qt preview applies
+    orientation on its own.
+    """
+    # Open inside a context manager so the source file handle is released
+    # deterministically — exif_transpose + convert() force the pixel load, so
+    # the detached RGB copy needs no further access to the file. (Prevents a
+    # descriptor leak / Windows file lock during batch runs.)
+    with Image.open(image_path) as src:
+        w, h = src.size
+        if max(w, h) > max_dim:
+            scale = max_dim / max(w, h)
+            src.draft("RGB", (max(1, int(w * scale)), max(1, int(h * scale))))
+        img = ImageOps.exif_transpose(src).convert("RGB")
+
+    # draft() only lands on a power-of-two fraction, so a final resize is still
+    # needed — but from a much smaller image.
+    return clamp_image_dim(img, max_dim)
+
+
 # VLMs often prepend formatting noise like ":", "Answer:", "Caption:", etc.
 _STRIP_PREFIXES = [
     "answer:", "caption:", "description:", "response:",
@@ -46,9 +120,32 @@ _STRIP_PREFIXES = [
 ]
 
 
+# Reasoning models (Qwen3.5, Gemma-4) emit a thinking block before the answer.
+# The handlers are constructed with thinking disabled, but a model can still
+# open one on its own, and a stray trace must never reach a .txt sidecar.
+_THINK_BLOCK = re.compile(
+    r"\A\s*(?:<think>|<\|channel\|>\s*think).*?(?:</think>|<\|/?channel\|>)\s*",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def strip_reasoning(caption: str) -> str:
+    """Remove a leading <think>...</think> (or Gemma thought-channel) block.
+
+    Returns the text after the block. An unclosed block means the model spent
+    its whole budget reasoning, so there is no caption to recover: the text is
+    returned unchanged for the caller to surface rather than silently saving a
+    monologue.
+    """
+    stripped = _THINK_BLOCK.sub("", caption, count=1)
+    if stripped != caption:
+        return stripped
+    return caption
+
+
 def clean_caption(caption: str) -> str:
     """Strip chat-template artifacts from a generated caption."""
-    cleaned = caption.strip()
+    cleaned = strip_reasoning(caption).strip()
     for pfx in _STRIP_PREFIXES:
         if cleaned.lower().startswith(pfx):
             cleaned = cleaned[len(pfx):]

@@ -15,7 +15,7 @@ import pytest
 from PIL import Image
 
 import engine.video
-from engine.base import DEFAULT_SYSTEM_PROMPT
+from engine.base import DEFAULT_SYSTEM_PROMPT, frame_video_prompt
 from engine.mlx_engine import (
     MLX_SUPPORTED,
     MlxVlmEngine,
@@ -67,7 +67,53 @@ def test_is_mlx_model_dir_false_without_safetensors(tmp_path):
     assert is_mlx_model_dir(folder) is False
 
 
-def test_mlx_supported_matches_platform():
+def _mlx_supported_for(platform_name: str, machine: str) -> bool:
+    """Re-evaluate MLX_SUPPORTED under a pretend platform.
+
+    A private module copy is loaded so the cached engine.mlx_engine other
+    tests import from is left untouched.
+    """
+    import importlib.util
+    import platform as platform_mod
+
+    spec = importlib.util.spec_from_file_location(
+        "_mlx_engine_probe",
+        Path(__file__).resolve().parent.parent / "engine" / "mlx_engine.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+
+    real_platform, real_machine = sys.platform, platform_mod.machine
+    try:
+        sys.platform = platform_name
+        platform_mod.machine = lambda: machine
+        spec.loader.exec_module(module)
+        return module.MLX_SUPPORTED
+    finally:
+        sys.platform = real_platform
+        platform_mod.machine = real_machine
+
+
+@pytest.mark.parametrize(
+    "platform_name, machine, expected",
+    [
+        ("darwin", "arm64", True),    # Apple Silicon — the only supported combo
+        ("darwin", "x86_64", False),  # Intel Mac
+        ("win32", "AMD64", False),
+        ("linux", "x86_64", False),
+        ("linux", "aarch64", False),  # ARM, but not Apple
+    ],
+)
+def test_mlx_supported_truth_table(platform_name, machine, expected):
+    """Assert the actual truth table, not the production expression.
+
+    The old test re-derived `sys.platform == "darwin" and machine == "arm64"`
+    as its own oracle, so it passed on x86-64 Linux CI for any mutation that
+    is also False there — including dropping the arm64 check entirely.
+    """
+    assert _mlx_supported_for(platform_name, machine) is expected
+
+
+def test_mlx_supported_matches_this_machine():
     import platform
 
     expected = sys.platform == "darwin" and platform.machine() == "arm64"
@@ -282,10 +328,14 @@ def test_caption_video_stages_frames_and_matches_num_images(tmp_path, monkeypatc
 
     assert caption == "A cat runs."
     assert captured["prompt"] == "formatted"
+    # The clip framing counts the frames actually staged (3), not the 8 that
+    # were requested — the same rule num_images follows below. It matches the
+    # GGUF backend word for word via engine.base.frame_video_prompt.
     assert captured["messages"] == [
         {"role": "system", "content": DEFAULT_SYSTEM_PROMPT},
-        {"role": "user", "content": "Describe the video."},
+        {"role": "user", "content": frame_video_prompt("Describe the video.", 3)},
     ]
+    assert "The 3 images above" in captured["messages"][1]["content"]
 
     paths = captured["kwargs"]["image"]
     assert isinstance(paths, list)

@@ -4,6 +4,76 @@ All notable changes to this project are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versions correspond to
 git tags (`V1.x.x`).
 
+## [1.5.0] — 2026-09-16
+
+Feature release: video captioning on both backends, plus two new model
+families and the pairing/prompt fixes they exposed.
+
+### Added
+- **Video captioning.** `.mp4`, `.mov`, `.mkv`, `.webm`, `.avi` and `.m4v`
+  are captioned by sampling evenly-spaced frames and sending them as one
+  multi-image chat turn — the only mechanism `mtmd` actually supports today
+  (the Qwen3-VL chat template still carries "# Video not supported yet").
+  Implemented once in `engine/video.py` and driven identically by the GGUF
+  and MLX engines; frame count (8 by default, 16 max) and frame size (640 px
+  longest side) are shared constants so the backends cannot drift apart.
+- **Two new model families in the download list**, with their own chat
+  templates selected at load time: HauhauCS Qwen3.5 9B Uncensored
+  (`qwen35`) and HauhauCS Gemma-4 E4B Uncensored (`gemma4`). The chat family
+  is inferred from the filename and can be overridden explicitly.
+- **Up-front context-budget preflight for video.** Qwen3-VL's M-RoPE
+  disables llama.cpp's context shift, so overflowing `n_ctx` is a hard
+  `RuntimeError` partway through generation. The frame count, the measured
+  prompt and the generation budget are now checked against `n_ctx` before
+  anything is encoded, and the error names the setting to lower.
+
+### Fixed
+- **Reasoning traces could become the caption.** The pinned wheel builds
+  Qwen3.5 and Gemma-4 handlers with `enable_thinking=True`, which ends the
+  generation prompt inside an open `<think>` block — the model's monologue
+  then *is* the caption, usually exhausting the token budget before any
+  description appears. Thinking is now disabled at construction, and a
+  leading `<think>`/thought-channel block is stripped from the result if one
+  appears anyway. An unclosed block is left intact rather than silently
+  saving an empty sidecar.
+- **Single-image prompts changed by the new handlers.** `Qwen3VLChatHandler`
+  and `Qwen35ChatHandler` default to `add_vision_id=True`, prefixing every
+  image with `Picture N:` — which would have silently altered the prompt
+  every existing user captions with. It is now switched off; video states the
+  frame ordering in its text prompt instead, which also works for Gemma-4,
+  whose handler has no such flag. Unknown keywords are dropped on a
+  `TypeError` retry so other llama-cpp-python builds still load.
+- **Six of the eleven Gemma-4 quants downloaded without a vision encoder.**
+  The `P` of a "pure" quant (`Q6_K_P`) was not recognised as part of the
+  quant tag, so those builds' identity key ended in a stray `p` and never
+  matched the `mmproj` published beside them. Gemma's `E4B`
+  effective-parameter size is now read as a size too, and kept distinct from
+  a dense 4B.
+- **Downloading a second model family skipped its vision encoder.** The
+  "already have one?" check asked `find_mmproj_file(target_dir)` with no
+  model, which returns whichever encoder sorts first — so a Gemma-4 download
+  into a folder holding a Qwen3-VL encoder queued nothing. Both the queue and
+  the post-download re-check now match the registry's exact `mmproj_filename`.
+  (Pairing a model with another model's `mmproj` does not fail cleanly; it
+  crashes llama.cpp natively.)
+- **The sequential frame sampler under-delivered and skewed early.** For
+  files whose header reports no frame count, or whose container cannot seek,
+  the old rolling-halving pass kept whichever frames it happened to survive
+  with — fewer than requested, and weighted toward the intro. It now counts
+  frames with a decode-free `grab()` pass and then decodes only the midpoint
+  indices, giving the same coverage as the seeking path. The unseekable
+  fallback had no test at all and now has one.
+
+### Changed
+- `opencv-python-headless` is capped below the next major (`>=4.9,<6`).
+  OpenCV 5.0 shipped during development and an unbounded range would upgrade
+  every fresh install into it unannounced; the suite passes on 5.x.
+- Video frames are encoded as JPEG q95 rather than PNG, matching the
+  single-image path — the chat handler re-encodes to JPEG regardless, so PNG
+  only cost a slow compression pass and a much larger base64 payload, N times
+  over per clip.
+- Test suite grew to 457 tests.
+
 ## [1.4.3] — 2026-07-30
 
 Maintenance release from a full repository health check, followed by a second

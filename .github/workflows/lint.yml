@@ -27,12 +27,12 @@ jobs:
       - name: Syntax check (py_compile)
         run: python -m compileall -q app.py doctor.py engine gui tests
 
-      - name: Pyflakes (undefined names, unused imports)
+      - name: Ruff (pyflakes rules + bugbear + pylint errors; config in pyproject.toml)
         # requirements-dev.txt is the single source of dev-tool floors — CI
         # must consume it or its pins are decorative and drift silently.
         run: |
           pip install --quiet -r requirements-dev.txt
-          pyflakes app.py doctor.py engine/*.py gui/*.py tests/*.py
+          ruff check --output-format github app.py doctor.py engine gui tests
 
   test:
     runs-on: ubuntu-latest

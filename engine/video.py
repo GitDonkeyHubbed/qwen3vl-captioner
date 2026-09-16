@@ -43,13 +43,7 @@ def _to_pil(cv2, frame) -> Image.Image:
 
 def _sample_by_index(cv2, cap, total: int, num_frames: int) -> list[Image.Image]:
     """Seek to evenly-spaced indices and decode each one."""
-    # Midpoint sampling — round((i+0.5)*total/n) hits the middle of each of
-    # n equal spans, so intro/outro frames don't dominate short videos.
-    indices: list[int] = []
-    for i in range(num_frames):
-        idx = min(total - 1, max(0, round((i + 0.5) * total / num_frames)))
-        if not indices or idx != indices[-1]:
-            indices.append(idx)
+    indices = _midpoint_indices(total, num_frames)
 
     frames: list[Image.Image] = []
     for idx in indices:
@@ -65,30 +59,71 @@ def _sample_by_index(cv2, cap, total: int, num_frames: int) -> list[Image.Image]
     return frames
 
 
-def _sample_sequential(cv2, cap, num_frames: int) -> list[Image.Image]:
-    """Single decode pass for files with an unreliable frame count.
+def _midpoint_indices(total: int, num_frames: int) -> list[int]:
+    """Evenly-spaced midpoint indices: round((i+0.5)*total/n), deduped.
 
-    Bounded rolling sample: keep every stride-th frame; when the buffer is
-    full, drop every other kept frame and double the stride. Memory stays at
-    <= num_frames decoded frames however long the video is, and the survivors
-    remain evenly spaced and in temporal order.
+    Midpoints (rather than i*total/n) hit the middle of each of n equal spans,
+    so a short clip's intro and outro don't dominate the sample.
     """
-    frames: list[Image.Image] = []
-    stride = 1
-    idx = 0
-    while True:
-        ok, frame = cap.read()
-        if not ok or frame is None:
-            break
-        if idx % stride == 0:
-            if len(frames) == num_frames:
-                frames = frames[::2]
-                stride *= 2
-            # Thinning changed the stride, so this frame may no longer be kept
-            if idx % stride == 0:
-                frames.append(_to_pil(cv2, frame))
-        idx += 1
-    return frames
+    indices: list[int] = []
+    for i in range(num_frames):
+        idx = min(total - 1, max(0, round((i + 0.5) * total / num_frames)))
+        if not indices or idx != indices[-1]:
+            indices.append(idx)
+    return indices
+
+
+def _count_frames(cv2, video_path: Path) -> int:
+    """Count decodable frames with a grab-only pass (no decode cost)."""
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        return 0
+    try:
+        total = 0
+        while cap.grab():
+            total += 1
+        return total
+    finally:
+        cap.release()
+
+
+def _sample_sequential(cv2, video_path: Path, num_frames: int) -> list[Image.Image]:
+    """Two-pass sampler for files whose frame count or seeking is unusable.
+
+    Counts frames with grab() (which skips decoding), then re-reads from the
+    start and decodes only at the midpoint indices — so the sample spans the
+    whole clip and returns the requested number of frames. The previous
+    rolling-halving approach kept only the frames it happened to survive with,
+    which both under-delivered and skewed coverage toward the start.
+
+    Memory stays bounded at the sampled frames; passes are grab-only except
+    at the indices actually kept.
+    """
+    total = _count_frames(cv2, video_path)
+    if total <= 0:
+        return []
+
+    wanted = _midpoint_indices(total, num_frames)
+    targets = set(wanted)
+
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        return []
+    try:
+        decoded: dict[int, Image.Image] = {}
+        idx = 0
+        while idx <= wanted[-1]:
+            if not cap.grab():
+                break
+            if idx in targets:
+                ok, frame = cap.retrieve()
+                if ok and frame is not None:
+                    decoded[idx] = _to_pil(cv2, frame)
+            idx += 1
+    finally:
+        cap.release()
+
+    return [decoded[i] for i in wanted if i in decoded]
 
 
 def sample_frames(
@@ -125,20 +160,15 @@ def sample_frames(
             frames = _sample_by_index(cv2, cap, total, num_frames)
         else:
             # Some webm/VFR files report 0 or -1 — fall back to one pass
-            frames = _sample_sequential(cv2, cap, num_frames)
+            frames = _sample_sequential(cv2, video_path, num_frames)
     finally:
         cap.release()
 
     if not frames and total > 0:
         # The header claimed frames but seeking/decoding produced none
-        # (lying header, unseekable container). One sequential pass on a
-        # fresh capture is the decoder of last resort.
-        cap = cv2.VideoCapture(str(video_path))
-        if cap.isOpened():
-            try:
-                frames = _sample_sequential(cv2, cap, num_frames)
-            finally:
-                cap.release()
+        # (lying header, unseekable container). _sample_sequential opens its
+        # own captures and is the decoder of last resort.
+        frames = _sample_sequential(cv2, video_path, num_frames)
 
     if not frames:
         raise RuntimeError(f"Could not decode any frames from: {video_path}")

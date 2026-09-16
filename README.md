@@ -2,11 +2,11 @@
   <img src="assets/VL_GGUF_Captioner GUI Screenshot 2.png" alt="QWEN 3 VL ABL Captioner" width="900"/>
 </p>
 
-<h1 align="center">QWEN 3 VL ABL Captioner V1.4.3 — GGUF + MLX Engines</h1>
+<h1 align="center">QWEN 3 VL ABL Captioner V1.5.0 — GGUF + MLX Engines</h1>
 <h3 align="center">Professional GPU-Accelerated Image Captioning for Datasets</h3>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.4.3-blue" alt="Version"/>
+  <img src="https://img.shields.io/badge/version-1.5.0-blue" alt="Version"/>
   <img src="https://img.shields.io/badge/python-3.12-blue?logo=python" alt="Python"/>
   <img src="https://img.shields.io/badge/GPU-CUDA%2012.4%E2%80%9313.x-green?logo=nvidia" alt="CUDA"/>
   <img src="https://img.shields.io/badge/Apple%20Silicon-Metal%20%2B%20MLX-black?logo=apple" alt="Apple Silicon"/>
@@ -41,17 +41,35 @@
 
 ---
 
-## 🩺 What's New in V1.4.3 — Health-Check & Deep-QC Fixes
+## 🎬 What's New in V1.5.0 — Video Captioning & Two New Model Families
 
-No new models — two full audit passes over the codebase (85 verified findings fixed in total), plus quality-of-life upgrades.
-
-- **Your captions can no longer cross-save.** Clicking another image while a caption was generating could silently overwrite that image's `.txt` with the wrong caption — fixed at the root.
-- **Phone photos caption correctly now.** EXIF rotation is applied before inference, so sideways camera JPEGs no longer produce captions describing a rotated scene.
-- **No more phantom "update available" popup**, no more window freeze during vision-encoder downloads, and your saved **light/dark theme actually applies at startup**.
-- **Downloads got smarter**: live **speed + ETA**, free-disk-space pre-flight, corruption-proof resume (including partials from older versions), and your HF token is stored `0600` and never sent over plain HTTP.
-- **Faster & smoother**: thumbnails decode at thumbnail size (no more UI stalls on big imports), **keyboard shortcuts** (Ctrl+S save, Ctrl+G generate, Ctrl+←/→ navigate), **drag & drop anywhere**, batch ETA, and a download offer right in the "model not downloaded" dialog.
-- **The install doctor got real diagnostic teeth.** The false "CPU build detected" warning on healthy GPU installs is gone, and `diagnose.bat` now pinpoints the exact conflicting DLL (System32, PATH, another AI app) behind `WinError 127` startup failures — with safe, reversible fix steps.
-- Test suite grew to **139 tests**; CI now HEAD-checks the pinned wheel URLs so a deleted release breaks CI (not your install), and every release tag is verified against the in-app version before it publishes.
+- **Caption videos, not just images.** Point the app at an `.mp4`, `.mov`,
+  `.mkv`, `.webm`, `.avi` or `.m4v` and it samples evenly-spaced frames across
+  the whole clip and describes it in one pass. Both backends do it the same
+  way — GGUF (Windows/Linux CUDA, macOS Metal) and MLX (Apple Silicon).
+- **Two new model families you can pick from the download list**: HauhauCS's
+  uncensored **Qwen3.5 9B** and **Gemma-4 E4B**, alongside the existing
+  Qwen3-VL builds. Each family now loads with its own chat template.
+- **Reasoning traces stay out of your captions.** The new families think
+  before they answer; that monologue is switched off at load time and
+  stripped if one appears anyway, so a `.txt` sidecar never gets a model
+  arguing with itself instead of a description.
+- **Your single-image prompts are unchanged.** The per-image `Picture N:`
+  labelling the new handlers add by default is switched off; a video says
+  "these are frames of one clip" in plain text instead, which works on every
+  family.
+- **Frame budget is checked up front.** Qwen3-VL cannot shift its context
+  window mid-generation, so too many frames used to be a hard crash partway
+  through. You now get a clear message telling you to lower "Frames per
+  video" before anything starts.
+- **Every Gemma-4 quant finds its vision encoder.** Six of the eleven
+  published builds use the `_K_P` "pure" naming, which the pairing logic did
+  not recognise — so they downloaded without an encoder. Downloading a second
+  model family into a folder no longer skips its encoder because another
+  family's was already sitting there.
+- Test suite grew to **457 tests**; CI now HEAD-checks the pinned wheel URLs
+  so a deleted release breaks CI (not your install), and every release tag is
+  verified against the in-app version before it publishes.
 
 See [CHANGELOG.md](CHANGELOG.md) for the complete list.
 
@@ -108,7 +126,7 @@ Both platforms now use JamePeng's v0.3.40 build (Windows: cu124–cu131 auto-mat
 - If no mmproj is found next to a custom model, the app asks whether to download the default or lets you **browse for the matching mmproj**.
 
 ### ✨ Quality of life
-- **Real download progress** — model downloads show actual percentage and GB progress, **Cancel works mid-download**, and interrupted downloads **resume where they left off**.
+- **Real download progress** — model downloads show actual percentage and GB progress, and **Cancel works mid-download**. An interrupted single-stream download resumes from its `.part`; large models use several parallel connections, whose partial file cannot be verified after an interruption and is discarded so the retry starts from a known-good state.
 - **VRAM-aware model list** — quants that won't fit your GPU are tinted red ("won't fit") or orange ("tight fit") with tooltips, and the default selection is the best quant for your card.
 - **✓ markers** in the model dropdown show which models are already downloaded.
 - **Auto-save captions** checkbox — saves every caption as a `.txt` sidecar instantly, no more popup per image.
@@ -168,7 +186,7 @@ When enabled, this injects explicit instructions to describe **all** content (in
 
 | Required | Notes |
 |----------|-------|
-| **Windows 10/11 (64-bit)** | Portable release is Windows-only |
+| **Windows 10/11 (64-bit)** | These prerequisites are the Windows ones; the release ZIP also serves macOS (see [Quick Start (macOS)](#-quick-start-macos)) |
 | **NVIDIA GPU (8 GB+ VRAM)** | GTX 1070 minimum; RTX 3060+ recommended |
 | **NVIDIA GPU driver (current)** | [nvidia.com/drivers](https://www.nvidia.com/drivers) |
 | **NVIDIA CUDA Toolkit 12.4+** | **Required — the driver alone is not enough.** Install with `winget install Nvidia.CUDA` or from [CUDA Downloads](https://developer.nvidia.com/cuda-downloads) |
@@ -403,7 +421,7 @@ This is the standard sidecar format expected by most training tools (Kohya, Ever
 | **Custom model gives bad output** | Make sure the mmproj next to the model matches it — when in doubt, use the mmproj published in the same HuggingFace repo as the model |
 | **Blank image preview** | Fixed — Qt image allocation limit raised to handle large files |
 | **Slow model loading** | Normal — first load takes 30-60s. Subsequent loads are faster |
-| **Out of VRAM** | Use Q6_K instead of Q8_0, or reduce `max_tokens` |
+| **Out of VRAM** | Use a smaller quant (Q6_K instead of Q8_0, or Q4_K_M) — VRAM is dominated by the model weights plus the 8192-token context, which is fixed; `max_tokens` only caps the reply length and barely moves the total |
 | **"access violation"** | CUDA DLLs not found. Run via `run.bat` (sets PATH automatically) and ensure the CUDA Toolkit is installed |
 
 ---

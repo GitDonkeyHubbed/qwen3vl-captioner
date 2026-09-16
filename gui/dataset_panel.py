@@ -10,12 +10,13 @@ from pathlib import Path
 from typing import List
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QImageReader
+from PyQt6.QtGui import QColor, QImageReader
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
 )
 
+from .caption_io import read_caption
 from .theme import COLORS
 
 
@@ -24,7 +25,6 @@ class DatasetPanel(QFrame):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setStyleSheet(f"background: {COLORS['bg_dark']};")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -32,11 +32,8 @@ class DatasetPanel(QFrame):
 
         # --- Header Row ---
         header_row = QHBoxLayout()
-        title = QLabel("Dataset Overview")
-        title.setStyleSheet(
-            f"color: {COLORS['text_primary']}; font-size: 16px; font-weight: 600;"
-        )
-        header_row.addWidget(title)
+        self._title = QLabel("Dataset Overview")
+        header_row.addWidget(self._title)
         header_row.addStretch()
 
         self._refresh_btn = QPushButton("Refresh")
@@ -48,9 +45,6 @@ class DatasetPanel(QFrame):
 
         # --- Stats Row ---
         self._stats_frame = QFrame()
-        self._stats_frame.setStyleSheet(
-            f"background: {COLORS['bg_card']}; border: 1px solid {COLORS['border']}; border-radius: 6px;"
-        )
         stats_layout = QHBoxLayout(self._stats_frame)
         stats_layout.setContentsMargins(16, 10, 16, 10)
         stats_layout.setSpacing(24)
@@ -87,6 +81,47 @@ class DatasetPanel(QFrame):
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
 
+        layout.addWidget(self._table, 1)
+
+        # --- Empty state ---
+        self._empty_label = QLabel("Import images in the Project tab to see your dataset here.")
+        self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_label.setVisible(False)
+        layout.addWidget(self._empty_label)
+
+        self._apply_styles()
+
+    def set_refresh_callback(self, callback):
+        """Connect the Refresh button to a callback."""
+        self._refresh_btn.clicked.connect(callback)
+
+    def _apply_styles(self):
+        """Set every palette-dependent inline stylesheet from the active COLORS.
+
+        The single place these colours are set, so __init__ and refresh_theme
+        cannot drift apart: an inline sheet outranks the app stylesheet and
+        keeps whatever hex strings it was built with.
+        """
+        self.setStyleSheet(f"background: {COLORS['bg_dark']};")
+        self._title.setStyleSheet(
+            f"color: {COLORS['text_primary']}; font-size: 16px; font-weight: 600;"
+        )
+        self._stats_frame.setStyleSheet(
+            f"background: {COLORS['bg_card']}; border: 1px solid {COLORS['border']}; border-radius: 6px;"
+        )
+        for stat in (
+            self._stat_total, self._stat_captioned,
+            self._stat_uncaptioned, self._stat_coverage,
+        ):
+            stat.findChild(QLabel, "stat_label").setStyleSheet(
+                f"color: {COLORS['text_dim']}; font-size: 9px; font-weight: 600; "
+                f"text-transform: uppercase; letter-spacing: 0.5px;"
+            )
+            stat.findChild(QLabel, "stat_value").setStyleSheet(
+                f"color: {COLORS['text_primary']}; font-size: 18px; font-weight: 700; "
+                f"font-family: 'Consolas', monospace;"
+            )
+
         self._table.setStyleSheet(f"""
             QTableWidget {{
                 background: {COLORS['bg_darkest']};
@@ -118,20 +153,32 @@ class DatasetPanel(QFrame):
             }}
         """)
 
-        layout.addWidget(self._table, 1)
-
-        # --- Empty state ---
-        self._empty_label = QLabel("Import images in the Project tab to see your dataset here.")
-        self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._empty_label.setStyleSheet(
             f"color: {COLORS['text_dim']}; font-size: 12px; padding: 40px;"
         )
-        self._empty_label.setVisible(False)
-        layout.addWidget(self._empty_label)
 
-    def set_refresh_callback(self, callback):
-        """Connect the Refresh button to a callback."""
-        self._refresh_btn.clicked.connect(callback)
+    def refresh_theme(self):
+        """Re-apply palette-dependent colours after a runtime theme switch.
+
+        Recolours in place. It used to repopulate the table, which re-read
+        every sidecar and image header on the UI thread each time the
+        settings dialog previewed a theme, even with this tab hidden.
+        """
+        self._apply_styles()
+        # The Yes/No foregrounds are per-cell brushes; re-resolve them from
+        # the has_caption flag stored on each item.
+        for row in range(self._table.rowCount()):
+            item = self._table.item(row, 3)
+            if item is not None:
+                item.setForeground(QColor(
+                    self._status_color(item.data(Qt.ItemDataRole.UserRole))
+                ))
+
+    @staticmethod
+    def _status_color(has_caption: bool) -> str:
+        # COLORS, not Qt.GlobalColor.green (#00ff00), which is 1.08:1 on
+        # the light table background.
+        return COLORS["success"] if has_caption else COLORS["error"]
 
     def populate(self, image_paths: List[Path]):
         """Populate the table with image metadata and caption status."""
@@ -160,26 +207,29 @@ class DatasetPanel(QFrame):
             size_str = self._format_size(img_path)
             self._table.setItem(row, 2, QTableWidgetItem(size_str))
 
-            # Caption file exists?
-            txt_path = img_path.with_suffix(".txt")
-            has_caption = txt_path.exists()
+            # Caption file present AND non-blank? A sidecar counted purely by
+            # existence reported empty .txt files as captioned, showing "Yes"
+            # with a blank preview and inflating Coverage to 100%. One read
+            # serves both the status and the preview.
+            info = read_caption(img_path)
+            has_caption = info.has_caption
             if has_caption:
                 captioned += 1
             status_item = QTableWidgetItem("Yes" if has_caption else "No")
-            if has_caption:
-                status_item.setForeground(Qt.GlobalColor.green)
-            else:
-                status_item.setForeground(Qt.GlobalColor.red)
+            # Kept on the item so refresh_theme can recolour without a re-read.
+            status_item.setData(Qt.ItemDataRole.UserRole, has_caption)
+            status_item.setForeground(QColor(self._status_color(has_caption)))
             self._table.setItem(row, 3, status_item)
 
             # Caption preview
-            preview = ""
-            if has_caption:
-                try:
-                    text = txt_path.read_text(encoding="utf-8", errors="replace").strip()
-                    preview = text[:120] + ("..." if len(text) > 120 else "")
-                except Exception:
-                    preview = "(read error)"
+            if info.read_error:
+                preview = "(read error)"
+            elif has_caption:
+                preview = info.text[:120] + ("..." if len(info.text) > 120 else "")
+            elif info.exists:
+                preview = "(empty file)"
+            else:
+                preview = ""
             self._table.setItem(row, 4, QTableWidgetItem(preview))
 
         self._update_stats(len(image_paths), captioned)
@@ -200,19 +250,13 @@ class DatasetPanel(QFrame):
         vl.setContentsMargins(0, 0, 0, 0)
         vl.setSpacing(2)
 
+        # Styled by _apply_styles, which finds these by object name.
         lbl = QLabel(label)
-        lbl.setStyleSheet(
-            f"color: {COLORS['text_dim']}; font-size: 9px; font-weight: 600; "
-            f"text-transform: uppercase; letter-spacing: 0.5px;"
-        )
+        lbl.setObjectName("stat_label")
         vl.addWidget(lbl)
 
         val = QLabel(value)
         val.setObjectName("stat_value")
-        val.setStyleSheet(
-            f"color: {COLORS['text_primary']}; font-size: 18px; font-weight: 700; "
-            f"font-family: 'Consolas', monospace;"
-        )
         vl.addWidget(val)
         return w
 

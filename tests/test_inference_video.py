@@ -87,9 +87,27 @@ def _video_file(tmp_path):
 
 
 def _decode_data_uri(uri: str) -> Image.Image:
-    assert uri.startswith("data:image/png;base64,")
+    # JPEG q95, matching the single-image path: the chat handler re-encodes
+    # whatever it receives to JPEG anyway, and N frames per turn make the
+    # payload size difference N times worse than it is for one image.
+    assert uri.startswith("data:image/jpeg;base64,")
     raw = base64.b64decode(uri.split(",", 1)[1])
     return Image.open(io.BytesIO(raw))
+
+
+def _decoded_frame_index(uri: str) -> int:
+    """Recover which _FRAME_COLORS entry a decoded frame came from.
+
+    JPEG is lossy, so the corner pixel is compared by nearest colour rather
+    than equality — the frames are solid and far apart in RGB, so the nearest
+    match is unambiguous.
+    """
+    got = _decode_data_uri(uri).convert("RGB").getpixel((0, 0))
+    distances = [
+        sum((a - b) ** 2 for a, b in zip(got, color, strict=True))
+        for color in _FRAME_COLORS
+    ]
+    return distances.index(min(distances))
 
 
 def test_message_structure_and_temporal_order(monkeypatch, tmp_path):
@@ -112,12 +130,19 @@ def test_message_structure_and_temporal_order(monkeypatch, tmp_path):
 
     parts = messages[1]["content"]
     assert [p["type"] for p in parts] == ["image_url"] * 4 + ["text"]
-    assert parts[-1]["text"] == "Describe the video."
+    # The frames are framed as one clip in the text, because add_vision_id
+    # ("Picture N:") is switched off to keep the single-image prompt stable
+    # and Gemma-4's handler has no such flag. The user's prompt is appended
+    # verbatim.
+    assert parts[-1]["text"] == (
+        "The 4 images above are frames sampled in order from a single video "
+        "clip. Describe the video."
+    )
 
     # The image parts must preserve temporal order (frame i has color i).
-    for i, part in enumerate(parts[:4]):
-        img = _decode_data_uri(part["image_url"]["url"])
-        assert img.getpixel((0, 0)) == _FRAME_COLORS[i]
+    assert [_decoded_frame_index(p["image_url"]["url"]) for p in parts[:4]] == [
+        0, 1, 2, 3
+    ]
 
 
 def test_frames_resized_to_video_max_dim(monkeypatch, tmp_path):
@@ -390,3 +415,91 @@ def test_load_model_infers_chat_family_when_omitted(monkeypatch, tmp_path):
 
     assert eng.chat_family == "qwen3vl"
     assert instantiated == [("Qwen3VLChatHandler", str(mmproj))]
+
+
+# ── Caption-safe chat-handler construction ───────────────────────────────
+#
+# The pinned wheel (JamePeng llama-cpp-python 0.3.40) defaults
+# enable_thinking=True and add_vision_id=True. Both are wrong for captioning:
+# thinking mode ends the generation prompt inside an open <think> block so the
+# reasoning trace becomes the caption, and add_vision_id prefixes every image
+# with "Picture N:". Handlers differ in which flags they accept, so the
+# construction degrades by dropping unknown keywords.
+
+
+class _FlagRecordingHandler:
+    """Base for fakes that record the kwargs they were constructed with."""
+
+    seen: dict
+
+    def __init__(self, clip_model_path, verbose=False, **kwargs):
+        type(self).seen = {"clip_model_path": clip_model_path, **kwargs}
+
+
+def test_construct_chat_handler_disables_both_flags():
+    class Handler(_FlagRecordingHandler):
+        def __init__(self, clip_model_path, verbose=False,
+                     enable_thinking=True, add_vision_id=True):
+            super().__init__(
+                clip_model_path, verbose,
+                enable_thinking=enable_thinking, add_vision_id=add_vision_id,
+            )
+
+    inference._construct_chat_handler(Handler, Path("/m/mmproj.gguf"), False)
+    assert Handler.seen["enable_thinking"] is False
+    assert Handler.seen["add_vision_id"] is False
+    assert Handler.seen["clip_model_path"] == str(Path("/m/mmproj.gguf"))
+
+
+def test_construct_chat_handler_drops_add_vision_id_when_unsupported():
+    """Gemma-4's handler reasons but has no vision-id flag."""
+    class Handler(_FlagRecordingHandler):
+        def __init__(self, clip_model_path, verbose=False, enable_thinking=True):
+            super().__init__(
+                clip_model_path, verbose, enable_thinking=enable_thinking
+            )
+
+    inference._construct_chat_handler(Handler, Path("/m/mmproj.gguf"), False)
+    assert Handler.seen["enable_thinking"] is False
+    assert "add_vision_id" not in Handler.seen
+
+
+def test_construct_chat_handler_drops_enable_thinking_when_unsupported():
+    """Qwen3-VL's handler labels images but does not reason."""
+    class Handler(_FlagRecordingHandler):
+        def __init__(self, clip_model_path, verbose=False, add_vision_id=True):
+            super().__init__(
+                clip_model_path, verbose, add_vision_id=add_vision_id
+            )
+
+    inference._construct_chat_handler(Handler, Path("/m/mmproj.gguf"), False)
+    assert Handler.seen["add_vision_id"] is False
+    assert "enable_thinking" not in Handler.seen
+
+
+def test_construct_chat_handler_falls_back_to_plain_construction():
+    """An older wheel whose handler takes neither flag must still load."""
+    class Handler(_FlagRecordingHandler):
+        def __init__(self, clip_model_path, verbose=False):
+            super().__init__(clip_model_path, verbose)
+
+    handler = inference._construct_chat_handler(
+        Handler, Path("/m/mmproj.gguf"), False
+    )
+    assert isinstance(handler, Handler)
+    assert Handler.seen == {"clip_model_path": str(Path("/m/mmproj.gguf"))}
+
+
+def test_construct_chat_handler_surfaces_a_real_typeerror():
+    """A TypeError from the constructor *body* must not be swallowed.
+
+    The retry chain exists to drop unknown keywords, not to hide a broken
+    handler — a silently-None handler would crash later inside llama.cpp with
+    no hint of where it came from.
+    """
+    class Handler:
+        def __init__(self, clip_model_path, verbose=False, **kwargs):
+            raise TypeError("mmproj is not a vision encoder")
+
+    with pytest.raises(TypeError, match="not a vision encoder"):
+        inference._construct_chat_handler(Handler, Path("/m/mmproj.gguf"), False)
