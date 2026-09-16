@@ -384,7 +384,7 @@ def test_lying_header_keeps_seeked_frames_if_resample_finds_less(
     _lying_header_capture(monkeypatch, header=50, real=20)
     calls = []
 
-    def dud_sequential(cv2_mod, path, n, cancel_check=None):
+    def dud_sequential(cv2_mod, path, n, cancel_check=None, max_dim=None):
         calls.append(n)
         return []
 
@@ -601,3 +601,41 @@ def test_sample_frames_returns_every_frame_of_an_exact_length_clip(tmp_path):
     assert len(frames) == 8
     indices = [_frame_index(f) for f in frames]
     assert all(b > a for a, b in zip(indices, indices[1:], strict=False))
+
+
+# ── Frames are clamped at decode, not after the list is built ────────────
+
+def test_sample_frames_clamps_during_extraction(tmp_path):
+    """max_dim must bound PEAK memory, not just the returned images.
+
+    The sampler builds the whole list before returning, so a caller that
+    downscales afterwards has already paid for every frame at native
+    resolution: 16 frames of 4K RGB is 400 MB, of 8K is 1.6 GB, held for the
+    length of the inference. Clamped at decode the same 16 frames are 11 MB.
+    """
+    path = _write_video(tmp_path / "big.mp4")  # 64x48 fixture
+    frames = sample_frames(path, num_frames=4, max_dim=32)
+    assert len(frames) == 4
+    for f in frames:
+        assert max(f.size) <= 32
+
+
+def test_sample_frames_without_max_dim_keeps_native_size(tmp_path):
+    """The parameter is opt-in; omitting it preserves the old contract."""
+    path = _write_video(tmp_path / "native.mp4")
+    for f in sample_frames(path, num_frames=3):
+        assert f.size == FRAME_SIZE
+
+
+def test_sequential_path_clamps_too(video_path, monkeypatch):
+    """Both decode paths go through _to_pil, so both must honour max_dim."""
+    _break_capture(monkeypatch, frame_count=0.0)
+    frames = sample_frames(video_path, num_frames=4, max_dim=24)
+    assert len(frames) == 4
+    for f in frames:
+        assert max(f.size) <= 24
+
+
+def test_first_frame_is_not_clamped(video_path):
+    """Thumbnails want the real image; first_frame passes no max_dim."""
+    assert first_frame(video_path).size == FRAME_SIZE

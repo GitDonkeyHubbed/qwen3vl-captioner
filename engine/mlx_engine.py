@@ -296,7 +296,8 @@ class MlxVlmEngine:
         # generation does.
         try:
             frames = sample_frames(
-                video_path, num_frames, cancel_check=cancel_check
+                video_path, num_frames, cancel_check=cancel_check,
+                max_dim=VIDEO_FRAME_MAX_DIM,
             )
         except VideoCancelled:
             return ""

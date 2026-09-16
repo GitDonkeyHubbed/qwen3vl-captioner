@@ -16,7 +16,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from engine.base import VideoCancelled
+from engine.base import VideoCancelled, clamp_image_dim
 
 # How often the scan loops poll cancel_check. Often enough that a cancel
 # feels instant on a long clip, rare enough that the callback is not itself
@@ -56,13 +56,25 @@ def _require_cv2():
     return cv2
 
 
-def _to_pil(cv2, frame) -> Image.Image:
-    """Convert a decoded BGR frame to an RGB PIL image."""
-    return Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+def _to_pil(cv2, frame, max_dim: int | None = None) -> Image.Image:
+    """Convert a decoded BGR frame to an RGB PIL image, optionally clamped.
+
+    Clamping HERE rather than in the caller is what bounds peak memory. The
+    sampler builds the whole list before returning it, so a caller that
+    downscales afterwards has already paid for every frame at native
+    resolution — 16 frames of 4K RGB is 400 MB, and of 8K is 1.6 GB, held
+    for the length of the inference. Clamped at decode, the same 16 frames
+    are 11 MB.
+
+    max_dim=None keeps the native image, which is what first_frame wants for
+    a thumbnail.
+    """
+    img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    return clamp_image_dim(img, max_dim) if max_dim else img
 
 
 def _sample_by_index(
-    cv2, cap, indices: list[int], cancel_check=None
+    cv2, cap, indices: list[int], cancel_check=None, max_dim: int | None = None
 ) -> tuple[list[Image.Image], bool]:
     """Seek to each index and decode it.
 
@@ -91,7 +103,7 @@ def _sample_by_index(
             return [], True
         ok, frame = cap.read()
         if ok and frame is not None:
-            frames.append(_to_pil(cv2, frame))
+            frames.append(_to_pil(cv2, frame, max_dim))
     return frames, False
 
 
@@ -143,7 +155,8 @@ def _count_frames(cv2, video_path: Path, cancel_check=None) -> int:
 
 
 def _sample_sequential(
-    cv2, video_path: Path, num_frames: int, cancel_check=None
+    cv2, video_path: Path, num_frames: int, cancel_check=None,
+    max_dim: int | None = None,
 ) -> list[Image.Image]:
     """Two-pass sampler for files whose frame count or seeking is unusable.
 
@@ -178,7 +191,7 @@ def _sample_sequential(
             if idx in targets:
                 ok, frame = cap.retrieve()
                 if ok and frame is not None:
-                    decoded[idx] = _to_pil(cv2, frame)
+                    decoded[idx] = _to_pil(cv2, frame, max_dim)
             idx += 1
     finally:
         cap.release()
@@ -187,7 +200,8 @@ def _sample_sequential(
 
 
 def sample_frames(
-    video_path: str | Path, num_frames: int = 8, cancel_check=None
+    video_path: str | Path, num_frames: int = 8, cancel_check=None,
+    max_dim: int | None = None,
 ) -> list[Image.Image]:
     """
     Decode up to ``num_frames`` evenly-spaced RGB frames from a video.
@@ -259,7 +273,7 @@ def sample_frames(
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         wanted = _midpoint_indices(total, num_frames) if total > 0 else []
         seeked, seek_refused = (
-            _sample_by_index(cv2, cap, wanted, cancel_check)
+            _sample_by_index(cv2, cap, wanted, cancel_check, max_dim)
             if wanted else ([], False)
         )
     finally:
@@ -273,7 +287,7 @@ def sample_frames(
         # than decoded. _sample_sequential opens its own captures and is the
         # decoder of last resort.
         resampled = _sample_sequential(
-            cv2, video_path, num_frames, cancel_check
+            cv2, video_path, num_frames, cancel_check, max_dim
         )
         if len(resampled) >= len(frames):
             frames = resampled

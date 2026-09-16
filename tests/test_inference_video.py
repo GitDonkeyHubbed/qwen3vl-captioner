@@ -57,7 +57,7 @@ def _install_fake_video(monkeypatch, frame_size=(64, 48)):
     """Inject a stub engine.video module; returns a dict recording the call."""
     seen = {}
 
-    def sample_frames(video_path, num_frames=8, cancel_check=None):
+    def sample_frames(video_path, num_frames=8, cancel_check=None, max_dim=None):
         seen["video_path"] = video_path
         seen["num_frames"] = num_frames
         seen["cancel_check"] = cancel_check

@@ -524,7 +524,8 @@ class Qwen3VLEngine:
         # cancellation contract.
         try:
             frames = video_module.sample_frames(
-                video_path, num_frames=num_frames, cancel_check=cancel_check
+                video_path, num_frames=num_frames, cancel_check=cancel_check,
+                max_dim=VIDEO_FRAME_MAX_DIM,
             )
         except VideoCancelled:
             return ""

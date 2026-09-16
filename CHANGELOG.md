@@ -40,6 +40,14 @@ images (OCR, chart-reading and fine-detail cases) with no caption regression.
   auto-save writes every non-empty result unwatched, so the trace landed in
   the dataset. A response that is entirely reasoning, closed or not, now
   yields no caption.
+- **Sampled frames were held at native resolution for the whole inference.**
+  Both backends downscaled to 640 px only *after* `sample_frames()` returned,
+  but the sampler builds the entire list first — so the peak was already
+  paid: 16 frames of 4K RGB is 400 MB, of 8K is 1.6 GB, alive until the
+  caption finished. `sample_frames` now takes `max_dim` and clamps inside
+  `_to_pil`, the one choke point both decode paths share, bringing the same
+  16 frames to 11 MB. `first_frame` passes no `max_dim`, so thumbnails still
+  get the real image.
 - **The context preflight costed every model with Qwen3-VL's tiling.** Each
   family's real cost now comes from its own published config: Qwen3-VL and
   Qwen3.5 tile at 32 px (`patch_size` 16 x `merge_size` 2), Qwen2.5-VL at

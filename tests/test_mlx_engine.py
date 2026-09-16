@@ -307,7 +307,7 @@ def test_caption_video_stages_frames_and_matches_num_images(tmp_path, monkeypatc
 
     # 3 frames despite the default request of 8 — as if decoding dropped some.
     monkeypatch.setattr(
-        engine.video, "sample_frames", lambda path, n, cancel_check=None: _solid_frames(3)
+        engine.video, "sample_frames", lambda path, n, cancel_check=None, max_dim=None: _solid_frames(3)
     )
 
     def fake_apply_chat_template(processor, config, messages, num_images):
@@ -361,7 +361,7 @@ def test_caption_video_downscales_staged_frames(tmp_path, monkeypatch):
     monkeypatch.setattr(
         engine.video,
         "sample_frames",
-        lambda path, n, cancel_check=None: [
+        lambda path, n, cancel_check=None, max_dim=None: [
             Image.new("RGB", (1280, 720), "red") for _ in range(2)
         ],
     )
@@ -389,7 +389,7 @@ def test_caption_video_stages_frames_in_temporal_order(tmp_path, monkeypatch):
     # reading the staged PNGs back reveals which source frame landed in
     # frame_000.png, frame_001.png, ... — they must stay in temporal order.
     monkeypatch.setattr(
-        engine.video, "sample_frames", lambda path, n, cancel_check=None: _solid_frames(4)
+        engine.video, "sample_frames", lambda path, n, cancel_check=None, max_dim=None: _solid_frames(4)
     )
 
     recorded = []
@@ -421,7 +421,7 @@ def test_caption_video_keeps_frames_alive_through_streaming(tmp_path, monkeypatc
     # every staged path before each yield, so any premature cleanup (e.g.
     # between stream construction and the first token) fails loudly.
     monkeypatch.setattr(
-        engine.video, "sample_frames", lambda path, n, cancel_check=None: _solid_frames(2)
+        engine.video, "sample_frames", lambda path, n, cancel_check=None, max_dim=None: _solid_frames(2)
     )
 
     staged = {}
@@ -449,7 +449,7 @@ def test_caption_video_keeps_frames_alive_through_streaming(tmp_path, monkeypatc
 
 def test_caption_video_cancel_mid_stream_returns_partial(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        engine.video, "sample_frames", lambda path, n, cancel_check=None: _solid_frames(2)
+        engine.video, "sample_frames", lambda path, n, cancel_check=None, max_dim=None: _solid_frames(2)
     )
 
     staged = {}
@@ -484,7 +484,7 @@ def test_caption_video_cancel_mid_stream_returns_partial(tmp_path, monkeypatch):
 
 def test_caption_video_cleans_up_temp_frames_on_error(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        engine.video, "sample_frames", lambda path, n, cancel_check=None: _solid_frames(2)
+        engine.video, "sample_frames", lambda path, n, cancel_check=None, max_dim=None: _solid_frames(2)
     )
 
     staged = {}
@@ -513,7 +513,7 @@ def test_caption_video_cleans_up_temp_frames_on_error(tmp_path, monkeypatch):
 def test_caption_video_clamps_num_frames(tmp_path, monkeypatch, requested, expected):
     asked = {}
 
-    def fake_sample_frames(path, num_frames, cancel_check=None):
+    def fake_sample_frames(path, num_frames, cancel_check=None, max_dim=None):
         asked["num_frames"] = num_frames
         return _solid_frames(2)
 
@@ -533,7 +533,7 @@ def test_caption_video_clamps_num_frames(tmp_path, monkeypatch, requested, expec
 
 def test_caption_video_applies_prefix_suffix(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        engine.video, "sample_frames", lambda path, n, cancel_check=None: _solid_frames(2)
+        engine.video, "sample_frames", lambda path, n, cancel_check=None, max_dim=None: _solid_frames(2)
     )
     _install_fake_mlx_vlm(
         monkeypatch,
@@ -564,7 +564,7 @@ def test_caption_video_returns_empty_when_cancelled_during_extraction(
     """MLX stages every frame to disk before generating — cancel must cut in."""
     monkeypatch.setattr(
         engine.video, "sample_frames",
-        lambda path, n, cancel_check=None: _solid_frames(4),
+        lambda path, n, cancel_check=None, max_dim=None: _solid_frames(4),
     )
     started = []
 
@@ -586,7 +586,7 @@ def test_caption_video_returns_empty_when_cancelled_during_extraction(
 
 def test_caption_video_propagates_sampler_cancellation(tmp_path, monkeypatch):
     """VideoCancelled from the sampler becomes "", not an exception."""
-    def cancelling_sampler(path, n, cancel_check=None):
+    def cancelling_sampler(path, n, cancel_check=None, max_dim=None):
         raise VideoCancelled("cancelled during video frame extraction")
 
     monkeypatch.setattr(engine.video, "sample_frames", cancelling_sampler)
