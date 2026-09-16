@@ -95,7 +95,7 @@ downloaded:
   not recognise — so they downloaded without an encoder. Downloading a second
   model family into a folder no longer skips its encoder because another
   family's was already sitting there.
-- Test suite grew to **514 tests**; CI now HEAD-checks the pinned wheel URLs
+- Test suite grew to **516 tests**; CI now HEAD-checks the pinned wheel URLs
   so a deleted release breaks CI (not your install), and every release tag is
   verified against the in-app version before it publishes.
 

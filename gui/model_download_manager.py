@@ -53,6 +53,13 @@ def _gguf_family(
 ) -> Dict[str, Dict[str, Any]]:
     """Build registry entries for one GGUF model family.
 
+    ``quants`` maps a quant tag to its size in **binary GiB** (bytes / 1024**3),
+    not the decimal GB a publisher's README usually advertises. Everything that
+    consumes size_gb compares it against a binary figure -- the VRAM fit hint in
+    settings_panel against nvml/psutil totals, the download progress against
+    Content-Length -- so a decimal value overstates the model by ~7% and trips
+    the "won't fit" warning early.
+
     ``chat_family`` selects the chat template the engine applies at load
     time ("qwen3vl", "qwen35", "gemma4", ...)."""
     entries: Dict[str, Dict[str, Any]] = {}
@@ -109,7 +116,7 @@ _HAUHAU_QWEN35 = _gguf_family(
     "HauhauCS/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive",
     "Qwen3.5-9B-Uncensored-HauhauCS-Aggressive",
     "mmproj-Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-BF16.gguf",
-    {"Q4_K_M": 5.6, "Q6_K": 7.4, "Q8_0": 9.5},
+    {"Q4_K_M": 5.24, "Q6_K": 6.85, "Q8_0": 8.87},
     quant_template="{stem}-{quant}.gguf",
     chat_family="qwen35",
 )
@@ -119,7 +126,7 @@ _HAUHAU_GEMMA4 = _gguf_family(
     "HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive",
     "Gemma-4-E4B-Uncensored-HauhauCS-Aggressive",
     "mmproj-Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-f16.gguf",
-    {"Q4_K_M": 5.3, "Q6_K_P": 6.2, "Q8_K_P": 8.1},
+    {"Q4_K_M": 4.97, "Q6_K_P": 5.82, "Q8_K_P": 7.57},
     quant_template="{stem}-{quant}.gguf",
     chat_family="gemma4",
 )
