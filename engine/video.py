@@ -11,6 +11,7 @@ that imports it) still loads on installs without opencv-python-headless —
 the actionable error surfaces only when someone actually captions a video.
 """
 
+import warnings
 from pathlib import Path
 
 from PIL import Image
@@ -41,10 +42,25 @@ def _to_pil(cv2, frame) -> Image.Image:
     return Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 
 
-def _sample_by_index(cv2, cap, total: int, num_frames: int) -> list[Image.Image]:
-    """Seek to evenly-spaced indices and decode each one."""
-    indices = _midpoint_indices(total, num_frames)
+def _sample_by_index(
+    cv2, cap, indices: list[int]
+) -> tuple[list[Image.Image], bool]:
+    """Seek to each index and decode it.
 
+    Returns ``(frames, seek_refused)``. Both ways of coming up short look
+    identical in the frame count alone, and they mean opposite things about
+    the file, so the caller needs to be told which happened:
+
+    * ``seek_refused=False`` with fewer frames than ``indices``: the seeks
+      landed but reads failed. That is how a header that over-reports shows
+      up — seeking past the real end of a truncated file succeeds, and only
+      the read that follows fails.
+    * ``seek_refused=True`` (always with no frames): the container would not
+      seek at all. The header may be perfectly truthful; this file simply
+      cannot be sampled by index.
+
+    Either way the caller re-samples sequentially.
+    """
     frames: list[Image.Image] = []
     for idx in indices:
         if not cap.set(cv2.CAP_PROP_POS_FRAMES, idx):
@@ -52,11 +68,11 @@ def _sample_by_index(cv2, cap, total: int, num_frames: int) -> list[Image.Image]
             # just decode consecutive frames from wherever the decoder sits,
             # silently losing temporal coverage. Let the caller fall back to
             # the sequential pass instead.
-            return []
+            return [], True
         ok, frame = cap.read()
         if ok and frame is not None:
             frames.append(_to_pil(cv2, frame))
-    return frames
+    return frames, False
 
 
 def _midpoint_indices(total: int, num_frames: int) -> list[int]:
@@ -77,6 +93,7 @@ def _count_frames(cv2, video_path: Path) -> int:
     """Count decodable frames with a grab-only pass (no decode cost)."""
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
+        cap.release()  # a failed open still allocates the capture object
         return 0
     try:
         total = 0
@@ -108,6 +125,7 @@ def _sample_sequential(cv2, video_path: Path, num_frames: int) -> list[Image.Ima
 
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
+        cap.release()  # a failed open still allocates the capture object
         return []
     try:
         decoded: dict[int, Image.Image] = {}
@@ -132,6 +150,35 @@ def sample_frames(
     """
     Decode up to ``num_frames`` evenly-spaced RGB frames from a video.
 
+    Sampling seeks to evenly-spaced indices when the container reports a
+    frame count, and re-samples with the sequential pass whenever that
+    indexed pass comes up **short**.
+
+    "Short" is measured against the number of distinct indices asked for, not
+    against ``num_frames``. That distinction is the whole rule:
+
+    * A genuinely short clip's index list is already clamped to its own
+      length — an honest 3-frame file asked for 8 frames wants 3 indices,
+      fills all 3, and is not short. It returns what exists and pays for no
+      second pass.
+    * Fewer decoded frames than indices asked for means frames the header
+      promised did not decode: a truncated file, a lying ``CAP_PROP_FRAME_COUNT``,
+      or a container that refused to seek. Seeking past the real end of such
+      a file *succeeds*, so the miss is silent — skipped reads used to just
+      shrink the sample (a header claiming 50 frames over a 32-frame file
+      returned 10 frames for ``num_frames=16``) and squeeze its coverage into
+      the part of the index space that still existed.
+    * A header that **under**-reports is still trusted, and that gap is not
+      fixed here. Every index built from a too-small count decodes, nothing
+      comes up short, no fallback runs — so the tail of the clip past the
+      claimed count is silently never sampled. Only over-reporting (and
+      refused seeks) are detected.
+
+    The sequential pass counts frames itself with ``grab()``, so its indices
+    span the real clip. Its result wins whenever it is at least as long as
+    the seeked one; the seeked frames are kept if it somehow finds fewer, so
+    a decodable clip never comes back empty.
+
     Args:
         video_path: Path to the video file.
         num_frames: How many frames to sample (>= 1).
@@ -152,23 +199,53 @@ def sample_frames(
     video_path = Path(video_path)
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
+        # Released before raising: a failed open still allocates the capture
+        # object, and this exit is outside the try/finally that owns it.
+        cap.release()
         raise RuntimeError(f"Could not open video file: {video_path}")
 
     try:
+        # Some webm/VFR files report 0 or -1 — no usable index space.
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        if total > 0:
-            frames = _sample_by_index(cv2, cap, total, num_frames)
-        else:
-            # Some webm/VFR files report 0 or -1 — fall back to one pass
-            frames = _sample_sequential(cv2, video_path, num_frames)
+        wanted = _midpoint_indices(total, num_frames) if total > 0 else []
+        seeked, seek_refused = (
+            _sample_by_index(cv2, cap, wanted) if wanted else ([], False)
+        )
     finally:
+        # Released before any sequential pass, so only one capture is ever
+        # open on the file at a time.
         cap.release()
 
-    if not frames and total > 0:
-        # The header claimed frames but seeking/decoding produced none
-        # (lying header, unseekable container). _sample_sequential opens its
-        # own captures and is the decoder of last resort.
-        frames = _sample_sequential(cv2, video_path, num_frames)
+    frames = seeked
+    if not wanted or len(seeked) < len(wanted):
+        # Either the header gave us nothing to seek by, or it promised more
+        # than decoded. _sample_sequential opens its own captures and is the
+        # decoder of last resort.
+        resampled = _sample_sequential(cv2, video_path, num_frames)
+        if len(resampled) >= len(frames):
+            frames = resampled
+        if wanted:
+            # Only the over-reporting/unseekable cases are worth a word: the
+            # plain "header reports 0" VFR path is normal and stays quiet.
+            # They are different faults and must not share a sentence — an
+            # unseekable container's header is usually telling the truth, so
+            # blaming it sends the reader after a file that is fine.
+            if seek_refused:
+                detail = (
+                    f"container refused to seek, so none of the "
+                    f"{len(wanted)} sampled indices could be reached"
+                )
+            else:
+                detail = (
+                    f"header claims {total} frames but only {len(seeked)} "
+                    f"of {len(wanted)} sampled indices decoded"
+                )
+            warnings.warn(
+                f"{video_path.name}: {detail}; re-sampled sequentially "
+                f"and got {len(frames)}.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
     if not frames:
         raise RuntimeError(f"Could not decode any frames from: {video_path}")
@@ -187,6 +264,7 @@ def first_frame(video_path: str | Path) -> Image.Image:
     video_path = Path(video_path)
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
+        cap.release()  # outside the try/finally below — release it here
         raise RuntimeError(f"Could not open video file: {video_path}")
 
     try:
