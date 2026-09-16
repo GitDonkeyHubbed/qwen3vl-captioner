@@ -55,19 +55,27 @@ class ModelLoadWorker(QObject):
     finished = pyqtSignal()
     error = pyqtSignal(str)
 
-    def __init__(self, engine: Qwen3VLEngine, model_path: Path, mmproj_path: Path):
+    def __init__(
+        self,
+        engine: Qwen3VLEngine,
+        model_path: Path,
+        mmproj_path: Path,
+        chat_family: Optional[str] = None,
+    ):
         super().__init__()
         self.engine = engine
         self.model_path = model_path
         self.mmproj_path = mmproj_path
+        self.chat_family = chat_family
 
     def run(self):
         try:
-            self.engine.load_model(
-                self.model_path,
-                self.mmproj_path,
-                progress_callback=lambda msg: self.progress.emit(msg),
-            )
+            kwargs = {"progress_callback": lambda msg: self.progress.emit(msg)}
+            # Only the GGUF engine takes chat_family; MLX loads pass None and
+            # must not receive the kwarg (its load_model doesn't accept it).
+            if self.chat_family:
+                kwargs["chat_family"] = self.chat_family
+            self.engine.load_model(self.model_path, self.mmproj_path, **kwargs)
             self.finished.emit()
         except Exception as e:
             self.error.emit(f"{e}\n{traceback.format_exc()}")
@@ -1047,7 +1055,16 @@ class MainWindow(QMainWindow):
             if mmproj_path is None:
                 return  # cancelled or download failed (status already set)
 
-        self._start_model_load(model_path, mmproj_path)
+        # Registry entries carry the chat-template family (qwen3vl/qwen35/
+        # gemma4) — but only trust it when the resolved file really IS the
+        # registry entry's file. _find_model_file can fall back to any local
+        # GGUF, and stamping e.g. 'gemma4' onto a Qwen3-VL file would load
+        # the wrong chat template. Otherwise pass None so the engine infers
+        # the family from the actual filename.
+        chat_family = None
+        if info and model_path.name == info.get("filename"):
+            chat_family = info.get("chat_family")
+        self._start_model_load(model_path, mmproj_path, chat_family=chat_family)
 
     def _selected_registry_info(self):
         """Registry info dict for the currently selected model, or None for a
@@ -1242,7 +1259,12 @@ class MainWindow(QMainWindow):
         self._settings_panel.set_model_status("Load cancelled")
         return None
 
-    def _start_model_load(self, model_path: Path, mmproj_path: Optional[Path]):
+    def _start_model_load(
+        self,
+        model_path: Path,
+        mmproj_path: Optional[Path],
+        chat_family: Optional[str] = None,
+    ):
         """Kick off the background model-load thread (both backends)."""
         self._settings_panel.set_model_status("Loading model...")
         self._settings_panel.load_model_btn.setEnabled(False)
@@ -1250,7 +1272,9 @@ class MainWindow(QMainWindow):
 
         # Store as instance attrs to prevent garbage collection (QThread crash fix)
         self._model_load_thread = QThread()
-        self._model_load_worker = ModelLoadWorker(self._engine, model_path, mmproj_path)
+        self._model_load_worker = ModelLoadWorker(
+            self._engine, model_path, mmproj_path, chat_family
+        )
         self._model_load_worker.moveToThread(self._model_load_thread)
 
         self._model_load_thread.started.connect(self._model_load_worker.run)
@@ -1421,11 +1445,16 @@ class MainWindow(QMainWindow):
         if answer != QMessageBox.StandardButton.Yes:
             return
 
-        # Queue the matching mmproj to auto-download right after the model
-        # (skipped if any mmproj already exists in the target dir)
+        # Queue the matching mmproj to auto-download right after the model.
+        # Skipped only when THIS model's encoder is already there, by exact
+        # registry filename: find_mmproj_file(target_dir) with no model_path
+        # returns whatever encoder sorts first, so downloading a Gemma-4 into
+        # a folder that already held a Qwen3-VL encoder silently skipped the
+        # Gemma-4 encoder — and pairing a model with another model's mmproj
+        # crashes llama.cpp natively rather than failing cleanly.
         self._pending_mmproj = None
         if not is_mlx and info.get("mmproj_filename"):
-            if find_mmproj_file(target_dir) is None:
+            if not model_file_exists(target_dir, info["mmproj_filename"]):
                 self._pending_mmproj = (
                     info["repo_id"], info["mmproj_filename"], target_dir
                 )
@@ -1512,10 +1541,14 @@ class MainWindow(QMainWindow):
         self._refresh_model_list()
 
         # Chain the matching vision encoder download if one was queued
+        from gui.model_download_manager import model_file_exists
+
         if self._pending_mmproj and "mmproj" not in filename.lower():
             repo_id, mmproj_name, target_dir = self._pending_mmproj
             self._pending_mmproj = None
-            if find_mmproj_file(target_dir) is None:
+            # Re-checked by exact name, for the same reason as when it was
+            # queued: another model's encoder in the folder must not stand in.
+            if not model_file_exists(target_dir, mmproj_name):
                 QTimer.singleShot(
                     150,
                     lambda: self._start_file_download(

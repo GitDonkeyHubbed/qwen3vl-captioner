@@ -413,3 +413,68 @@ def test_same_family_does_not_drop_a_model_name_as_a_prefix():
     assert not _same_family("Qwen3-VL-8B.mmproj-f16.gguf", "VL-8B-Q4_K_M.gguf")
     assert _same_family("Qwen3-VL-8B-Q4_K_M.gguf",
                         "Huihui-Qwen3-VL-8B.mmproj-f16.gguf")
+
+
+# ── HauhauCS community repos: "pure" quants and Gemma's E4B size ─────────
+#
+# Verified against the live repos: HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-
+# Aggressive ships 11 quants, 6 of them the "_K_P" (pure) spelling, beside a
+# single mmproj-...-f16.gguf. HauhauCS/Qwen3.5-9B-Uncensored-HauhauCS-
+# Aggressive ships 4 beside an mmproj-...-BF16.gguf.
+
+_HAUHAU_GEMMA_QUANTS = [
+    "IQ3_M", "IQ4_XS", "Q2_K_P", "Q3_K_M", "Q3_K_P", "Q4_K_M",
+    "Q4_K_P", "Q5_K_M", "Q5_K_P", "Q6_K_P", "Q8_K_P",
+]
+
+
+@pytest.mark.parametrize("quant", _HAUHAU_GEMMA_QUANTS)
+def test_hauhaucs_gemma4_quant_pairs_with_its_own_encoder(tmp_path, quant):
+    """Every published quant must find the one encoder in the folder.
+
+    The "P" of a pure quant was not recognised as part of the quant tag, so
+    the identity key of a *_K_P build ended in a stray "p" and matched
+    nothing — six of these eleven downloads paired with no vision encoder.
+    """
+    stem = "Gemma-4-E4B-Uncensored-HauhauCS-Aggressive"
+    model = _touch(tmp_path / f"{stem}-{quant}.gguf")
+    encoder = _touch(tmp_path / f"mmproj-{stem}-f16.gguf")
+
+    assert find_mmproj_file(tmp_path, model) == encoder
+
+
+@pytest.mark.parametrize("quant", ["Q4_K_M", "Q6_K", "Q8_0", "BF16"])
+def test_hauhaucs_qwen35_quant_pairs_with_its_own_encoder(tmp_path, quant):
+    stem = "Qwen3.5-9B-Uncensored-HauhauCS-Aggressive"
+    model = _touch(tmp_path / f"{stem}-{quant}.gguf")
+    encoder = _touch(tmp_path / f"mmproj-{stem}-BF16.gguf")
+
+    assert find_mmproj_file(tmp_path, model) == encoder
+
+
+def test_pure_quant_does_not_swallow_a_p_elsewhere_in_the_name():
+    """The P is dropped only directly after a quant token."""
+    from engine.model_downloader import _model_key
+
+    # "p" leading the name, and "pro"/"plus" anywhere, must survive.
+    assert _model_key("P-Model-8B-Q4_K_M") == _model_key("P-Model-8B.mmproj-f16")
+    assert "p" in _model_key("P-Model-8B-Q4_K_M")
+    assert _model_key("Foo-8B-Q4_K-Pro") != _model_key("Foo-8B-Q4_K")
+
+
+def test_gemma_e4b_is_a_size_but_not_a_dense_4b(tmp_path):
+    """E4B is a MatFormer submodel, so it must not size-match a dense 4B.
+
+    Without the E the size was unreadable, which switched stage 1's
+    containment branch to its no-size path (skipping the family check) and
+    disabled the stage-3 cross-publisher fallback entirely.
+    """
+    from engine.model_downloader import _size_tokens
+
+    assert _size_tokens("Gemma-4-E4B-Uncensored-Q4_K_M.gguf") == {"e4"}
+    assert _size_tokens("Qwen3.5-4B-Instruct-Q4_K_M.gguf") == {"4"}
+
+    # A dense-4B encoder of another family must still be refused.
+    model = _touch(tmp_path / "Gemma-4-E4B-Uncensored-Q4_K_M.gguf")
+    _touch(tmp_path / "mmproj-Qwen3.5-4B-Instruct-f16.gguf")
+    assert find_mmproj_file(tmp_path, model) is None

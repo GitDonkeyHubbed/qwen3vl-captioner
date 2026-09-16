@@ -20,9 +20,15 @@ from typing import Callable, Optional
 
 from engine.base import (
     DEFAULT_SYSTEM_PROMPT,
+    DEFAULT_VIDEO_FRAMES,
     MAX_IMAGE_DIM,
+    MAX_VIDEO_FRAMES,
+    VIDEO_FRAME_MAX_DIM,
     apply_prefix_suffix,
+    clamp_image_dim,
+    VideoCancelled,
     clean_caption,
+    frame_video_prompt,
     load_image_for_inference,
 )
 
@@ -40,6 +46,7 @@ if MLX_SUPPORTED:
 else:
     MLX_VLM_AVAILABLE = False
     MLX_VLM_IMPORT_ERROR = "MLX requires an Apple Silicon Mac"
+
 
 
 def is_mlx_model_dir(path: Path) -> bool:
@@ -249,6 +256,115 @@ class MlxVlmEngine:
                         stream_callback(text)
 
         self._last_inference_time = time.perf_counter() - start_time
+
+        caption = clean_caption("".join(caption_parts))
+        return apply_prefix_suffix(caption, prefix, suffix)
+
+    def caption_video(
+        self,
+        video_path,
+        prompt: str,
+        system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+        temperature: float = 0.6,
+        top_p: float = 0.9,
+        max_tokens: int = 1024,
+        prefix: str = "",
+        suffix: str = "",
+        stream_callback: Optional[Callable[[str], None]] = None,
+        cancel_check: Optional[Callable[[], bool]] = None,
+        num_frames: int = DEFAULT_VIDEO_FRAMES,
+    ) -> str:
+        """Caption a video from evenly-spaced frames (streams tokens if asked)."""
+        if not self.is_loaded:
+            raise RuntimeError("Model not loaded. Call load_model() first.")
+
+        video_path = Path(video_path)
+        if not video_path.exists():
+            raise FileNotFoundError(f"Video not found: {video_path}")
+
+        # At least 2 frames so the model sees motion, capped to bound memory.
+        num_frames = max(2, min(MAX_VIDEO_FRAMES, num_frames))
+
+        from mlx_vlm import stream_generate
+        from mlx_vlm.prompt_utils import apply_chat_template
+
+        from engine.video import sample_frames
+
+        # Extraction runs before any token loop exists to notice a cancel, and
+        # this backend then resizes and writes every frame to disk on top of
+        # that. A cancel anywhere in here returns "" exactly as one during
+        # generation does.
+        try:
+            frames = sample_frames(
+                video_path, num_frames, cancel_check=cancel_check,
+                max_dim=VIDEO_FRAME_MAX_DIM,
+            )
+        except VideoCancelled:
+            return ""
+
+        # mlx-vlm loads images from paths, so stage the frames as PNGs in a
+        # temp dir; cleaned up in the finally even on errors/cancel.
+        tmp_dir = tempfile.TemporaryDirectory(prefix="mlx_video_frames_")
+        try:
+            frame_paths: list[Path] = []
+            for i, frame in enumerate(frames):
+                if cancel_check and cancel_check():
+                    return ""
+                # Downscale before saving — N full-size frames would multiply
+                # the vision-encoding footprint on unified-memory Macs. Uses
+                # the shared clamp so both backends size frames identically
+                # (and without mutating the caller's image, as thumbnail does).
+                frame = clamp_image_dim(frame, VIDEO_FRAME_MAX_DIM)
+                frame_path = Path(tmp_dir.name) / f"frame_{i:03d}.png"
+                frame.save(frame_path, format="PNG")
+                frame_paths.append(frame_path)
+
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            # Same clip framing as the GGUF backend — mlx-vlm passes the
+            # frames as N images with no ordering hint of its own.
+            messages.append({
+                "role": "user",
+                "content": frame_video_prompt(prompt, len(frame_paths)),
+            })
+            # num_images must equal the image list actually passed below —
+            # frames that failed to decode were already dropped by
+            # sample_frames, so count frame_paths, never num_frames.
+            formatted_prompt = apply_chat_template(
+                self.processor, self.config, messages,
+                num_images=len(frame_paths),
+            )
+
+            start_time = time.perf_counter()
+            caption_parts = []
+
+            temp = temperature if temperature > 0 else 0.0
+            nucleus = top_p if temperature > 0 else 1.0
+            token_stream = _stream_with_sampling(
+                stream_generate,
+                (self.model, self.processor, formatted_prompt),
+                {
+                    "image": [str(p) for p in frame_paths],
+                    "max_tokens": max_tokens,
+                },
+                temp,
+                nucleus,
+            )
+            for chunk in token_stream:
+                if cancel_check and cancel_check():
+                    break
+                text = getattr(chunk, "text", None)
+                if text is None:
+                    text = str(chunk)
+                if text:
+                    caption_parts.append(text)
+                    if stream_callback:
+                        stream_callback(text)
+
+            self._last_inference_time = time.perf_counter() - start_time
+        finally:
+            tmp_dir.cleanup()
 
         caption = clean_caption("".join(caption_parts))
         return apply_prefix_suffix(caption, prefix, suffix)

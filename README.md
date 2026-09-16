@@ -41,17 +41,63 @@
 
 ---
 
-## 🩺 What's New in V1.4.3 — Health-Check & Deep-QC Fixes
+## 🎬 In development — video captioning **engine** (not in a release yet)
 
-No new models — two full audit passes over the codebase (85 verified findings fixed in total), plus quality-of-life upgrades.
+> **The app you download today captions images only.** The latest release is
+> **V1.4.3**. The video work below is the *engine* half: `engine/video.py`
+> plus `caption_video()` on both backends, covered by the test suite and
+> validated by hand on an RTX 4080 — but **nothing in the GUI calls it yet**.
+> The file picker accepting videos, the "Frames per video" control, video
+> thumbnails and video-aware batch runs are part 2 of
+> [issue #26](https://github.com/GitDonkeyHubbed/qwen3vl-captioner/issues/26)
+> and land in a later PR. Until then video captioning is reachable only from
+> Python, and there is no version bump for it.
 
-- **Your captions can no longer cross-save.** Clicking another image while a caption was generating could silently overwrite that image's `.txt` with the wrong caption — fixed at the root.
-- **Phone photos caption correctly now.** EXIF rotation is applied before inference, so sideways camera JPEGs no longer produce captions describing a rotated scene.
-- **No more phantom "update available" popup**, no more window freeze during vision-encoder downloads, and your saved **light/dark theme actually applies at startup**.
-- **Downloads got smarter**: live **speed + ETA**, free-disk-space pre-flight, corruption-safe partials (a multi-connection download that is interrupted discards its `.part` rather than resuming a file it cannot verify; single-stream downloads do resume), and your HF token is stored with owner-only permissions (`0600` on macOS/Linux; on Windows it inherits the user profile's ACL) and never sent over plain HTTP.
-- **Faster & smoother**: thumbnails decode at thumbnail size (no more UI stalls on big imports), **keyboard shortcuts** (Ctrl+S save, Ctrl+G generate, Ctrl+←/→ navigate), **drag & drop anywhere**, batch ETA, and a download offer right in the "model not downloaded" dialog.
-- **The install doctor got real diagnostic teeth.** The false "CPU build detected" warning on healthy GPU installs is gone, and `diagnose.bat` now pinpoints the exact conflicting DLL (System32, PATH, another AI app) behind `WinError 127` startup failures — with safe, reversible fix steps.
-- Test suite grew to **349 tests**; CI now HEAD-checks the pinned wheel URLs so a deleted release breaks CI (not your install), and every release tag is verified against the in-app version before it publishes.
+What has landed so far. The green button above downloads `main`, not a tagged
+release, so the model-list and prompt items below reach anyone who downloads
+the app as soon as this merges — there is simply no tagged release carrying
+them yet. The video items stay engine-only until part 2, whenever you
+downloaded:
+
+- **The engine captions a video by sampling frames.** Given an `.mp4`, `.mov`,
+  `.mkv`, `.webm`, `.avi` or `.m4v`, `caption_video()` decodes evenly-spaced
+  frames across the whole clip and describes it in one pass — from Python, not
+  from the app. Both backends do it the same way — GGUF
+  (Windows/Linux CUDA, macOS Metal) and MLX (Apple Silicon). Measured on an
+  RTX 4080: 16 frames in 9.1 s, 9.4 GB peak VRAM.
+- **Two new model families in the download list**: HauhauCS's uncensored
+  **Qwen3.5 9B** and **Gemma-4 E4B**, alongside the existing Qwen3-VL builds.
+  Each family now loads with its own chat template.
+- **Reasoning traces stay out of your captions.** The new families think
+  before they answer; that monologue is switched off at load time and
+  stripped if one appears anyway, so a `.txt` sidecar never gets a model
+  arguing with itself instead of a description.
+- **Single-image prompts *do* change — on purpose.** The Qwen2.5-VL handler
+  the app used before hardcoded a `Picture 1: ` prefix (and a space either
+  side of the image placeholder) into every single-image prompt, with no flag
+  to turn it off. The Qwen3-VL handler renders the template Qwen3-VL actually
+  ships: with `add_vision_id=False` the `Picture N:` label and the stray
+  spaces are gone, and the trailing newline the template specifies after the
+  assistant turn is present. So this is a deliberate correctness fix, not a
+  no-op — an A/B over the same 7 images before and after (OCR, chart reading
+  and fine-detail cases included) found no factual regressions. A video
+  states its frame ordering in the text prompt instead, which also works for
+  Gemma-4, whose handler has no such flag.
+- **Frame budget is checked up front.** Qwen3-VL cannot shift its context
+  window mid-generation, so too many frames overflow `n_ctx`. Without the
+  check the app survives — llama.cpp fails the decode and the wheel raises a
+  catchable error — but only after ~2.5 s of GPU work, and the message
+  ("Media evaluation failed with error code 1") says nothing about frames.
+  The preflight refuses in ~0.05 s, before anything is encoded, and names the
+  argument to lower (`num_frames` — there is no GUI control for it yet).
+- **Every Gemma-4 quant finds its vision encoder.** Six of the eleven
+  published builds use the `_K_P` "pure" naming, which the pairing logic did
+  not recognise — so they downloaded without an encoder. Downloading a second
+  model family into a folder no longer skips its encoder because another
+  family's was already sitting there.
+- Test suite grew to **586 tests**; CI now HEAD-checks the pinned wheel URLs
+  so a deleted release breaks CI (not your install), and every release tag is
+  verified against the in-app version before it publishes.
 
 See [CHANGELOG.md](CHANGELOG.md) for the complete list.
 
