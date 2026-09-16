@@ -674,3 +674,72 @@ def test_cancel_during_generation_without_a_stream_callback(
 
     assert caption == ""
     assert eng.model.calls[0]["stream"] is True
+
+
+# ── Handlers whose signature cannot be inspected at all ──────────────────
+#
+# An extension type with no __text_signature__ makes inspect.signature raise,
+# so there is nothing to filter against. Simulated by making signature() raise
+# ValueError, which is precisely what CPython does for such a type.
+
+def _make_signature_opaque(monkeypatch):
+    def raising_signature(obj, *a, **k):
+        raise ValueError("no signature found for builtin type")
+
+    monkeypatch.setattr(inference.inspect, "signature", raising_signature)
+
+
+def test_opaque_handler_rejecting_both_flags_still_loads(monkeypatch):
+    """Passing both flags blindly aborted the load; now it degrades."""
+    _make_signature_opaque(monkeypatch)
+    seen = {}
+
+    class Handler:
+        def __init__(self, clip_model_path, verbose=False):
+            seen["built"] = clip_model_path
+
+    handler = inference._construct_chat_handler(
+        Handler, Path("/m/mmproj.gguf"), False
+    )
+    assert isinstance(handler, Handler)
+    assert seen["built"] == str(Path("/m/mmproj.gguf"))
+
+
+def test_opaque_handler_keeps_the_flags_it_does_accept(monkeypatch):
+    """Degrading must not overshoot — a supported flag is still applied."""
+    _make_signature_opaque(monkeypatch)
+    seen = {}
+
+    class Handler:
+        def __init__(self, clip_model_path, verbose=False, enable_thinking=True):
+            seen["enable_thinking"] = enable_thinking
+
+    inference._construct_chat_handler(Handler, Path("/m/mmproj.gguf"), False)
+    assert seen["enable_thinking"] is False
+
+
+def test_opaque_handler_body_typeerror_is_not_swallowed(monkeypatch):
+    """With no flags left to drop, the error is the handler's own."""
+    _make_signature_opaque(monkeypatch)
+
+    class Handler:
+        def __init__(self, clip_model_path, verbose=False, **kwargs):
+            raise TypeError("mmproj is not a vision encoder")
+
+    with pytest.raises(TypeError, match="not a vision encoder"):
+        inference._construct_chat_handler(Handler, Path("/m/mmproj.gguf"), False)
+
+
+def test_inspectable_handler_is_constructed_exactly_once(monkeypatch):
+    """The guarantee the inspection path exists for, still held."""
+    calls = []
+
+    class Handler:
+        def __init__(self, clip_model_path, verbose=False,
+                     enable_thinking=True, add_vision_id=True):
+            calls.append(1)
+            raise TypeError("mmproj is not a vision encoder")
+
+    with pytest.raises(TypeError):
+        inference._construct_chat_handler(Handler, Path("/m/mmproj.gguf"), False)
+    assert len(calls) == 1

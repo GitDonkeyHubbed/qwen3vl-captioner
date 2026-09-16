@@ -143,21 +143,50 @@ def _construct_chat_handler(handler_cls, mmproj_path, verbose: bool):
     TypeError raised from *inside* a compatible constructor propagates on the
     first attempt instead of triggering silent retries that could repeat the
     constructor's side effects before surfacing the real error.
+
+    A constructor whose signature cannot be read at all — an extension type
+    with no ``__text_signature__`` — falls back to trying progressively
+    fewer flags, because there is nothing left to inspect. That path does
+    risk repeated calls, which is exactly what inspection avoids elsewhere;
+    it is confined to the case with no alternative, since refusing to load a
+    model is the worse outcome. Every handler in the pinned wheel is a plain
+    Python class, so this is the compatibility path, not the normal one.
     """
     kwargs = {"clip_model_path": str(mmproj_path), "verbose": verbose}
     extra = {"enable_thinking": False, "add_vision_id": False}
+
     try:
         params = inspect.signature(handler_cls).parameters
     except (TypeError, ValueError):
-        # Signature unavailable (e.g. a C-level constructor) — fall back to
-        # passing every flag and letting the handler reject what it can't take.
         params = None
-    if params is not None and not any(
-        p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
-    ):
-        # No **kwargs catch-all, so only pass flags the constructor names.
-        extra = {k: v for k, v in extra.items() if k in params}
-    return handler_cls(**kwargs, **extra)
+
+    if params is not None:
+        if not any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+        ):
+            # No **kwargs catch-all, so only pass flags the constructor names.
+            extra = {k: v for k, v in extra.items() if k in params}
+        return handler_cls(**kwargs, **extra)
+
+    # Opaque constructor (an extension type with no readable signature).
+    # Trying is the only way left to learn which flags it takes, so narrow
+    # the set on each rejection. This reintroduces the repeated-call risk
+    # that inspection exists to avoid, which is why it is confined to the
+    # path that has no alternative: failing to load a model at all is the
+    # worse outcome. The final attempt passes no flags, so its TypeError is
+    # the handler's own and is re-raised rather than swallowed.
+    attempts = (
+        extra,
+        {"enable_thinking": False},
+        {"add_vision_id": False},
+        {},
+    )
+    for i, attempt in enumerate(attempts):
+        try:
+            return handler_cls(**kwargs, **attempt)
+        except TypeError:
+            if i == len(attempts) - 1:
+                raise
 
 
 def estimate_vision_tokens(width: int, height: int) -> int:
