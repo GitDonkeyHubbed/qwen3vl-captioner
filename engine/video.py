@@ -35,6 +35,11 @@ def is_video_file(path: Path) -> bool:
 
 
 def _check_cancelled(cancel_check):
+    """Raise VideoCancelled if the caller's predicate has gone true.
+
+    A no-op when no predicate was supplied, so every scan loop can call it
+    unconditionally.
+    """
     if cancel_check is not None and cancel_check():
         raise VideoCancelled("cancelled during video frame extraction")
 
