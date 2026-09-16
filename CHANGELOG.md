@@ -6,11 +6,20 @@ git tags (`V1.x.x`).
 
 ## [1.4.4] — 2026-09-16
 
-Patch release. Two defects found while developing the next feature release,
-both of which corrupt a dataset silently rather than raising an error. No new
-models, no new features, no behaviour change for a caption that succeeds.
+The first release since 1.4.3, and it carries considerably more than a patch
+number suggests. The full-repository audit fixes that landed on `main` after
+1.4.3 was tagged (#34, resolving 59 of the 66 verified findings in #33) were
+never given a changelog entry; they ship here, documented, alongside two
+defects found while developing the next feature release. Nothing below is
+new since the last release *build* — 1.4.3 users are getting all of it at
+once, because `main` has been carrying it untagged.
 
-### Fixed
+### Fixed — captions that should not exist
+
+Both found while developing the video engine. Neither raises an error; both
+put wrong data in a training set silently, which is why neither showed up in
+normal use.
+
 - **Prefix/suffix manufactured a caption out of a failed generation.**
   `apply_prefix_suffix("")` returned the affixes joined around nothing —
   `"photo of  high quality"` — which is truthy, so `_auto_save_caption` wrote
@@ -19,8 +28,7 @@ models, no new features, no behaviour change for a caption that succeeds.
   unattended, so every image the model failed on received the same stock
   string and was counted in the "saved" total. An empty caption now stays
   empty at the single point both engines funnel through, so the existing
-  falsy-caption guard in `_auto_save_caption` refuses it and the batch
-  summary counts it as failed.
+  falsy-caption guard refuses it and the batch summary counts it as failed.
 - **Downloading a second model family skipped its vision encoder.** Both
   gates that decide whether to queue an `mmproj` asked
   `find_mmproj_file(target_dir)` with no model, which accepts whichever
@@ -28,19 +36,84 @@ models, no new features, no behaviour change for a caption that succeeds.
   with four different encoders, so a user who downloaded any second family
   into the same folder got no encoder for it and a model loading against a
   foreign vision tower. Both gates now match the registry's exact
-  `mmproj_filename`. An encoder that is genuinely already present is still
-  skipped, so no redundant download is introduced.
+  `mmproj_filename`; an encoder genuinely already present is still skipped.
+
+### Fixed — caption safety (#34)
+
+- Dirty-state tracking with Save/Discard/Cancel on every overwrite path, so a
+  hand-edited caption is no longer destroyed by changing the selection,
+  regenerating, or Clear All.
+- Streamed tokens are pinned to the image that requested them, so selecting a
+  different image mid-generation can no longer write one image's caption into
+  another's sidecar.
+- Atomic sidecar writes, with a retry for the Windows sharing lock.
+- Unreadable sidecars are treated as captioned by batch, export and delete
+  rather than silently re-captioned and overwritten.
+- Trashing an image removes its sidecar with it.
+- The caption editor is read-only while generating.
+- The caption cache and thumbnails follow external sidecar changes instead of
+  serving a stale first read.
+
+### Fixed — engine and model pairing (#34)
+
+- Shared image preprocessing across backends: EXIF orientation applied before
+  inference, a single clamp, and JPEG q95 encoding in place of full-resolution
+  PNG (this is also a measurable speedup per caption).
+- Model-aware, family-aware `mmproj` pairing that refuses a foreign encoder
+  instead of guessing — the mismatch that previously crashed natively on the
+  first caption.
+
+### Fixed — setup and install (#34)
+
+- `setup.bat` no longer aborts with "Failed to install uv" immediately after
+  installing uv successfully.
+- The venv is re-creatable, so "re-run setup" — the remedy the app, the
+  doctor and the README all prescribe — actually works.
+- uv installs correctly when launched from PowerShell 7.
+- Verified on fresh `windows-latest` runners.
+
+### Fixed — interface (#34)
+
+- Light theme contrast, including controls that previously rendered
+  white-on-white, and a runtime theme switch that now repaints rather than
+  freezing colours from whichever palette was loaded at import.
+- Batch busy state no longer lets a finishing caption re-enable a button
+  mid-download.
+- Thumbnails decode asynchronously.
+- Zoom goes through a `QGraphicsView` transform instead of re-scaling the
+  full-resolution pixmap on every wheel notch.
+- Windows download pre-allocation no longer physically writes gigabytes of
+  zeros before the first byte arrives.
+
+### Changed — CI and supply chain (#28, #37, #38)
+
+- Ruff replaces pyflakes; PR checks, GitGuardian secret scanning and
+  Dependabot added.
+- Unvetted third-party pull-request actions removed.
+- Remaining third-party actions pinned to commit SHAs, so a moved tag cannot
+  change what runs.
+- A version-sync guard now fails CI whenever `gui/version.py`,
+  `pyproject.toml`, the README title and badge, and the newest CHANGELOG
+  entry disagree — the drift that let 1.4.2 ship with the in-app version
+  still reading 1.4.1.
 
 ### Tests
+
+- 362 collected, up from 143 at 1.4.3. The suite runs natively on Windows.
+- Both defects in the first section were reproduced before being changed, and
+  each new test was verified to fail against the pre-fix code.
 - `tests/test_mmproj_queue.py` (new) drives the real `MainWindow` offscreen
-  with the download stubbed, covering both gates in both directions: a
-  foreign encoder no longer satisfies the check, and an exact-name match
-  still skips. The two families are picked out of the registry rather than
-  hardcoded, so renaming a model cannot turn the test into a no-op.
-- `tests/test_caption_cleanup.py` covers the affix guard over empty and
-  whitespace-only results for prefix, suffix and both, asserts the result is
-  falsy (the property `_auto_save_caption` relies on), and pins that a real
-  caption is unaffected.
+  with the download stubbed, covering both encoder-queue gates in both
+  directions. The two model families are selected out of `MODEL_REGISTRY`
+  rather than hardcoded, so renaming a model cannot turn the test into a
+  no-op.
+
+### Known gaps
+
+- Two performance findings from #33 remain open: list filtering and Clear All
+  are still O(n²) on large imports, and the file browser still builds a widget
+  tree per image rather than virtualizing. Both are visible only on datasets
+  of a few thousand images.
 
 ## [1.4.3] — 2026-07-30
 

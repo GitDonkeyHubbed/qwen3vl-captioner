@@ -41,25 +41,43 @@
 
 ---
 
-## 🧹 What's New in V1.4.4 — Caption & Download Fixes
+## 🧹 What's New in V1.4.4 — Everything That Was Sitting Untagged, Plus Two Dataset Fixes
 
-No new models and no new features — two defects found while building the next
-release, both of which quietly damage a dataset rather than showing an error.
+If you are on V1.4.3, this is a big one. A full-repository audit (59 verified
+defects) landed after V1.4.3 was tagged and was never released, so it reaches
+you here — together with two defects found while building the next feature.
 
-- **A failed caption no longer writes a fake one.** With a prefix or suffix
-  configured, an image the model returned nothing for was saved as just the
-  affixes — `photo of  high quality` — and counted as a success. In a batch
-  run nobody is watching the caption box, so every failed image landed the
-  same stock string in the training set. An empty caption now stays empty and
-  is skipped, and the batch summary counts it as failed.
-- **A second model family now downloads its own vision encoder.** The check
-  for "do we already have an encoder?" accepted *any* `mmproj` file already in
-  the models folder, so downloading a second family into it skipped that
-  model's encoder entirely and left it to load against a mismatched vision
-  tower. Both gates now ask for the encoder that model actually needs, by
-  name.
-- Test suite grew to **362 tests**; both fixes were reproduced before being
-  changed, and every new test verified to fail against the old code.
+- **Your hand-edited captions survive.** Editing a caption and then changing
+  the selection, regenerating, or hitting Clear All used to destroy the edit
+  with no prompt. Every overwrite path now asks Save / Discard / Cancel.
+- **Captions can no longer land on the wrong image.** Selecting a different
+  image while one was generating could write the in-flight caption into the
+  newly selected image's `.txt`. Streamed text is now pinned to the image that
+  asked for it.
+- **A failed caption is no longer saved as a fake one.** With a prefix or
+  suffix configured, an image the model returned nothing for was saved as just
+  the affixes — `photo of  high quality` — and counted as a success. In a batch
+  run nobody is watching, so every failed image landed the same stock string in
+  your training set. Empty stays empty now, and the summary counts it failed.
+- **A second model family downloads its own vision encoder.** Downloading a
+  second family into your models folder used to skip its encoder and leave the
+  model loading against a mismatched vision tower.
+- **Mismatched encoders are refused, not guessed at.** Pairing is now
+  model- and family-aware instead of grabbing whichever `mmproj` was nearest —
+  the mismatch that crashed on the first caption.
+- **"Re-run setup" actually works.** `setup.bat` no longer aborts with
+  "Failed to install uv" right after installing uv, the venv is re-creatable,
+  and uv installs correctly from PowerShell 7. Verified on clean Windows.
+- **Light mode is usable.** Controls that rendered white-on-white are fixed,
+  and switching theme at runtime repaints instead of leaving frozen colours.
+- **Big folders stopped freezing the window** — thumbnails decode off the UI
+  thread, zoom no longer re-scales the full-resolution image on every wheel
+  notch, and Windows downloads no longer write gigabytes of zeros before
+  starting.
+- Test suite grew to **362 tests**; CI now HEAD-checks the pinned wheel URLs so a deleted release breaks CI (not your install), and every release tag is verified against the in-app version before it publishes.
+
+Known gaps: on datasets of a few thousand images, clearing a search filter and
+Clear All are still slow, and the file browser still builds a widget per image.
 
 See [CHANGELOG.md](CHANGELOG.md) for the complete list.
 
