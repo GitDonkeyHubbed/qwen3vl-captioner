@@ -979,3 +979,153 @@ def test_caption_video_uses_the_loaded_family_for_the_budget(
     eng.caption_video(_video_file(tmp_path), "p", num_frames=4)
 
     assert seen == ["gemma4"] * 4
+
+
+# ── The opaque-constructor retry must know every spelling CPython uses
+#    to reject a keyword ────────────────────────────────────────────────
+#
+# This path exists only for constructors whose signature cannot be read —
+# in practice, extension types. Those raise "'x' is an invalid keyword
+# argument for f()" or "f() takes no keyword arguments"; only a pure-Python
+# callable says "got an unexpected keyword argument", and an inspectable one
+# never reaches here. Matching just that spelling left the chain dead exactly
+# where it exists to work: the first attempt raised, the error propagated,
+# and the narrower flag sets were never tried.
+
+# Each spelling below was copied from a live interpreter, not invented:
+#   datetime.datetime(2020, 1, 1, nope=2) -> "'nope' is an invalid keyword
+#                                             argument for this function"
+#   (1).to_bytes(nope=2)                  -> "... for to_bytes()"
+#   object(nope=2)                        -> "object() takes no arguments"
+KWARG_REJECTIONS = {
+    "c-type-named": "'{flag}' is an invalid keyword argument for Handler()",
+    "c-type-generic": "'{flag}' is an invalid keyword argument for this function",
+    "c-type-no-kwargs": "Handler() takes no keyword arguments",
+    "c-type-no-args": "Handler() takes no arguments",
+    "pure-python": "__init__() got an unexpected keyword argument '{flag}'",
+}
+
+
+def _handler_rejecting(spelling, accepted=()):
+    """A handler that refuses every flag except those in *accepted*."""
+    template = KWARG_REJECTIONS[spelling]
+    seen = {}
+
+    class Handler:
+        def __init__(self, clip_model_path, verbose=False, **flags):
+            for flag in flags:
+                if flag not in accepted:
+                    raise TypeError(template.format(flag=flag))
+            seen.update(flags)
+            seen["built"] = True
+
+    return Handler, seen
+
+
+@pytest.mark.parametrize("spelling", sorted(KWARG_REJECTIONS))
+def test_opaque_handler_retries_on_every_rejection_spelling(spelling, monkeypatch):
+    """A handler accepting neither flag must still be constructed."""
+    _make_signature_opaque(monkeypatch)
+    Handler, seen = _handler_rejecting(spelling)
+
+    handler = inference._construct_chat_handler(
+        Handler, Path("/m/mmproj.gguf"), False
+    )
+
+    assert isinstance(handler, Handler)
+    assert seen["built"] is True
+    # It narrowed all the way to the no-flags attempt.
+    assert "enable_thinking" not in seen
+    assert "add_vision_id" not in seen
+
+
+@pytest.mark.parametrize("spelling", sorted(KWARG_REJECTIONS))
+def test_opaque_handler_stops_narrowing_at_a_flag_it_accepts(spelling, monkeypatch):
+    """Degrading must not overshoot, whichever way the refusal is worded."""
+    _make_signature_opaque(monkeypatch)
+    Handler, seen = _handler_rejecting(spelling, accepted=("enable_thinking",))
+
+    inference._construct_chat_handler(Handler, Path("/m/mmproj.gguf"), False)
+
+    assert seen.get("enable_thinking") is False
+    assert "add_vision_id" not in seen
+
+
+def test_broader_matching_did_not_cost_the_body_error_guarantee(monkeypatch):
+    """A TypeError from inside the body still stops the chain at one call.
+
+    This is what the narrow match was protecting. Widening it must not let a
+    handler that refuses a construction on purpose be retried until some
+    narrower flag set slips past the raise.
+    """
+    _make_signature_opaque(monkeypatch)
+    calls = []
+
+    class Handler:
+        def __init__(self, clip_model_path, verbose=False, **flags):
+            calls.append(flags)
+            raise TypeError("mmproj is not a vision encoder")
+
+    with pytest.raises(TypeError, match="not a vision encoder"):
+        inference._construct_chat_handler(Handler, Path("/m/mmproj.gguf"), False)
+
+    assert len(calls) == 1, "a body error must not be retried"
+
+
+# ── An unknown chat family is rejected, not guessed at ──────────────────
+
+def _full_namespace():
+    return types.SimpleNamespace(
+        Qwen3VLChatHandler=_Qwen3VLHandler,
+        Qwen25VLChatHandler=_Qwen25Handler,
+        Qwen35ChatHandler=_FamilyHandler,
+        Gemma4ChatHandler=_FamilyHandler,
+        Gemma3ChatHandler=_FamilyHandler,
+    )
+
+
+@pytest.mark.parametrize("bogus", ["gemm4", "qwen4vl", "", "GEMMA4"])
+def test_an_unknown_chat_family_raises_instead_of_falling_back(bogus, monkeypatch):
+    """A typo must not quietly drive a Gemma model with a Qwen template.
+
+    The Gemma guard covered a *known* family whose handler is missing from
+    the build. An unrecognised key skipped that guard and reached the Qwen
+    fallback loop — the same silent mis-templating, by a different door.
+    """
+    monkeypatch.setattr(inference, "llama_chat_format", _full_namespace(),
+                        raising=False)
+    with pytest.raises(ValueError, match="Unknown chat_family"):
+        inference._resolve_chat_handler_cls(bogus)
+
+
+def test_the_unknown_family_error_names_the_families_that_exist(monkeypatch):
+    monkeypatch.setattr(inference, "llama_chat_format", _full_namespace(),
+                        raising=False)
+    with pytest.raises(ValueError) as excinfo:
+        inference._resolve_chat_handler_cls("gemm4")
+    for known in inference.CHAT_FAMILY_HANDLERS:
+        assert known in str(excinfo.value)
+
+
+@pytest.mark.parametrize("family", sorted(inference.CHAT_FAMILY_HANDLERS))
+def test_every_known_family_still_resolves(family, monkeypatch):
+    """The validation must not reject anything that used to work."""
+    monkeypatch.setattr(inference, "llama_chat_format", _full_namespace(),
+                        raising=False)
+    assert inference._resolve_chat_handler_cls(family) is not None
+
+
+def test_infer_chat_family_can_never_produce_an_unknown_key():
+    """The guard is reachable only by an explicit caller, by construction.
+
+    Filename inference is the other source of a family string; if it could
+    return something outside the map, this change would turn a working load
+    into a hard failure.
+    """
+    names = [
+        "Qwen3-VL-8B.gguf", "gemma-4-e4b.gguf", "gemma3-it.gguf",
+        "Qwen3.5-9B.gguf", "Qwen2.5-VL-7B.gguf", "qwen2-vl-2b.gguf",
+        "something-entirely-unknown.gguf", "", "....gguf",
+    ]
+    for name in names:
+        assert inference.infer_chat_family(name) in inference.CHAT_FAMILY_HANDLERS

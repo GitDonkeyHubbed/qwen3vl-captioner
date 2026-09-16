@@ -25,6 +25,7 @@ from engine.base import VideoCancelled, clamp_image_dim
 # but makes the behaviour untestable with a small fixture.
 CANCEL_POLL_INTERVAL = 64
 
+
 # Supported video file extensions
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
 
@@ -92,7 +93,9 @@ def _sample_by_index(
 
     Either way the caller re-samples sequentially.
     """
+    tolerance = _seek_tolerance(indices)
     frames: list[Image.Image] = []
+    landed_any = False
     for idx in indices:
         _check_cancelled(cancel_check)
         if not cap.set(cv2.CAP_PROP_POS_FRAMES, idx):
@@ -101,10 +104,84 @@ def _sample_by_index(
             # silently losing temporal coverage. Let the caller fall back to
             # the sequential pass instead.
             return [], True
+        if not _landed_near(cv2, cap, idx, tolerance):
+            # The seek claimed success but the decoder is somewhere else.
+            # Reading here would return a frame from the wrong part of the
+            # clip while still counting towards the total, and nothing
+            # downstream could tell: the count would be right, so neither the
+            # short-sample check nor the refused-seek check would fire, and
+            # the model would be handed a cluster of near-identical frames
+            # described as spanning the whole video.
+            #
+            # Skip the index rather than abandoning the pass. A seek that
+            # misses on one index and not others is a truncated or damaged
+            # file, and the frames that did land are real; dropping them
+            # would throw away good data and, worse, blur that case into the
+            # cannot-seek-at-all case, which means something different about
+            # the file and is what the seek_refused flag is for.
+            continue
+        landed_any = True
         ok, frame = cap.read()
         if ok and frame is not None:
             frames.append(_to_pil(cv2, frame, max_dim))
+
+    # Not one index was reachable: the seeks are not moving the decoder,
+    # which is the cannot-seek case however it was reported.
+    if not landed_any:
+        return [], True
     return frames, False
+
+
+def _seek_tolerance(indices: list[int]) -> int:
+    """How far a seek may land from its target before coverage is lost.
+
+    Half the tightest gap between the frames being sampled, and nothing else.
+    A seek that snaps back to the nearest keyframe is normal and harmless —
+    asking for frame 5000 of a film and getting 4990 still shows the same
+    moment — but drift wider than half the gap lets two requested samples
+    collapse onto the same part of the clip, which is exactly the coverage
+    the caller asked for being lost.
+
+    Deliberately no constant floor. A fixed "one GOP" allowance looks safer
+    and is the opposite: on a two-hour film the gap is thousands of frames,
+    so a keyframe snap is far inside the tolerance either way and the floor
+    never applies; on a 300-frame clip the same floor is wider than the whole
+    video, so it would swallow the very fault this check exists to catch.
+    Scaling with the request is what makes the rule mean the same thing at
+    both ends.
+
+    The cost of being strict here is a sequential re-scan, which is slower
+    and correct. The cost of being lax is a caption of the wrong footage.
+    """
+    if len(indices) < 2:
+        # No spacing to preserve, so nothing justifies drift: demand the
+        # frame that was actually asked for.
+        return 0
+    # strict=False is the point: pairing a list with its own tail is
+    # deliberately ragged by one, which strict=True would reject.
+    return min(
+        b - a for a, b in zip(indices, indices[1:], strict=False)
+    ) // 2
+
+
+def _landed_near(cv2, cap, idx: int, tolerance: int) -> bool:
+    """Whether the decoder is actually positioned at (or near) *idx*.
+
+    ``cap.set()`` returning True is not proof: some backends and containers
+    report success and leave the decoder where it was. A backend that cannot
+    report a position at all makes this fail, which costs a sequential
+    re-sample — slower, but correct, which is the right way to be wrong.
+    """
+    try:
+        pos = cap.get(cv2.CAP_PROP_POS_FRAMES)
+    except Exception:
+        return False
+    if pos is None:
+        return False
+    try:
+        return abs(float(pos) - idx) <= tolerance
+    except (TypeError, ValueError):
+        return False
 
 
 def _midpoint_indices(total: int, num_frames: int) -> list[int]:

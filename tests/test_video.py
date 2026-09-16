@@ -38,6 +38,30 @@ from engine.video import (
 cv2 = pytest.importorskip("cv2")
 np = pytest.importorskip("numpy")
 
+from engine import video  # noqa: E402  (needs cv2 present)
+
+
+class _FakeCv2:
+    """Stands in for the lazily-imported cv2 module in the unit tests below.
+
+    Only what ``_sample_by_index`` touches is needed, and the real ones do
+    the job — what these tests fake is the *capture*, not the library.
+    """
+
+    CAP_PROP_POS_FRAMES = cv2.CAP_PROP_POS_FRAMES
+    COLOR_BGR2RGB = cv2.COLOR_BGR2RGB
+
+    @staticmethod
+    def cvtColor(frame, code):
+        return cv2.cvtColor(frame, code)
+
+
+def _solid_frame(value: int):
+    """A BGR frame whose blue channel encodes *value*, as the fixtures do."""
+    frame = np.zeros((4, 4, 3), dtype=np.uint8)
+    frame[:, :, 0] = value % 256
+    return frame
+
 FRAME_SIZE = (64, 48)  # (width, height)
 TOTAL_FRAMES = 30
 
@@ -106,14 +130,18 @@ def test_sample_frames_more_than_total(video_path):
     assert all(b > a for a, b in zip(indices, indices[1:], strict=False))
 
 
-def _break_capture(monkeypatch, *, frame_count=None, seekable=True):
+def _break_capture(monkeypatch, *, frame_count=None, seekable=True,
+                   lying_seek=False):
     """Patch cv2.VideoCapture with a delegating fake that misbehaves.
 
     ``frame_count`` overrides CAP_PROP_FRAME_COUNT (0.0 and -1.0 are what
     VFR webm files really report); ``seekable=False`` makes every
     CAP_PROP_POS_FRAMES seek fail, which is how an unseekable container
-    behaves. Everything else is forwarded to the real capture, so the
-    fallback paths still decode genuine frames.
+    behaves; ``lying_seek=True`` makes the seek *claim* success and do
+    nothing, which is how some backends and containers behave and is the
+    nastier fault — the reads that follow return the right number of frames
+    from the wrong part of the clip. Everything else is forwarded to the real
+    capture, so the fallback paths still decode genuine frames.
     """
     real_capture = cv2.VideoCapture
 
@@ -127,8 +155,12 @@ def _break_capture(monkeypatch, *, frame_count=None, seekable=True):
             return self._cap.get(prop)
 
         def set(self, prop, value):
-            if not seekable and prop == cv2.CAP_PROP_POS_FRAMES:
-                return False
+            if prop == cv2.CAP_PROP_POS_FRAMES:
+                if not seekable:
+                    return False
+                if lying_seek:
+                    # Claim the seek worked, leave the decoder where it was.
+                    return True
             return self._cap.set(prop, value)
 
         def __getattr__(self, name):
@@ -249,6 +281,12 @@ def _lying_header_capture(monkeypatch, *, header, real):
         def get(self, prop):
             if prop == cv2.CAP_PROP_FRAME_COUNT:
                 return float(header)
+            if prop == cv2.CAP_PROP_POS_FRAMES:
+                # Report the position this capture believes it is at, not the
+                # real file's. A truncated container accepts the seek and
+                # reports the requested index; the fault only surfaces on the
+                # read that follows, which is the whole point of this fake.
+                return float(self._pos)
             return self._cap.get(prop)
 
         def set(self, prop, value):
@@ -639,3 +677,126 @@ def test_sequential_path_clamps_too(video_path, monkeypatch):
 def test_first_frame_is_not_clamped(video_path):
     """Thumbnails want the real image; first_frame passes no max_dim."""
     assert first_frame(video_path).size == FRAME_SIZE
+
+
+# ── A seek that reports success but does not land ───────────────────────
+#
+# `cap.set(CAP_PROP_POS_FRAMES, idx)` returning True is not proof the
+# decoder moved. When it lies, the reads that follow decode consecutive
+# frames from wherever the decoder actually sits, and nothing downstream can
+# tell: the frame *count* is right, so neither the short-sample check nor the
+# refused-seek check fires. The caller is handed a cluster of near-identical
+# frames from one part of the clip, described to the model as spanning the
+# whole video.
+
+def test_a_seek_that_lies_falls_back_to_the_sequential_pass(
+    video_path, monkeypatch
+):
+    """Coverage must be preserved, not silently lost."""
+    _break_capture(monkeypatch, lying_seek=True)
+
+    frames = sample_frames(video_path, num_frames=8)
+
+    assert len(frames) == 8
+    indices = [_frame_index(f) for f in frames]
+    # The sequential fallback decodes real frames, so these must span the
+    # clip rather than bunch up at the decoder's resting position.
+    assert all(b > a for a, b in zip(indices, indices[1:], strict=False))
+    assert max(indices) - min(indices) > 1
+
+
+def test_a_lying_seek_is_detected_before_any_frame_is_returned(monkeypatch):
+    """The indexed sampler itself reports the refusal, at the first index."""
+    reads = []
+
+    class LyingCap:
+        def set(self, prop, value):
+            return True  # "seeked", but see get() below
+
+        def get(self, prop):
+            return 0.0  # never actually moves
+
+        def read(self):
+            reads.append(1)
+            raise AssertionError("must not read after an unverified seek")
+
+    frames, seek_refused = video._sample_by_index(
+        _FakeCv2(), LyingCap(), [300, 600, 900], None, None
+    )
+
+    assert frames == []
+    assert seek_refused is True
+    assert reads == [], "no frame should be decoded once the seek is doubted"
+
+
+def test_a_keyframe_snap_within_tolerance_is_accepted(monkeypatch):
+    """Landing a little short of the target is normal, not a failure.
+
+    A seek that snaps to the nearest keyframe still shows the intended
+    moment. Falling back to a full sequential scan for that would make every
+    ordinary long video pay for a second pass.
+    """
+    landed = []
+
+    class SnappingCap:
+        def __init__(self):
+            self._pos = 0
+
+        def set(self, prop, value):
+            self._pos = max(0, value - 5)  # snapped back to a keyframe
+            return True
+
+        def get(self, prop):
+            return float(self._pos)
+
+        def read(self):
+            landed.append(self._pos)
+            return True, _solid_frame(self._pos)
+
+    frames, seek_refused = video._sample_by_index(
+        _FakeCv2(), SnappingCap(), [0, 500, 1000], None, None
+    )
+
+    assert seek_refused is False
+    assert len(frames) == 3
+    assert landed == [0, 495, 995]
+
+
+@pytest.mark.parametrize(
+    "indices, expected",
+    [
+        ([], 0),                # nothing to preserve: demand exactness
+        ([7], 0),               # a lone index has no spacing to protect
+        ([0, 1000], 500),       # half the spacing
+        ([0, 400, 1000], 200),  # the *tightest* gap sets the tolerance
+        ([2, 6, 10, 14], 2),    # a short clip gets a correspondingly tight
+                                # bound — a fixed GOP floor would be wider
+                                # than the whole video and hide the fault
+        ([0, 1], 0),            # every frame sampled: nothing may drift
+    ],
+)
+def test_seek_tolerance_scales_with_the_spacing_being_sampled(indices, expected):
+    """Tolerance is half the tightest gap, with no constant floor.
+
+    Scaling with the request rather than fixing a frame count is what keeps
+    the rule meaning the same thing on a 30-frame clip and a two-hour film.
+    """
+    assert video._seek_tolerance(indices) == expected
+
+
+def test_an_unreadable_position_counts_as_a_failed_seek():
+    """A backend that cannot report a position gets the correct-but-slow path."""
+    class MutePosCap:
+        def set(self, prop, value):
+            return True
+
+        def get(self, prop):
+            raise RuntimeError("backend does not support this property")
+
+        def read(self):
+            raise AssertionError("must not read")
+
+    frames, seek_refused = video._sample_by_index(
+        _FakeCv2(), MutePosCap(), [0, 500], None, None
+    )
+    assert frames == [] and seek_refused is True

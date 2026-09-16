@@ -100,6 +100,35 @@ def infer_chat_family(model_path: str | Path) -> str:
 _CHATML_FALLBACKS = ("Qwen3VLChatHandler", "Qwen25VLChatHandler")
 
 
+# The four spellings CPython uses to reject an unknown keyword argument.
+# Verified against a live interpreter rather than assumed:
+#
+#   pure-Python callable  "f() got an unexpected keyword argument 'x'"
+#   C type / method       "'x' is an invalid keyword argument for f()"
+#   C type, generic form  "'x' is an invalid keyword argument for this function"
+#   C type taking none    "f() takes no keyword arguments" / "takes no arguments"
+#
+# Only the first is produced by a callable whose signature can be inspected,
+# so the three C-extension forms are the ones that actually matter here.
+_UNSUPPORTED_KWARG_MARKERS = (
+    "unexpected keyword argument",
+    "invalid keyword argument",
+    "takes no keyword arguments",
+    "takes no arguments",
+)
+
+
+def _is_unsupported_kwarg_error(exc: TypeError) -> bool:
+    """Whether this TypeError means "that keyword is not accepted".
+
+    Deliberately message-based: there is no exception subclass or attribute
+    that distinguishes an unknown keyword from a TypeError raised inside the
+    constructor body, and the difference decides whether retrying is safe.
+    """
+    message = str(exc)
+    return any(m in message for m in _UNSUPPORTED_KWARG_MARKERS)
+
+
 def _resolve_chat_handler_cls(family: str):
     """
     Resolve the vision chat handler class for a model family.
@@ -117,12 +146,22 @@ def _resolve_chat_handler_cls(family: str):
     beats silent garbage.
     """
     own = CHAT_FAMILY_HANDLERS.get(family)
-    if own:
-        handler_cls = getattr(llama_chat_format, own, None)
-        if handler_cls is not None:
-            return handler_cls
+    if own is None:
+        # An unrecognised family is a caller bug (a registry typo, or a value
+        # from a newer build), not a model this code can guess at. Falling
+        # through to the Qwen fallback below would apply a ChatML template to
+        # whatever the file actually is — the same silent mis-templating the
+        # Gemma guard exists to prevent, just reached by a different door.
+        raise ValueError(
+            f"Unknown chat_family {family!r}. Known families: "
+            f"{', '.join(sorted(CHAT_FAMILY_HANDLERS))}."
+        )
 
-    if own and own not in _CHATML_FALLBACKS and family.startswith("gemma"):
+    handler_cls = getattr(llama_chat_format, own, None)
+    if handler_cls is not None:
+        return handler_cls
+
+    if own not in _CHATML_FALLBACKS and family.startswith("gemma"):
         raise RuntimeError(
             f"This llama-cpp-python build has no {own}, which the {family} "
             f"chat template requires. Falling back to a Qwen handler would "
@@ -204,13 +243,21 @@ def _construct_chat_handler(handler_cls, mmproj_path, verbose: bool):
     # path that has no alternative: failing to load a model at all is the
     # worse outcome.
     #
-    # Only a TypeError that names an unexpected keyword is treated as "this
+    # Only a TypeError that names an unsupported keyword is treated as "this
     # flag is unsupported". Retrying on ANY TypeError would let a handler
     # that rejects the flag combination in its own body be retried until
     # some narrower set happened to get past the raise — silently accepting
     # a construction the handler meant to refuse. A body error stops the
     # chain and propagates, so the opaque path keeps the same guarantee the
     # inspection path gets for free.
+    #
+    # CPython spells that rejection four different ways, and only the first
+    # comes from a pure-Python callable — which by definition is not on this
+    # path, since an inspectable one never reaches here. Matching just that
+    # spelling meant the retry chain was dead exactly where it exists to
+    # work: an extension type would raise on the first attempt and propagate
+    # it, so the narrower flag sets were never tried and a compatible build
+    # could not load the model at all.
     attempts = (
         extra,
         {"enable_thinking": False},
@@ -221,8 +268,7 @@ def _construct_chat_handler(handler_cls, mmproj_path, verbose: bool):
         try:
             return handler_cls(**kwargs, **attempt)
         except TypeError as exc:
-            unsupported_kw = "unexpected keyword argument" in str(exc)
-            if not unsupported_kw or i == len(attempts) - 1:
+            if not _is_unsupported_kwarg_error(exc) or i == len(attempts) - 1:
                 raise
 
 
