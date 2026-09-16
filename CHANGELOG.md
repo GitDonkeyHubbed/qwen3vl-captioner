@@ -28,6 +28,29 @@ images (OCR, chart-reading and fine-detail cases) with no caption regression.
   The fallback now restores the post-reasoning text, so a reasoning-only
   response cleans to `""` (the GUI shows "Nothing to save") while a
   prefix-only one is still preserved.
+- **`n_ctx=0` made every video refusable.** llama.cpp reads 0 as "use the
+  model's native context", but the engine recorded the raw argument — so the
+  preflight compared a positive budget against a zero-token window and
+  refused every clip on a model with plenty of room. It now records
+  `Llama.n_ctx()`, and an unknown window skips the check rather than always
+  failing it.
+- **The budget preflight ran after every frame was encoded.** Its whole point
+  is to fail cheaply, but a clip it was about to reject had already paid for
+  a JPEG encode and base64 per frame. Frames are now clamped and measured
+  first, and encoded only once the request fits.
+- **A missing Gemma handler fell back to a Qwen one.** The handler supplies
+  the chat template and image-token protocol; Gemma's uses
+  `<start_of_turn>`/`<end_of_turn>` where Qwen's uses `<|im_start|>`. That
+  substitution is not a degraded mode, it is a wrong one, and it would have
+  surfaced as nonsense output or an opaque media-evaluation failure. Qwen
+  families still fall back along their shared ChatML lineage; a Gemma family
+  now raises an error naming the missing handler. (Unreachable on the pinned
+  wheel, which ships all of them.)
+- **The opaque-constructor retry chain treated any `TypeError` as an
+  unsupported keyword.** A handler rejecting the flag *combination* in its
+  own body would be retried until some narrower set got past the raise,
+  silently accepting a construction it meant to refuse. Only a
+  "unexpected keyword argument" error now drops a flag.
 - **Asking for every frame of a short clip silently dropped most of them.**
   `_midpoint_indices` rounded `(i+0.5)*total/n`, and Python's `round()` breaks
   ties to even — so whenever `total == num_frames` the midpoints 0.5, 1.5,

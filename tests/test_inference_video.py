@@ -743,3 +743,168 @@ def test_inspectable_handler_is_constructed_exactly_once(monkeypatch):
     with pytest.raises(TypeError):
         inference._construct_chat_handler(Handler, Path("/m/mmproj.gguf"), False)
     assert len(calls) == 1
+
+
+# ── The recorded context window is llama.cpp's, not the caller's argument ──
+
+def test_load_model_records_the_effective_context_not_the_argument(
+    monkeypatch, tmp_path
+):
+    """n_ctx=0 means "use the model's native context", not "no context".
+
+    Storing the raw 0 made caption_video compare a positive budget against a
+    zero-token window, so every clip was refused on a model with plenty of
+    room.
+    """
+    instantiated = []
+    _install_fake_llama_cpp(monkeypatch, instantiated)
+
+    class NativeCtxLlama(_RecordingLlama):
+        def n_ctx(self):
+            return 32768
+
+    monkeypatch.setattr(inference, "Llama", NativeCtxLlama, raising=False)
+    model, mmproj = _model_files(tmp_path)
+
+    eng = Qwen3VLEngine()
+    eng.load_model(model, mmproj, n_ctx=0)
+
+    assert eng._n_ctx == 32768
+
+
+def test_load_model_falls_back_when_n_ctx_is_unavailable(monkeypatch, tmp_path):
+    """A build without the accessor keeps the argument."""
+    instantiated = []
+    _install_fake_llama_cpp(monkeypatch, instantiated)
+    model, mmproj = _model_files(tmp_path)
+
+    eng = Qwen3VLEngine()
+    eng.load_model(model, mmproj, n_ctx=4096)
+    assert eng._n_ctx == 4096
+
+
+def test_preflight_is_skipped_when_the_window_size_is_unknown(
+    monkeypatch, tmp_path
+):
+    """Unknown window (0) must degrade to not-checking, not always-failing."""
+    _install_fake_video(monkeypatch)
+    eng = _make_engine(response=_CANNED_RESPONSE, n_ctx=0)
+
+    caption = eng.caption_video(_video_file(tmp_path), "p", num_frames=4)
+    assert caption == "a cat walks by"
+
+
+# ── The budget check must come before the frames are encoded ─────────────
+
+def test_over_budget_clip_is_refused_before_any_frame_is_encoded(
+    monkeypatch, tmp_path
+):
+    """The preflight exists to fail cheaply; encoding first defeats that.
+
+    Every frame was JPEG-encoded and base64'd before the budget was checked,
+    so a request the engine was about to reject still paid the full CPU cost
+    of preparing it.
+    """
+    _install_fake_video(monkeypatch)
+    eng = _make_engine(response=_CANNED_RESPONSE, n_ctx=256)  # far too small
+
+    encoded = []
+    real_encode = inference._encode_data_uri
+    monkeypatch.setattr(
+        inference, "_encode_data_uri",
+        lambda img: (encoded.append(1), real_encode(img))[1],
+    )
+
+    with pytest.raises(RuntimeError, match="context"):
+        eng.caption_video(_video_file(tmp_path), "p", num_frames=8)
+
+    assert encoded == [], "frames were encoded before the budget was checked"
+
+
+def test_within_budget_clip_still_encodes_every_frame(monkeypatch, tmp_path):
+    """Splitting the loop must not drop frames from the request."""
+    _install_fake_video(monkeypatch)
+    eng = _make_engine(response=_CANNED_RESPONSE)
+
+    eng.caption_video(_video_file(tmp_path), "p", num_frames=6)
+
+    parts = eng.model.calls[0]["messages"][1]["content"]
+    assert [p["type"] for p in parts] == ["image_url"] * 6 + ["text"]
+    assert [_decoded_frame_index(p["image_url"]["url"]) for p in parts[:6]] == [
+        0, 1, 2, 3, 4, 5
+    ]
+
+
+# ── A missing Gemma handler must not fall back to a Qwen template ────────
+
+def test_missing_gemma_handler_raises_instead_of_using_a_qwen_one(monkeypatch):
+    """Cross-template substitution is wrong, not degraded.
+
+    Gemma's template uses <start_of_turn>/<end_of_turn> and its own image
+    protocol; a Qwen handler would emit the wrong control tokens and fail
+    somewhere with nothing pointing at the cause.
+    """
+    ns = types.SimpleNamespace(
+        Qwen3VLChatHandler=_Qwen3VLHandler,
+        Qwen25VLChatHandler=_Qwen25Handler,
+    )
+    monkeypatch.setattr(inference, "llama_chat_format", ns, raising=False)
+
+    for family in ("gemma4", "gemma3"):
+        with pytest.raises(RuntimeError, match="chat template requires"):
+            inference._resolve_chat_handler_cls(family)
+
+
+def test_present_gemma_handler_is_still_used(monkeypatch):
+    ns = types.SimpleNamespace(
+        Gemma4ChatHandler=_FamilyHandler,
+        Qwen3VLChatHandler=_Qwen3VLHandler,
+        Qwen25VLChatHandler=_Qwen25Handler,
+    )
+    monkeypatch.setattr(inference, "llama_chat_format", ns, raising=False)
+    assert inference._resolve_chat_handler_cls("gemma4") is _FamilyHandler
+
+
+def test_qwen_families_still_fall_back_along_the_chatml_lineage(monkeypatch):
+    """Qwen handlers share <|im_start|> turns, so substitution is defensible."""
+    ns = types.SimpleNamespace(
+        Qwen3VLChatHandler=_Qwen3VLHandler,
+        Qwen25VLChatHandler=_Qwen25Handler,
+    )
+    monkeypatch.setattr(inference, "llama_chat_format", ns, raising=False)
+    assert inference._resolve_chat_handler_cls("qwen35") is _Qwen3VLHandler
+
+
+def test_opaque_handler_body_typeerror_stops_the_retry_chain(monkeypatch):
+    """A body TypeError must not be retried until some narrower set passes.
+
+    A handler that rejects the flag COMBINATION in its own body would
+    otherwise be called again with fewer flags, and one of those calls could
+    get past the raise — silently accepting a construction the handler meant
+    to refuse. Only "unexpected keyword argument" means "drop this flag".
+    """
+    _make_signature_opaque(monkeypatch)
+    calls = []
+
+    class Handler:
+        def __init__(self, clip_model_path, verbose=False, **kwargs):
+            calls.append(dict(kwargs))
+            if len(kwargs) == 2:
+                raise TypeError("both flags together are not supported here")
+
+    with pytest.raises(TypeError, match="both flags together"):
+        inference._construct_chat_handler(Handler, Path("/m/mmproj.gguf"), False)
+    assert len(calls) == 1, f"retried past a body error: {calls}"
+
+
+def test_opaque_handler_unsupported_keyword_is_still_retried(monkeypatch):
+    """The retry that the chain exists for must still happen."""
+    _make_signature_opaque(monkeypatch)
+    seen = {}
+
+    class Handler:
+        def __init__(self, clip_model_path, verbose=False, enable_thinking=True):
+            seen["enable_thinking"] = enable_thinking
+
+    inference._construct_chat_handler(Handler, Path("/m/mmproj.gguf"), False)
+    assert seen == {"enable_thinking": False}

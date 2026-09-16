@@ -92,19 +92,48 @@ def infer_chat_family(model_path: str | Path) -> str:
     return "qwen3vl"
 
 
+# Families whose handlers share the ChatML lineage (<|im_start|> turns), so
+# one can stand in for another on a build missing the newest handler. Gemma is
+# deliberately absent: its template uses <start_of_turn>/<end_of_turn> and a
+# different image-token protocol, so a Qwen handler would not degrade a Gemma
+# model's output, it would garble it.
+_CHATML_FALLBACKS = ("Qwen3VLChatHandler", "Qwen25VLChatHandler")
+
+
 def _resolve_chat_handler_cls(family: str):
     """
     Resolve the vision chat handler class for a model family.
 
-    Tries the family's own handler first, then Qwen3VLChatHandler, then
-    Qwen25VLChatHandler. The pinned JamePeng wheel ships all of them; the
-    fallbacks guard other llama-cpp-python builds.
+    Tries the family's own handler first. If this build does not ship it, a
+    Qwen family falls back along _CHATML_FALLBACKS; a non-ChatML family (Gemma)
+    raises instead.
+
+    Substituting across templates is not a degraded mode, it is a wrong one:
+    the handler supplies the chat template and image-token protocol, so a
+    Gemma model driven by a Qwen handler emits the wrong control tokens and
+    either produces nonsense or fails inside media evaluation, with nothing
+    pointing at the cause. The pinned JamePeng wheel ships every handler, so
+    this only bites on other builds — which is exactly where a clear error
+    beats silent garbage.
     """
-    for name in (CHAT_FAMILY_HANDLERS.get(family), "Qwen3VLChatHandler", "Qwen25VLChatHandler"):
-        if name:
-            handler_cls = getattr(llama_chat_format, name, None)
-            if handler_cls is not None:
-                return handler_cls
+    own = CHAT_FAMILY_HANDLERS.get(family)
+    if own:
+        handler_cls = getattr(llama_chat_format, own, None)
+        if handler_cls is not None:
+            return handler_cls
+
+    if own and own not in _CHATML_FALLBACKS and family.startswith("gemma"):
+        raise RuntimeError(
+            f"This llama-cpp-python build has no {own}, which the {family} "
+            f"chat template requires. Falling back to a Qwen handler would "
+            f"send the wrong control tokens. Install the pinned wheel (see "
+            f"setup.bat / setup.sh), or choose a Qwen3-VL model instead."
+        )
+
+    for name in _CHATML_FALLBACKS:
+        handler_cls = getattr(llama_chat_format, name, None)
+        if handler_cls is not None:
+            return handler_cls
     # Unreachable on the pinned wheel — a last resort for exotic builds (and
     # it keeps the direct legacy-handler import alive for external callers).
     return Qwen25VLChatHandler
@@ -173,8 +202,15 @@ def _construct_chat_handler(handler_cls, mmproj_path, verbose: bool):
     # the set on each rejection. This reintroduces the repeated-call risk
     # that inspection exists to avoid, which is why it is confined to the
     # path that has no alternative: failing to load a model at all is the
-    # worse outcome. The final attempt passes no flags, so its TypeError is
-    # the handler's own and is re-raised rather than swallowed.
+    # worse outcome.
+    #
+    # Only a TypeError that names an unexpected keyword is treated as "this
+    # flag is unsupported". Retrying on ANY TypeError would let a handler
+    # that rejects the flag combination in its own body be retried until
+    # some narrower set happened to get past the raise — silently accepting
+    # a construction the handler meant to refuse. A body error stops the
+    # chain and propagates, so the opaque path keeps the same guarantee the
+    # inspection path gets for free.
     attempts = (
         extra,
         {"enable_thinking": False},
@@ -184,8 +220,9 @@ def _construct_chat_handler(handler_cls, mmproj_path, verbose: bool):
     for i, attempt in enumerate(attempts):
         try:
             return handler_cls(**kwargs, **attempt)
-        except TypeError:
-            if i == len(attempts) - 1:
+        except TypeError as exc:
+            unsupported_kw = "unexpected keyword argument" in str(exc)
+            if not unsupported_kw or i == len(attempts) - 1:
                 raise
 
 
@@ -323,7 +360,18 @@ class Qwen3VLEngine:
         self.model_path = model_path
         self.mmproj_path = mmproj_path
         self.chat_family = family
-        self._n_ctx = n_ctx
+        # Record the context llama.cpp actually gave us, not the argument.
+        # n_ctx=0 means "use the model's native context size", so storing the
+        # raw 0 would make caption_video's preflight compare a positive budget
+        # against a zero-token window and refuse every clip on a model that
+        # has plenty of room. Llama.n_ctx() reports the effective value.
+        try:
+            self._n_ctx = int(self.model.n_ctx())
+        except Exception:
+            # A build without the accessor: fall back to the argument, and
+            # treat 0 as "unknown" rather than "no context at all" so the
+            # preflight degrades to not-checking instead of always-failing.
+            self._n_ctx = n_ctx
         self._is_loaded = True
 
         if progress_callback:
@@ -436,35 +484,35 @@ class Qwen3VLEngine:
         # optional dependency for image-only use.
         from engine import video as video_module
 
-        # Extraction and encoding run before any token loop exists to notice
-        # a cancel — on a long clip that is seconds of scanning plus one JPEG
-        # encode per frame. A cancel here returns "" like one during
-        # generation, so the caller sees a single cancellation contract.
+        # Extraction runs before any token loop exists to notice a cancel —
+        # on a long clip that is seconds of scanning. A cancel here returns
+        # "" like one during generation, so the caller sees a single
+        # cancellation contract.
         try:
             frames = video_module.sample_frames(
                 video_path, num_frames=num_frames, cancel_check=cancel_check
             )
-
-            image_parts = []
-            vision_tokens = 0
-            for frame in frames:
-                if cancel_check and cancel_check():
-                    return ""
-                # Clamp explicitly rather than letting the encoder do it, so
-                # the token estimate below measures the size actually sent.
-                frame = clamp_image_dim(frame, VIDEO_FRAME_MAX_DIM)
-                uri = _encode_data_uri(frame)
-                w, h = frame.size
-                vision_tokens += estimate_vision_tokens(w, h)
-                image_parts.append(
-                    {"type": "image_url", "image_url": {"url": uri}}
-                )
         except VideoCancelled:
             return ""
 
+        # Clamp and measure first, encode second. Both passes are needed
+        # anyway, and splitting them means an over-budget clip is refused
+        # before paying for a JPEG encode per frame — otherwise the preflight
+        # below, whose whole point is to fail cheaply, still charged the full
+        # CPU cost of encoding every frame it was about to reject.
+        clamped = []
+        vision_tokens = 0
+        for frame in frames:
+            if cancel_check and cancel_check():
+                return ""
+            frame = clamp_image_dim(frame, VIDEO_FRAME_MAX_DIM)
+            w, h = frame.size
+            vision_tokens += estimate_vision_tokens(w, h)
+            clamped.append(frame)
+
         # Tell the model the images are one clip rather than unrelated
         # pictures (shared with the MLX backend so both frame it identically).
-        framed_prompt = frame_video_prompt(prompt, len(image_parts))
+        framed_prompt = frame_video_prompt(prompt, len(clamped))
 
         # Preflight the context budget: Qwen3-VL's M-RoPE cannot context-shift,
         # so overflowing n_ctx loses the caption — llama.cpp logs "decode:
@@ -477,13 +525,22 @@ class Qwen3VLEngine:
         # check); 128 covers chat scaffolding.
         text_tokens = self._count_text_tokens(system_prompt + "\n" + framed_prompt)
         needed = math.ceil(1.15 * vision_tokens) + max_tokens + text_tokens + 128
-        if needed > self._n_ctx:
+        if self._n_ctx and needed > self._n_ctx:
             raise RuntimeError(
-                f"{len(image_parts)} video frames need ~{needed} context "
+                f"{len(clamped)} video frames need ~{needed} context "
                 f"tokens (vision + {text_tokens} prompt + {max_tokens} "
                 f"generation), but the context window is only {self._n_ctx}. "
                 f"Caption fewer frames (num_frames) or load the model with a "
                 f"larger context window."
+            )
+
+        # Budget cleared — now pay for the encode.
+        image_parts = []
+        for frame in clamped:
+            if cancel_check and cancel_check():
+                return ""
+            image_parts.append(
+                {"type": "image_url", "image_url": {"url": _encode_data_uri(frame)}}
             )
 
         messages = [
