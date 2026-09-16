@@ -28,6 +28,22 @@ images (OCR, chart-reading and fine-detail cases) with no caption regression.
   The fallback now restores the post-reasoning text, so a reasoning-only
   response cleans to `""` (the GUI shows "Nothing to save") while a
   prefix-only one is still preserved.
+- **Asking for every frame of a short clip silently dropped most of them.**
+  `_midpoint_indices` rounded `(i+0.5)*total/n`, and Python's `round()` breaks
+  ties to even — so whenever `total == num_frames` the midpoints 0.5, 1.5,
+  2.5 ... collapsed in pairs and dedup discarded them for good. An 8-frame
+  clip asked for 8 frames returned 5 (`[0, 2, 4, 6, 7]`); a 3-frame clip asked
+  for 3 returned 2. Truncating instead has no ties and is the more correct
+  reading anyway — a frame index is a bin, so the frame *containing* the
+  midpoint is the one wanted. Now exactly `min(total, num_frames)` distinct
+  indices for every input, with the mid-span placement unchanged.
+- **`cancel_check` alone was ignored once GGUF generation started.** The
+  shared `_generate` streamed only when a `stream_callback` was supplied; the
+  blocking branch had no point at which to poll, so a caller that passed
+  `cancel_check` without wanting tokens ran to completion and was handed the
+  caption it had asked to abandon. It now streams whenever either is present,
+  invoking the callback only when there is one — matching the MLX backend,
+  which cancels regardless of streaming.
 - **Cancelling was ignored until generation started.** Frame extraction can
   run for seconds before any token loop exists to notice a cancel: a clip
   whose header reports no frame count is scanned twice end to end, and both

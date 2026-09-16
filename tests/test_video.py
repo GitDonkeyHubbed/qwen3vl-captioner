@@ -550,3 +550,54 @@ def test_count_frames_polls_cancel_during_a_long_scan(video_path, monkeypatch):
         video_module._count_frames(cv2, video_path, cancel_check=lambda: True)
     # Stopped on the first poll rather than grabbing all 30 frames first.
     assert 0 < len(grabs) < TOTAL_FRAMES
+
+
+# ── Index generation returns one index per frame it can ──────────────────
+
+@pytest.mark.parametrize("total,num_frames", [
+    (8, 8), (3, 3), (10, 10), (16, 16), (2, 2), (1, 1),   # total == n
+    (30, 8), (100, 8), (5, 4), (30, 3), (30, 4),          # total > n
+    (3, 8), (1, 8), (30, 100),                            # total < n
+])
+def test_midpoint_indices_returns_min_total_num_frames(total, num_frames):
+    """The count invariant: exactly min(total, num_frames) distinct indices.
+
+    round() breaks ties to even, so with total == num_frames the midpoints
+    0.5, 1.5, 2.5 ... collapsed in pairs and dedup then discarded them for
+    good: an 8-frame clip asked for 8 frames yielded [0, 2, 4, 6, 7], and a
+    3-frame clip asked for 3 yielded [0, 2]. Truncation has no ties.
+    """
+    from engine.video import _midpoint_indices
+
+    indices = _midpoint_indices(total, num_frames)
+    assert len(indices) == min(total, num_frames)
+    assert len(set(indices)) == len(indices), "duplicate indices"
+    assert indices == sorted(indices), "not in temporal order"
+    assert all(0 <= i < total for i in indices), "index out of range"
+
+
+def test_midpoint_indices_are_exhaustive_when_total_equals_num_frames():
+    """Asking for every frame of a clip must return every frame."""
+    from engine.video import _midpoint_indices
+
+    assert _midpoint_indices(8, 8) == list(range(8))
+    assert _midpoint_indices(3, 3) == [0, 1, 2]
+
+
+def test_midpoint_indices_still_land_mid_span():
+    """Truncation must not reintroduce the start-anchored bias."""
+    from engine.video import _midpoint_indices
+
+    # 3 of 30: the middles of [0,10), [10,20), [20,30).
+    assert _midpoint_indices(30, 3) == [5, 15, 25]
+    # Never frame 0 when the first span is wide enough to have a middle.
+    assert _midpoint_indices(30, 8)[0] > 0
+
+
+def test_sample_frames_returns_every_frame_of_an_exact_length_clip(tmp_path):
+    """End to end: an 8-frame clip asked for 8 frames returns 8, not 5."""
+    path = _write_video(tmp_path / "eight.mp4", n_frames=8)
+    frames = sample_frames(path, num_frames=8)
+    assert len(frames) == 8
+    indices = [_frame_index(f) for f in frames]
+    assert all(b > a for a, b in zip(indices, indices[1:], strict=False))

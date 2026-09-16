@@ -590,14 +590,67 @@ def test_caption_video_stops_encoding_when_cancelled_between_frames(
     assert eng.model.calls == []
 
 
-def test_caption_video_uncancelled_run_is_unchanged(monkeypatch, tmp_path):
-    """A live-but-false predicate must not alter a normal run."""
+def test_caption_video_uncancelled_run_returns_the_same_caption(
+    monkeypatch, tmp_path
+):
+    """A live-but-false predicate must not change what the caller gets.
+
+    It does change HOW: a cancel-only caller now takes the streaming
+    completion, because a blocking one has no point at which to poll. The
+    tokens are the same either way, so the caption must be identical.
+    """
     _install_fake_video(monkeypatch)
-    eng = _make_engine(response=_CANNED_RESPONSE)
+    eng = _make_engine(stream_chunks=_STREAM_CHUNKS)
 
     caption = eng.caption_video(
         _video_file(tmp_path), "p", num_frames=4, cancel_check=lambda: False
     )
 
-    assert caption == "a cat walks by"
+    assert caption == "A dog runs."  # == the joined _STREAM_CHUNKS
     assert len(eng.model.calls) == 1
+    assert eng.model.calls[0]["stream"] is True
+
+
+def test_cancel_only_caller_gets_no_stream_callback_invocations(
+    monkeypatch, tmp_path
+):
+    """Streaming for cancellation must not push tokens at a caller who
+    never asked for them."""
+    _install_fake_video(monkeypatch)
+    eng = _make_engine(stream_chunks=_STREAM_CHUNKS)
+
+    # No stream_callback supplied; if the engine called one it would raise.
+    caption = eng.caption_video(
+        _video_file(tmp_path), "p", num_frames=4, cancel_check=lambda: False
+    )
+    assert caption == "A dog runs."
+
+
+def test_plain_call_still_uses_the_blocking_completion(monkeypatch, tmp_path):
+    """No callback and no predicate: nothing to poll for, so don't stream."""
+    _install_fake_video(monkeypatch)
+    eng = _make_engine(response=_CANNED_RESPONSE)
+
+    caption = eng.caption_video(_video_file(tmp_path), "p", num_frames=4)
+
+    assert caption == "a cat walks by"
+    assert eng.model.calls[0]["stream"] is False
+
+
+def test_cancel_during_generation_without_a_stream_callback(
+    monkeypatch, tmp_path
+):
+    """The gap this closed: cancel_check alone used to be ignored once
+    generation began, so the call ran to completion and returned the very
+    caption the caller had asked to abandon."""
+    _install_fake_video(monkeypatch)
+    eng = _make_engine(stream_chunks=_STREAM_CHUNKS)
+
+    caption = eng.caption_video(
+        _video_file(tmp_path), "p", num_frames=4,
+        # False through extraction, true once generation starts.
+        cancel_check=lambda: bool(eng.model.calls),
+    )
+
+    assert caption == ""
+    assert eng.model.calls[0]["stream"] is True

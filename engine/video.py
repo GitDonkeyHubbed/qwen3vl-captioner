@@ -91,14 +91,26 @@ def _sample_by_index(
 
 
 def _midpoint_indices(total: int, num_frames: int) -> list[int]:
-    """Evenly-spaced midpoint indices: round((i+0.5)*total/n), deduped.
+    """Evenly-spaced midpoint indices: floor((i+0.5)*total/n), deduped.
 
     Midpoints (rather than i*total/n) hit the middle of each of n equal spans,
     so a short clip's intro and outro don't dominate the sample.
+
+    Truncation, not rounding, and that is load-bearing. Span i covers
+    ``[i*total/n, (i+1)*total/n)`` and its midpoint is ``(i+0.5)*total/n``;
+    truncating gives the index of the frame that midpoint falls *inside*,
+    because a frame index is a bin, not a point.
+
+    ``round()`` also breaks ties to even, which silently collapsed adjacent
+    spans whenever ``total == num_frames``: the midpoints are 0.5, 1.5,
+    2.5, ... and round(0.5) and round(1.5) are both 0 and 2, so an 8-frame
+    clip asked for 8 frames returned 5 ([0, 2, 4, 6, 7]) and a 3-frame clip
+    asked for 3 returned 2. Truncation returns exactly min(total, num_frames)
+    distinct indices for every input.
     """
     indices: list[int] = []
     for i in range(num_frames):
-        idx = min(total - 1, max(0, round((i + 0.5) * total / num_frames)))
+        idx = min(total - 1, max(0, int((i + 0.5) * total / num_frames)))
         if not indices or idx != indices[-1]:
             indices.append(idx)
     return indices

@@ -486,8 +486,14 @@ class Qwen3VLEngine:
         """Run chat completion on prepared messages and post-process the caption."""
         start_time = time.perf_counter()
 
-        if stream_callback:
-            # Streaming mode
+        # Stream whenever EITHER a token callback or a cancel predicate is
+        # supplied. A blocking completion has no point at which to poll, so a
+        # caller that passed cancel_check without stream_callback used to get
+        # no cancellation at all once generation started — the call ran to
+        # completion and returned the caption it had asked to abandon. The
+        # MLX backend cancels regardless of streaming, so this also brings the
+        # two engines to the same contract.
+        if stream_callback or cancel_check:
             caption_parts = []
 
             response = self.model.create_chat_completion(
@@ -507,11 +513,14 @@ class Qwen3VLEngine:
                 token_text = delta.get("content", "")
                 if token_text:
                     caption_parts.append(token_text)
-                    stream_callback(token_text)
+                    # Only when the caller actually wants the tokens — this
+                    # branch now also runs for cancel-only callers.
+                    if stream_callback:
+                        stream_callback(token_text)
 
             caption = "".join(caption_parts).strip()
         else:
-            # Non-streaming mode
+            # No callback and no cancel predicate: nothing to poll for.
             response = self.model.create_chat_completion(
                 messages=messages,
                 temperature=temperature if temperature > 0 else 0,
