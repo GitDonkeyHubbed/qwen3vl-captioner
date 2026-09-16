@@ -908,3 +908,74 @@ def test_opaque_handler_unsupported_keyword_is_still_retried(monkeypatch):
 
     inference._construct_chat_handler(Handler, Path("/m/mmproj.gguf"), False)
     assert seen == {"enable_thinking": False}
+
+
+# ── Vision-token cost is per-family, from each model's published config ──
+
+@pytest.mark.parametrize("family,expected", [
+    # Qwen tilings: patch_size x merge_size from preprocessor_config.json.
+    ("qwen3vl", 20 * 20),    # 16 x 2 = 32 px blocks
+    ("qwen35", 20 * 20),     # 16 x 2 = 32 px blocks
+    ("qwen25vl", 23 * 23),   # 14 x 2 = 28 px blocks -> ceil(640/28) = 23
+    # Gemma resamples to a fixed soft-token budget, so resolution is moot.
+    ("gemma4", 280),         # config.json vision_soft_tokens_per_image
+    ("gemma3", 256),         # config.json mm_tokens_per_image
+])
+def test_vision_tokens_match_each_family_published_cost(family, expected):
+    assert inference.estimate_vision_tokens(640, 640, family) == expected
+
+
+@pytest.mark.parametrize("family", ["gemma4", "gemma3"])
+@pytest.mark.parametrize("size", [(64, 48), (640, 640), (1280, 720)])
+def test_gemma_vision_cost_does_not_vary_with_resolution(family, size):
+    """A fixed soft-token budget is the whole point of the Gemma split.
+
+    Tiling maths over-counted a 640x640 Gemma frame by 43% (400 vs 280), so
+    the preflight refused 16-frame clips that fit in 8192 with room to spare.
+    """
+    assert inference.estimate_vision_tokens(
+        *size, family
+    ) == inference.estimate_vision_tokens(1, 1, family)
+
+
+def test_qwen25vl_is_not_counted_with_the_qwen3_grid():
+    """Qwen2.5-VL uses 14 px patches, so 32 px blocks UNDER-count it.
+
+    This is the dangerous direction: the preflight passes and the caption
+    then fails inside llama.cpp. 640x640 is 529 tokens, not 400.
+    """
+    assert inference.estimate_vision_tokens(640, 640, "qwen25vl") == 529
+    assert inference.estimate_vision_tokens(
+        640, 640, "qwen25vl"
+    ) > inference.estimate_vision_tokens(640, 640, "qwen3vl")
+
+
+def test_unknown_family_over_counts_rather_than_under_counts():
+    """An unrecognised model must err toward refusing, not toward failing."""
+    est = inference.estimate_vision_tokens
+    unknown = est(640, 640, "something-new")
+    assert unknown == est(640, 640, "qwen3vl")
+    assert unknown >= est(640, 640, "gemma4")
+
+
+def test_caption_video_uses_the_loaded_family_for_the_budget(
+    monkeypatch, tmp_path
+):
+    """The preflight must cost frames with the family actually loaded.
+
+    A Gemma load budgeted with the Qwen grid refuses clips that fit; the
+    engine now passes self.chat_family through.
+    """
+    _install_fake_video(monkeypatch, frame_size=(640, 640))
+    seen = []
+    real = inference.estimate_vision_tokens
+    monkeypatch.setattr(
+        inference, "estimate_vision_tokens",
+        lambda w, h, fam="qwen3vl": (seen.append(fam), real(w, h, fam))[1],
+    )
+
+    eng = _make_engine(response=_CANNED_RESPONSE)
+    eng.chat_family = "gemma4"
+    eng.caption_video(_video_file(tmp_path), "p", num_frames=4)
+
+    assert seen == ["gemma4"] * 4

@@ -226,24 +226,43 @@ def _construct_chat_handler(handler_cls, mmproj_path, verbose: bool):
                 raise
 
 
-def estimate_vision_tokens(width: int, height: int) -> int:
-    """Estimate vision tokens for one frame (Qwen3-VL: one per 32x32 patch).
+# Vision-token cost per image, per chat family. Every number below is read
+# from that model's own published config, not inferred from its behaviour:
+#
+#   qwen3vl   Qwen/Qwen3-VL-8B-Instruct   preprocessor_config.json
+#   qwen35    Qwen/Qwen3.5-9B             preprocessor_config.json
+#             patch_size 16 x merge_size 2 -> one token per 32x32 px block
+#   qwen25vl  Qwen/Qwen2.5-VL-7B-Instruct preprocessor_config.json
+#             patch_size 14 x merge_size 2 -> one token per 28x28 px block
+#   gemma4    google/gemma-4-e4b-it       config.json
+#             "vision_soft_tokens_per_image": 280
+#   gemma3    google/gemma-3-4b-it        config.json
+#             "mm_tokens_per_image": 256
+#
+# The split matters: the Qwen families tile the image, so their cost grows
+# with pixel area, while both Gemma families resample every image to a fixed
+# soft-token budget and cost the same at any resolution. Applying the Qwen
+# tiling maths to Gemma over-counted a 640x640 frame by 43% (400 vs 280),
+# which made the preflight refuse clips that would have fitted.
+_VISION_PATCH_PX = {"qwen3vl": 32, "qwen35": 32, "qwen25vl": 28}
+_VISION_FIXED_TOKENS = {"gemma4": 280, "gemma3": 256}
 
-    Calibrated for Qwen3-VL and applied to every family, which is a known
-    approximation: Gemma's vision encoder resamples to its own budget rather
-    than emitting one token per 32x32 patch, so this number is wrong for a
-    gemma3/gemma4 load. Measuring the real figure needs a Gemma model in
-    front of you, so it is deliberately left for part 2 of #26 rather than
-    guessed at here.
 
-    Both directions of error are survivable, which is why an approximation is
-    acceptable in the meantime. Over-counting makes the caller's preflight
-    refuse a clip that would have fit — visible, and the message names the
-    setting to lower. Under-counting makes it pass, and the caption then
-    fails exactly as it did before any preflight existed. The preflight is a
-    best-effort early-out, not a guarantee anything downstream relies on.
+def estimate_vision_tokens(
+    width: int, height: int, family: str = "qwen3vl"
+) -> int:
+    """Estimate the vision tokens one image costs in *family*'s encoder.
+
+    Defaults to the Qwen3-VL tiling for an unknown family: it is the most
+    expensive of the tilings here, so an unrecognised model is over-counted
+    rather than under-counted, and the preflight errs toward refusing early
+    rather than toward a failed caption.
     """
-    return math.ceil(width / 32) * math.ceil(height / 32)
+    fixed = _VISION_FIXED_TOKENS.get(family)
+    if fixed is not None:
+        return fixed
+    patch_px = _VISION_PATCH_PX.get(family, 32)
+    return math.ceil(width / patch_px) * math.ceil(height / patch_px)
 
 
 def _encode_data_uri(img: Image.Image) -> str:
@@ -522,16 +541,15 @@ class Qwen3VLEngine:
                 return ""
             frame = clamp_image_dim(frame, VIDEO_FRAME_MAX_DIM)
             w, h = frame.size
-            vision_tokens += estimate_vision_tokens(w, h)
+            vision_tokens += estimate_vision_tokens(w, h, self.chat_family)
             clamped.append(frame)
 
         # Tell the model the images are one clip rather than unrelated
         # pictures (shared with the MLX backend so both frame it identically).
         framed_prompt = frame_video_prompt(prompt, len(clamped))
 
-        # Preflight the context budget. The vision figure is a Qwen3-VL
-        # estimate applied to every family — see estimate_vision_tokens for
-        # why that approximation is tolerable and what it would take to fix.
+        # Preflight the context budget. The vision figure is this family's
+        # own published cost — see estimate_vision_tokens.
         # Qwen3-VL's M-RoPE cannot context-shift,
         # so overflowing n_ctx loses the caption — llama.cpp logs "decode:
         # failed to find a memory slot for batch" and the wheel raises after
