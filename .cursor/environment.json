@@ -1,0 +1,4 @@
+{
+  "name": "Qwen3-VL Captioner",
+  "install": "bash ./.cursor/install.sh"
+}
