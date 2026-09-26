@@ -15,7 +15,13 @@ import json
 
 import pytest
 
-from gui.model_download_manager import ModelDownloadWorker, is_unsafe_repo_filename
+import urllib.request
+
+from gui.model_download_manager import (
+    ModelDownloadWorker,
+    _StripAuthOnRedirect,
+    is_unsafe_repo_filename,
+)
 
 
 @pytest.fixture
@@ -126,3 +132,46 @@ def test_unsafe_repo_filenames_rejected(fname):
 )
 def test_normal_repo_filenames_allowed(fname):
     assert is_unsafe_repo_filename(fname) is False
+
+
+# ── HuggingFace CDN redirects must not keep the Bearer token ────────────
+#
+# Storage backends reject a signed URL that also carries Authorization, and
+# a same-host https→http hop would send the token in cleartext.
+
+
+def _redirect(from_url: str, to_url: str) -> urllib.request.Request:
+    req = urllib.request.Request(
+        from_url, headers={"Authorization": "Bearer hf_secret"}
+    )
+    handler = _StripAuthOnRedirect()
+    return handler.redirect_request(req, None, 302, "Found", {}, to_url)
+
+
+def _has_authorization(req: urllib.request.Request) -> bool:
+    return any(k.lower() == "authorization" for k in req.headers)
+
+
+def test_cross_host_redirect_strips_the_bearer_token():
+    new = _redirect(
+        "https://huggingface.co/owner/repo/resolve/main/model.gguf",
+        "https://cdn-lfs.huggingface.co/owner/repo/model.gguf",
+    )
+    assert new.get_full_url().startswith("https://cdn-lfs.huggingface.co/")
+    assert _has_authorization(new) is False
+
+
+def test_same_host_https_redirect_keeps_the_token():
+    new = _redirect(
+        "https://huggingface.co/owner/repo/resolve/main/model.gguf",
+        "https://huggingface.co/owner/repo/resolve/refs%2Fpr%2F1/model.gguf",
+    )
+    assert _has_authorization(new) is True
+
+
+def test_https_to_http_redirect_strips_the_token_even_on_the_same_host():
+    new = _redirect(
+        "https://huggingface.co/owner/repo/resolve/main/model.gguf",
+        "http://huggingface.co/owner/repo/resolve/main/model.gguf",
+    )
+    assert _has_authorization(new) is False

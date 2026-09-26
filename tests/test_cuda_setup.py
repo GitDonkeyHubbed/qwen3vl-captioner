@@ -24,6 +24,7 @@ from engine.cuda_setup import (
     installed_wheel_is_cuda_build,
     parse_cuda_version,
     recommended_wheel_tag,
+    startup_failure_advice,
     wheel_mismatch_message,
 )
 
@@ -438,3 +439,90 @@ def test_installed_wheel_cuda_tag_none_without_direct_url(monkeypatch):
     monkeypatch.setattr(importlib.metadata, "version", lambda name: "0.3.40")
     monkeypatch.setattr(importlib.metadata, "distribution", lambda name: FakeDist())
     assert installed_wheel_cuda_tag() is None
+
+
+# --- startup_failure_advice: the GUI's first-load error text --------------
+#
+# app.py and Qwen3VLEngine both surface this string when llama_cpp fails to
+# import. The Windows branches call diagnose(); the tests stub that so they
+# stay off the machine's real toolkit / NVML / wheel.
+
+
+def _startup_report(**overrides):
+    report = {
+        "llama_cpp_installed": True,
+        "llama_cpp_version": "0.3.40",
+        "toolkit_version": "12.8",
+        "toolkit_path": r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8",
+        "wheel_cuda_tag": "cu128",
+        "recommended_tag": "cu128",
+        "tags_match": True,
+        "import_error": None,
+        "shadowing_dlls": [],
+    }
+    report.update(overrides)
+    return report
+
+
+def test_startup_advice_is_generic_off_windows(monkeypatch):
+    monkeypatch.setattr(cuda_setup.sys, "platform", "linux")
+    msg = startup_failure_advice("cannot load libllama.so")
+    assert "cannot load libllama.so" in msg
+    assert "Linux/macOS" in msg
+
+
+def test_startup_advice_missing_package_points_at_setup(monkeypatch):
+    monkeypatch.setattr(cuda_setup.sys, "platform", "win32")
+    monkeypatch.setattr(
+        cuda_setup, "diagnose", lambda: _startup_report(llama_cpp_installed=False)
+    )
+    msg = startup_failure_advice("No module named llama_cpp")
+    assert "setup.bat" in msg
+    assert "not installed" in msg
+
+
+def test_startup_advice_missing_toolkit_uses_the_toolkit_message(monkeypatch):
+    monkeypatch.setattr(cuda_setup.sys, "platform", "win32")
+    monkeypatch.setattr(
+        cuda_setup, "diagnose", lambda: _startup_report(toolkit_version=None)
+    )
+    msg = startup_failure_advice("cublas64_12.dll not found")
+    assert msg == cuda_toolkit_missing_message()
+
+
+def test_startup_advice_wheel_mismatch_names_both_tags(monkeypatch):
+    monkeypatch.setattr(cuda_setup.sys, "platform", "win32")
+    monkeypatch.setattr(
+        cuda_setup,
+        "diagnose",
+        lambda: _startup_report(
+            tags_match=False, recommended_tag="cu130", wheel_cuda_tag="cu124"
+        ),
+    )
+    msg = startup_failure_advice("error while loading shared libraries")
+    assert msg == wheel_mismatch_message("cu130", "cu124")
+
+
+def test_startup_advice_winerror_127_scans_when_diagnose_did_not(monkeypatch):
+    """diagnose() only walks the PATH when *its* import fails. The engine can
+    still hit WinError 127 later (model load); the advice must scan then."""
+    monkeypatch.setattr(cuda_setup.sys, "platform", "win32")
+    monkeypatch.setattr(cuda_setup, "diagnose", lambda: _startup_report())
+    monkeypatch.setattr(
+        cuda_setup,
+        "find_shadowing_dlls",
+        lambda: [("ggml.dll", r"C:\OtherApp", "cwd")],
+    )
+    msg = startup_failure_advice("[WinError 127] The specified procedure could not be found")
+    assert "ggml.dll" in msg
+    assert r"C:\OtherApp" in msg
+    assert "VCRedist" in msg
+
+
+def test_startup_advice_generic_windows_failure_names_the_toolkit(monkeypatch):
+    monkeypatch.setattr(cuda_setup.sys, "platform", "win32")
+    monkeypatch.setattr(cuda_setup, "diagnose", lambda: _startup_report())
+    msg = startup_failure_advice("unknown load error")
+    assert "unknown load error" in msg
+    assert "12.8" in msg
+    assert "diagnose.bat" in msg

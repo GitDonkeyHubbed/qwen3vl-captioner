@@ -58,6 +58,42 @@ def test_download_mmproj_omits_deprecated_symlink_kwarg(stub_hf, tmp_path):
         assert "local_dir_use_symlinks" not in kwargs
 
 
+def test_download_mmproj_falls_back_after_a_failed_source(monkeypatch, tmp_path):
+    """The primary repo can 404; the next published encoder must still land."""
+    calls = []
+
+    def fake_hf_hub_download(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise RuntimeError("404 Repo not found")
+        dest = Path(kwargs["local_dir"]) / kwargs["filename"]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"\x00")
+        return str(dest)
+
+    fake_mod = types.ModuleType("huggingface_hub")
+    fake_mod.hf_hub_download = fake_hf_hub_download
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_mod)
+
+    progress = []
+    result = download_mmproj(tmp_path, progress_callback=lambda m, f: progress.append(m))
+    assert len(calls) == 2
+    assert result.name == calls[1]["filename"]
+    assert any("Failed from" in m for m in progress)
+
+
+def test_download_mmproj_raises_when_every_source_fails(monkeypatch, tmp_path):
+    def boom(**kwargs):
+        raise RuntimeError("network down")
+
+    fake_mod = types.ModuleType("huggingface_hub")
+    fake_mod.hf_hub_download = boom
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_mod)
+
+    with pytest.raises(RuntimeError, match="Could not download mmproj"):
+        download_mmproj(tmp_path)
+
+
 def test_find_mmproj_file_locates_mmproj(tmp_path):
     (tmp_path / "model.Q4_K_M.gguf").write_bytes(b"\x00")
     (tmp_path / "model.mmproj-f16.gguf").write_bytes(b"\x00")
