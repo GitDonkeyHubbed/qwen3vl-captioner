@@ -215,6 +215,13 @@ def test_save_on_an_untouched_empty_box_writes_nothing(win, images):
     assert read_caption(images[1]).exists is False
 
 
+def test_auto_save_refuses_an_empty_caption(win, images):
+    """A failed generation is an empty string. Writing it would mark the
+    image done and leave a trainer with a blank sidecar."""
+    assert win._auto_save_caption(images[1], "") is False
+    assert read_caption(images[1]).exists is False
+
+
 def test_clearing_an_unsaved_generated_caption_asks_before_deleting_the_file(
     win, images, monkeypatch
 ):

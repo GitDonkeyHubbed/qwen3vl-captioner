@@ -56,6 +56,19 @@ def test_unknown_length_key_falls_back_to_medium():
     assert "15-30 tags" in out
 
 
+def test_sd_prompt_applies_name_and_sfw_options():
+    """These flags used to be collected and then ignored for the tag presets."""
+    out = _build_prompt_sd(
+        "Medium",
+        "",
+        {"keepPG": True, "referAsName": True, "excludeText": False},
+        "Ada",
+    )
+    assert "Keep all tags SFW." in out
+    assert "Ada" in out
+    assert "Do not tag any text" not in out
+
+
 # ── Folder import robustness ────────────────────────────────────────────
 
 def test_appledouble_and_dotfiles_are_skipped(tmp_path):
@@ -137,6 +150,14 @@ def test_case_only_stem_collisions_are_detected(tmp_path, a, b):
 
 def test_distinct_stems_do_not_collide(tmp_path):
     assert _stem_key(tmp_path / "one.jpg") != _stem_key(tmp_path / "two.jpg")
+
+
+def test_case_only_stems_do_not_collide_on_linux(tmp_path):
+    """On a case-sensitive filesystem Photo.jpg and photo.png own *different*
+    sidecars. Treating them as one collision would block a valid import."""
+    if sys.platform in ("win32", "darwin"):
+        pytest.skip("case-sensitive filesystems only")
+    assert _stem_key(tmp_path / "Photo.jpg") != _stem_key(tmp_path / "photo.png")
 
 
 # ── Busy state ──────────────────────────────────────────────────────────
