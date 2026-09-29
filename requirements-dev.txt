@@ -4,5 +4,5 @@
 #   macOS / Linux: .venv/bin/python -m pytest tests/ -q
 #   Windows:       .venv\Scripts\python.exe -m pytest tests/ -q
 
-pytest>=8.0
-ruff>=0.16
+pytest>=9.1.1
+ruff>=0.16.5
