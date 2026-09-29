@@ -43,10 +43,18 @@
 
 ## 🧹 What's New in V1.4.4 — Everything That Was Sitting Untagged, Plus Two Dataset Fixes
 
-If you are on V1.4.3, this is a big one. A full-repository audit (59 verified
-defects) landed after V1.4.3 was tagged and was never released, so it reaches
-you here — together with two defects found while building the next feature.
+If you are on V1.4.3, this is a big one. Fixes for most of the 66 defects a
+full-repository audit verified landed after V1.4.3 was tagged and were never
+released as a version, so they reach you here — together with two defects
+found while building the next feature and a security update to the image
+library. (A ZIP of `main` downloaded after 2026-09-15 already contains the
+audit fixes, although it still reports V1.4.3.)
 
+- **Security update — re-run setup once.** Pillow, one of the libraries that
+  open your images, now has to be 12.3.0 or newer: 12.2.0 has 13 known
+  vulnerabilities (10 rated HIGH). Run `setup.bat` / `./setup.sh` again in
+  your app folder to update an existing install; your models and settings
+  are kept.
 - **Your hand-edited captions survive.** Editing a caption and then changing
   the selection, regenerating, or hitting Clear All used to destroy the edit
   with no prompt. Every overwrite path now asks Save / Discard / Cancel.
@@ -59,27 +67,31 @@ you here — together with two defects found while building the next feature.
   the affixes — `photo of  high quality` — and counted as a success. In a batch
   run nobody is watching, so every failed image landed the same stock string in
   your training set. Empty stays empty now, and the summary counts it failed.
-- **A second model family downloads its own vision encoder.** Downloading a
-  second family into your models folder used to skip its encoder and leave the
-  model loading against a mismatched vision tower.
+- **A second model downloads its own vision encoder.** Downloading a second
+  model into your models folder used to skip its encoder, so Load Model had
+  to stop and ask for it.
 - **Mismatched encoders are refused, not guessed at.** Pairing is now
-  model- and family-aware instead of grabbing whichever `mmproj` was nearest —
+  model- and family-aware instead of grabbing whichever `mmproj` was in the folder —
   the mismatch that crashed on the first caption.
 - **"Re-run setup" actually works.** `setup.bat` no longer aborts with
   "Failed to install uv" right after installing uv, the venv is re-creatable,
   and uv installs correctly from PowerShell 7. Verified on clean Windows.
 - **Light mode is usable.** Controls that rendered white-on-white are fixed,
   and switching theme at runtime repaints instead of leaving frozen colours.
-- **Big folders stopped freezing the window** — thumbnails decode off the UI
-  thread, zoom no longer re-scales the full-resolution image on every wheel
+- **Less freezing on big folders and big photos** — thumbnails decode off the
+  UI thread, zoom no longer re-scales the full-resolution image on every wheel
   notch, and Windows downloads no longer write gigabytes of zeros before
   starting.
-- Test suite grew to **362 tests**; CI now HEAD-checks the pinned wheel URLs so a deleted release breaks CI (not your install), and every release tag is verified against the in-app version before it publishes.
+- Test suite grew to **362 tests** (143 at the V1.4.3 tag), and CI now fails if this README's test count drifts from the suite. Pull-request CI gained Ruff, GitGuardian secret scanning and Dependabot, dropped two unvetted third-party actions, and pins the one third-party action it still uses to a commit.
 
 Known gaps: on datasets of a few thousand images, clearing a search filter and
 Clear All are still slow, and the file browser still builds a widget per image.
+On Apple Silicon Macs running macOS 13, the Temperature slider has no effect
+with the MLX engine: the newest mlx-vlm that installs there (0.3.9) silently
+ignores it, so the same image and prompt always produce the same caption.
+Installs on macOS 14 or later get a current mlx-vlm and are not affected.
 
-See [CHANGELOG.md](CHANGELOG.md) for the complete list.
+See [CHANGELOG.md](CHANGELOG.md) for the details.
 
 ---
 
@@ -93,7 +105,7 @@ No new models — two full audit passes over the codebase (85 verified findings 
 - **Downloads got smarter**: live **speed + ETA**, free-disk-space pre-flight, corruption-safe partials (a multi-connection download that is interrupted discards its `.part` rather than resuming a file it cannot verify; single-stream downloads do resume), and your HF token is stored with owner-only permissions (`0600` on macOS/Linux; on Windows it inherits the user profile's ACL) and never sent over plain HTTP.
 - **Faster & smoother**: thumbnails decode at thumbnail size (no more UI stalls on big imports), **keyboard shortcuts** (Ctrl+S save, Ctrl+G generate, Ctrl+←/→ navigate), **drag & drop anywhere**, batch ETA, and a download offer right in the "model not downloaded" dialog.
 - **The install doctor got real diagnostic teeth.** The false "CPU build detected" warning on healthy GPU installs is gone, and `diagnose.bat` now pinpoints the exact conflicting DLL (System32, PATH, another AI app) behind `WinError 127` startup failures — with safe, reversible fix steps.
-- Test suite grew to **349 tests**; CI now HEAD-checks the pinned wheel URLs so a deleted release breaks CI (not your install), and every release tag is verified against the in-app version before it publishes.
+- 143 tests at the V1.4.3 tag; CI now HEAD-checks the pinned wheel URLs so a deleted release breaks CI (not your install), and every release tag is verified against the in-app version before it publishes.
 
 See [CHANGELOG.md](CHANGELOG.md) for the complete list.
 
@@ -103,7 +115,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the complete list.
 
 No new features — just keeping things safe and clean for everyone.
 
-- **Pillow patched to >=12.2.0** — fixes 5 CVEs (2 HIGH, 3 MODERATE): integer overflow / OOB writes when loading certain PSD and font files, a FITS decompression bomb, and a PDF trailer denial-of-service. If you're on an older install, run `setup.bat` / `setup.sh` again or `pip install --upgrade Pillow` inside your venv.
+- **Pillow patched to >=12.2.0** — fixes 5 CVEs (2 HIGH, 3 MODERATE): integer overflow / OOB writes when loading certain PSD and font files, a FITS decompression bomb, and a PDF trailer denial-of-service. If you're on an older install, run `setup.bat` / `setup.sh` again or `pip install --upgrade Pillow` inside your venv. *(Superseded: V1.4.4 raises the floor to 12.3.0 — 12.2.0 is no longer enough.)*
 - `nvidia-ml-py>=12.0` replaces the deprecated `pynvml` package — same module, eliminates an import FutureWarning for NVIDIA GPU users.
 - `huggingface-hub>=0.32` floor raised; `hf_xet>=1.0` pinned as an explicit dependency.
 - Windows smoke CI restored after a PowerShell incompatibility broke it silently.
