@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/GitDonkeyHubbed/qwen3vl-captioner/archive/refs/heads/main.zip">
+  <a href="https://github.com/GitDonkeyHubbed/qwen3vl-captioner/releases/latest/download/QWEN3-VL-Captioner.zip">
     <img src="https://img.shields.io/badge/%E2%AC%87%20DOWNLOAD%20LATEST%20VERSION%20%E2%80%94%20Click%20Here-2EA043?style=for-the-badge&logo=github&logoColor=white" alt="Download Latest Version" height="46"/>
   </a>
 </p>
@@ -35,9 +35,11 @@
    - **Windows** → double-click **`run.bat`**
    - **macOS** → run **`./run.sh`**
 
+> 🔄 **Updating?** Click the green button again and unzip into the same place as last time. The new version gets its own folder (`qwen3vl-captioner-<version>`) next to the old one — run `setup.bat` / `./setup.sh` once in the new folder. Models downloaded in the app sit in that shared parent folder and your settings live in your user profile, so both carry over.
+
 > 🪟 **Windows note:** you also need the NVIDIA **CUDA Toolkit** for GPU speed. If you don't have it, install it with one command: `winget install Nvidia.CUDA`
 
-<sub>🧰 <b>Power users:</b> prefer a specific tagged release? Grab it from the <a href="https://github.com/GitDonkeyHubbed/qwen3vl-captioner/releases/latest">Releases page</a>.</sub>
+<sub>🧰 The green button always downloads the newest <b>published release</b> — never unreleased work in progress. Release notes and every earlier version are on the <a href="https://github.com/GitDonkeyHubbed/qwen3vl-captioner/releases">Releases page</a>.</sub>
 
 ---
 
