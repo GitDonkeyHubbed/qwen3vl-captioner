@@ -568,7 +568,7 @@ def test_batch_explains_an_empty_result_in_the_bell(win, images, monkeypatch):
     assert any("No caption for a.jpg" in m for m in messages)
 
 
-def _finish_with_an_empty_result(win, image, monkeypatch, *, batch):
+def _finish_with_an_empty_result(win, image, monkeypatch, *, batch, caption=""):
     if batch:
         # As _process_next_batch_item does before it selects the image: the
         # badge reads "Captioning..." until the result settles it, and
@@ -585,7 +585,7 @@ def _finish_with_an_empty_result(win, image, monkeypatch, *, batch):
         QMessageBox, "question",
         staticmethod(lambda *a, **k: pytest.fail("no dialog for an empty result")),
     )
-    win._on_caption_finished("")
+    win._on_caption_finished(caption)
 
 
 @pytest.mark.parametrize("batch", [True, False], ids=["batch", "single"])
@@ -629,6 +629,75 @@ def test_export_writes_no_sidecar_for_an_empty_result(win, images, monkeypatch):
     assert shown == ["Nothing to Export"]
     assert read_caption(images[0]).exists is False
     assert win._file_browser.get_item_status(images[0]) == "idle"
+
+
+def test_whitespace_only_result_is_treated_as_empty(win, images, monkeypatch):
+    # empty = not caption.strip(). A check of `if not caption` would treat
+    # "   " as a caption, cache it, and (in a batch) try to write it.
+    caption_path(images[0]).write_text("a good existing caption", encoding="utf-8")
+
+    _finish_with_an_empty_result(
+        win, images[0], monkeypatch, batch=True, caption="  \n",
+    )
+
+    assert win._unsaved_summary() == []
+    assert win._file_browser.get_item_status(images[0]) == "done"
+    assert win._caption_panel.get_caption() == "a good existing caption"
+    assert win._batch_failed == 1 and win._batch_saved == 0
+    assert read_caption(images[0]).text == "a good existing caption"
+
+
+def test_empty_result_does_not_clobber_the_image_being_viewed(win, images, monkeypatch):
+    # A finished empty for A while the user is looking at B used to blank
+    # B's box (the empty-result restore only ran when still on A) and cache
+    # '' against A so Export/close treated A as unsaved.
+    caption_path(images[0]).write_text("caption for a", encoding="utf-8")
+    caption_path(images[1]).write_text("caption for b", encoding="utf-8")
+    win._on_image_selected(images[0])
+    _start_fake_generation(win, images[0])
+    win._on_new_token("partial stream for a")
+    win._on_image_selected(images[1])
+    assert win._caption_panel.get_caption() == "caption for b"
+
+    monkeypatch.setattr(
+        QMessageBox, "question",
+        staticmethod(lambda *a, **k: pytest.fail("no dialog for an empty result")),
+    )
+    win._on_caption_finished("")
+
+    assert win._current_image == images[1]
+    assert win._caption_panel.get_caption() == "caption for b"
+    assert win._unsaved_summary() == []
+    assert win._file_browser.get_item_status(images[0]) == "done"
+    assert read_caption(images[0]).text == "caption for a"
+    assert read_caption(images[1]).text == "caption for b"
+    messages = [n.message for n in win._notification_store.entries()]
+    assert any("No caption for a.jpg" in m for m in messages)
+
+
+def test_cancelled_batch_restores_done_generated_and_idle(win, images, tmp_path):
+    # _settle_item_status is what abort uses instead of blindly setting idle.
+    # A captioned file must keep its green check, a declined generation must
+    # stay "generated", and an untouched image must go idle — otherwise a
+    # later batch skip/overwrite decision is made from the wrong badge.
+    extra = tmp_path / "c.jpg"
+    extra.write_bytes(b"stub")
+    win._file_browser.add_images([extra])
+    caption_path(images[0]).write_text("already on disk", encoding="utf-8")
+    win._cache_caption(images[1], "generated, never saved", saved=False)
+    queued = [*images, extra]
+    for path in queued:
+        win._file_browser.set_item_status(path, "queued")
+    win._file_browser.set_item_status(images[0], "processing")
+    win._batch_active = True
+    win._batch_queue = list(queued)
+
+    win._cancel_generation()
+
+    assert win._file_browser.get_item_status(images[0]) == "done"
+    assert win._file_browser.get_item_status(images[1]) == "generated"
+    assert win._file_browser.get_item_status(extra) == "idle"
+    assert win._batch_active is False
 
 
 def test_an_empty_result_keeps_an_earlier_unsaved_caption(win, images, monkeypatch):
