@@ -47,8 +47,8 @@ If you are on V1.4.3, this is a big one. Fixes for most of the 66 defects a
 full-repository audit verified landed after V1.4.3 was tagged and were never
 released as a version, so they reach you here — together with two defects
 found while building the next feature and a security update to the image
-library. (A ZIP of `main` downloaded after 2026-09-15 already contains the
-audit fixes, although it still reports V1.4.3.)
+library. (If you downloaded with the green button after 2026-09-15, you
+already have the audit fixes, although the app still says V1.4.3.)
 
 - **Security update — re-run setup once.** Pillow, one of the libraries that
   open your images, now has to be 12.3.0 or newer: 12.2.0 has 13 known

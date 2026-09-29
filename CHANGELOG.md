@@ -171,8 +171,12 @@ requirements.txt` again inside the venv.
   test count differs from the suite, and the release job reads
   `gui/version.py` with the same pattern as the guard, so a quoting change
   can no longer pass CI and then fail the release (#34).
+
+### Changed — release and CI (this release)
+
 - The Linux test job installs `requirements.txt` instead of repeating its
-  pins, so CI resolves and tests the same floors and caps users get.
+  pins, so CI resolves the same ranges users install from: the newest version
+  each range allows, which is what a fresh setup gets.
 - Every release now carries `QWEN3-VL-Captioner.zip`, built from the tagged
   commit, under a name that never changes, so
   `releases/latest/download/QWEN3-VL-Captioner.zip` always serves the newest
