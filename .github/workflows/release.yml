@@ -23,6 +23,13 @@ jobs:
   release:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      # GitHub redirects releases/latest/download/<this name> to the file of
+      # that name on the newest published release, which gives the README's
+      # download button a link that only ever serves released code. Never
+      # rename it: once the button points there, every release must carry
+      # exactly this file or the button 404s.
+      DOWNLOAD_ZIP: QWEN3-VL-Captioner.zip
     steps:
       - uses: actions/checkout@v4
 
@@ -115,11 +122,51 @@ jobs:
           git tag -- "$TAG_NAME"
           git push origin "refs/tags/$TAG_NAME"
 
+      - name: Build the one-click download ZIP from the tagged commit
+        # HEAD is the tagged commit on both paths: a tag push checks the tag
+        # out, and manual dispatch has just tagged HEAD above. The folder
+        # inside carries the version, like GitHub's own source archive.
+        run: |
+          VERSION="${TAG_NAME#[Vv]}"
+          git archive --format=zip --prefix="qwen3vl-captioner-${VERSION}/" \
+            -o "$DOWNLOAD_ZIP" HEAD
+          python3 - "$DOWNLOAD_ZIP" "qwen3vl-captioner-${VERSION}/" <<'EOF'
+          import sys, zipfile
+
+          path, root = sys.argv[1], sys.argv[2]
+          names = set(zipfile.ZipFile(path).namelist())
+          needed = ["setup.bat", "setup.sh", "run.bat", "run.sh", "app.py"]
+          missing = [n for n in needed if root + n not in names]
+          if missing:
+              print(f"::error::{path} is missing {missing} under {root}")
+              sys.exit(1)
+          print(f"{path}: {len(names)} entries under {root}")
+          EOF
+
       - name: Publish the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+        # gh creates the release as a draft, uploads the ZIP, and publishes
+        # only after the upload succeeds (deleting the draft if it fails),
+        # so a published — immutable — release never lacks the button's file.
         run: |
           gh release create "$TAG_NAME" \
             --title "Qwen3-VL Captioner $TAG_NAME" \
             --notes-file RELEASE_NOTES.md \
-            --verify-tag
+            --verify-tag \
+            "$DOWNLOAD_ZIP"
+
+      - name: Confirm the fixed-name download URL now serves this release
+        run: |
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/${DOWNLOAD_ZIP}"
+          for attempt in 1 2 3 4 5 6; do
+            loc=$(curl -sI "$URL" | tr -d '\r' | awk 'tolower($1)=="location:" {print $2; exit}')
+            if [[ "$loc" == */releases/download/"${TAG_NAME}"/"${DOWNLOAD_ZIP}" ]] \
+                && curl -sfIL -o /dev/null "$URL"; then
+              echo "releases/latest/download/${DOWNLOAD_ZIP} serves ${TAG_NAME}: ${loc}"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::releases/latest/download/${DOWNLOAD_ZIP} does not serve ${TAG_NAME} (it redirects to '${loc}'). Check that this release is marked Latest."
+          exit 1

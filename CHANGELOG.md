@@ -159,6 +159,13 @@ Pillow until then.
   test count differs from the suite, and the release job reads
   `gui/version.py` with the same pattern as the guard, so a quoting change
   can no longer pass CI and then fail the release (#34).
+- Every release now carries `QWEN3-VL-Captioner.zip`, built from the tagged
+  commit, under a name that never changes, so
+  `releases/latest/download/QWEN3-VL-Captioner.zip` always serves the newest
+  published release. The release job refuses to publish if the ZIP lacks
+  the setup or run scripts or `app.py`, and checks afterwards that the link
+  resolves to the new release. The README's download button still links to
+  `main` in this release.
 
 ### Tests
 
