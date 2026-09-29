@@ -76,11 +76,23 @@ images (OCR, chart-reading and fine-detail cases) with no caption regression.
   families still fall back along their shared ChatML lineage; a Gemma family
   now raises an error naming the missing handler. (Unreachable on the pinned
   wheel, which ships all of them.)
+- **An unrecognised `chat_family` fell through to a Qwen handler.** A key
+  missing from the handler map (a registry typo, or a value from a newer
+  build) skipped the Gemma guard and reached the ChatML fallback, applying a
+  Qwen template to whatever the file actually is. It now raises a
+  `ValueError` naming the known families. Filename inference only ever
+  produces a known key, so nothing that loaded before is refused.
 - **The opaque-constructor retry chain treated any `TypeError` as an
   unsupported keyword.** A handler rejecting the flag *combination* in its
   own body would be retried until some narrower set got past the raise,
-  silently accepting a construction it meant to refuse. Only a
-  "unexpected keyword argument" error now drops a flag.
+  silently accepting a construction it meant to refuse. Only an error that
+  rejects a keyword now drops a flag, recognised in every spelling CPython
+  uses for it. A Python callable says "unexpected keyword argument", but a C
+  extension type says "invalid keyword argument" or "takes no keyword
+  arguments", and extension types are the opaque constructors this chain
+  exists for. Matching only the first spelling had left it dead there: the
+  first attempt raised, the narrower flag sets were never tried, and a build
+  that could have loaded the model did not.
 - **Asking for every frame of a short clip silently dropped most of them.**
   `_midpoint_indices` rounded `(i+0.5)*total/n`, and Python's `round()` breaks
   ties to even — so whenever `total == num_frames` the midpoints 0.5, 1.5,
@@ -105,6 +117,19 @@ images (OCR, chart-reading and fine-detail cases) with no caption regression.
   frames in both scans and between frames while encoding; it raises
   `VideoCancelled`, which each engine turns into the same `""` a cancel
   during generation produces.
+- **A seek that reported success without moving was trusted.**
+  `cap.set(CAP_PROP_POS_FRAMES, idx)` returning True does not prove the
+  decoder moved; some backends and containers accept the seek and stay put.
+  The reads that followed decoded consecutive frames from wherever the
+  decoder sat, and because the count came out right neither the
+  short-sample check nor the refused-seek check fired: the model was handed
+  a cluster of near-identical frames described as spanning the whole clip.
+  The position is now read back after every seek and must land within half
+  the tightest gap between the sampled indices, with no fixed floor (one
+  wide enough for a keyframe snap on a film would be wider than a short clip
+  itself). A miss skips that index, so the sample comes up short and the
+  sequential pass re-takes it; when no index is reachable at all, the
+  container is treated as one that cannot seek.
 
 ### Added (engine only — no GUI entry point)
 - **Video captioning in the engine.** `.mp4`, `.mov`, `.mkv`, `.webm`, `.avi`
@@ -138,8 +163,8 @@ images (OCR, chart-reading and fine-detail cases) with no caption regression.
   then *is* the caption, usually exhausting the token budget before any
   description appears. Thinking is now disabled at construction, and a
   leading `<think>`/thought-channel block is stripped from the result if one
-  appears anyway. An unclosed block is left intact rather than silently
-  saving an empty sidecar.
+  appears anyway. A response that is nothing but reasoning, closed or not,
+  yields no caption and is never saved (see the review findings above).
 - **Six of the eleven Gemma-4 quants downloaded without a vision encoder.**
   The `P` of a "pure" quant (`Q6_K_P`) was not recognised as part of the
   quant tag, so those builds' identity key ended in a stray `p` and never
