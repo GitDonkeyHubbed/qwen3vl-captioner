@@ -569,7 +569,14 @@ def test_batch_explains_an_empty_result_in_the_bell(win, images, monkeypatch):
 
 
 def _finish_with_an_empty_result(win, image, monkeypatch, *, batch):
+    if batch:
+        # As _process_next_batch_item does before it selects the image: the
+        # badge reads "Captioning..." until the result settles it, and
+        # _on_batch_complete never resets it, so the result must.
+        win._file_browser.set_item_status(image, "processing")
     win._on_image_selected(image)
+    if batch:
+        assert win._file_browser.get_item_status(image) == "processing"
     win._caption_worker = _FakeWorker(image)
     win._is_generating = True
     win._batch_active = batch
@@ -622,6 +629,29 @@ def test_export_writes_no_sidecar_for_an_empty_result(win, images, monkeypatch):
     assert shown == ["Nothing to Export"]
     assert read_caption(images[0]).exists is False
     assert win._file_browser.get_item_status(images[0]) == "idle"
+
+
+def test_an_empty_result_keeps_an_earlier_unsaved_caption(win, images, monkeypatch):
+    # The user declined to save a first caption, then an "Overwrite all"
+    # batch got nothing for the image. The declined caption is still the
+    # only copy of it: the badge must stay "generated", not wear the green
+    # check the untouched sidecar would give it, and the box and the close
+    # warning must still have that caption.
+    caption_path(images[0]).write_text("a good existing caption", encoding="utf-8")
+    win._on_image_selected(images[0])
+    win._caption_worker = _FakeWorker(images[0])
+    win._is_generating = True
+    monkeypatch.setattr(win._settings_panel, "get_auto_save", lambda: False)
+    _answer(monkeypatch, QMessageBox.StandardButton.No)
+    win._on_caption_finished("a first caption, declined")
+
+    _finish_with_an_empty_result(win, images[0], monkeypatch, batch=True)
+
+    assert win._file_browser.get_item_status(images[0]) == "generated"
+    assert win._caption_panel.get_caption() == "a first caption, declined"
+    assert win._load_caption(images[0]) == "a first caption, declined"
+    assert win._unsaved_summary() == ["a.jpg"]
+    assert read_caption(images[0]).text == "a good existing caption"
 
 
 # ── Cache freshness ─────────────────────────────────────────────────────

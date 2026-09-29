@@ -87,7 +87,7 @@ audit fixes, although it still reports V1.4.3.)
   UI thread, zoom no longer re-scales the full-resolution image on every wheel
   notch, and Windows downloads no longer write gigabytes of zeros before
   starting.
-- Test suite grew to **370 tests** (143 at the V1.4.3 tag), and CI now fails if this README's test count drifts from the suite. Pull-request CI gained Ruff, GitGuardian secret scanning and Dependabot, dropped two unvetted third-party actions, and pins the one third-party action it still uses to a commit.
+- Test suite grew to **371 tests** (143 at the V1.4.3 tag), and CI now fails if this README's test count drifts from the suite. Pull-request CI gained Ruff, GitGuardian secret scanning and Dependabot, dropped two unvetted third-party actions, and pins the one third-party action it still uses to a commit.
 
 Known gaps: on datasets of a few thousand images, clearing a search filter and
 Clear All are still slow, and the file browser still builds a widget per image.

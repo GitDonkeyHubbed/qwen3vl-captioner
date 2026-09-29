@@ -183,7 +183,7 @@ requirements.txt` again inside the venv.
 
 ### Tests
 
-- 370 collected, up from 143 at 1.4.3. CI runs the suite on Linux; it also
+- 371 collected, up from 143 at 1.4.3. CI runs the suite on Linux; it also
   passed natively on Windows when #34 was validated (311 passed, 2 POSIX-only
   skips).
 - Both defects in the first section were reproduced before being changed.
