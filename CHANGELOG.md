@@ -16,11 +16,12 @@ clear 13 Pillow advisories. None of it is in the 1.4.3 release build: users
 of that build get all of it at once, because `main` has been carrying it
 untagged.
 
-### Fixed — captions that should not exist
+### Fixed — a fake caption and a skipped encoder download
 
-Both found while developing the video engine. Neither raises an error; both
-put wrong data in a training set silently, which is why neither showed up in
-normal use.
+Both found while developing the video engine. The first put wrong data in a
+training set without raising an error, which is why it did not show up in
+normal use. The second was a missed download: Load Model had to ask for an
+encoder that should have arrived with the model.
 
 - **Prefix/suffix manufactured a caption out of a failed generation.**
   `apply_prefix_suffix("")` returned the affixes joined around nothing —
@@ -30,17 +31,17 @@ normal use.
   unattended, so every image the model returned nothing for received the same
   stock string and was counted in the "saved" total. An empty caption now
   stays empty at the single point both engines funnel through, so the
-  existing falsy-caption guard refuses it and the batch summary counts it as
-  failed.
+  existing falsy-caption guard refuses it, the batch summary counts it as
+  failed, and the notification bell says the model returned nothing for that
+  image.
 - **Downloading a second model skipped its vision encoder.** Both gates
   that decide whether to queue an `mmproj` asked
   `find_mmproj_file(target_dir)` with no model, which accepts whichever
   encoder is already in the folder. The registry ships four GGUF models,
   each with its own encoder file, so a user who downloaded a second one into
-  the same folder did not get its encoder: Load Model then stopped to ask
-  for it, and the model opened as a browsed file could be paired with the
-  other model's encoder. Both gates now match the registry's exact
-  `mmproj_filename`; an encoder genuinely already present is still skipped.
+  the same folder did not get its encoder, and Load Model had to stop and
+  ask for it. Both gates now match the registry's exact `mmproj_filename`;
+  an encoder genuinely already present is still skipped.
 
 ### Fixed — caption safety (#34)
 
@@ -115,7 +116,8 @@ normal use.
 
 Re-run `setup.bat` / `./setup.sh` to pick these up: setup recreates the venv
 and installs from `requirements.txt`, so an existing install keeps its old
-Pillow until then.
+Pillow until then. Manual (Linux) installs: run `pip install -r
+requirements.txt` again inside the venv.
 
 - **Pillow floor raised from 12.2.0 to 12.3.0.** 12.2.0 is affected by 13
   advisories (10 HIGH, 3 MODERATE, each with its own CVE), all fixed in
@@ -125,8 +127,14 @@ Pillow until then.
   `ImageCmsTransform.apply()`; an out-of-bounds read on McIdas AREA files;
   denial of service through PDF streams, EPS files and tiled JPEG 2000; heap
   data copied into TGA RLE output; and command injection in the Windows
-  image-viewer helper. 12.3.0 no longer publishes manylinux2014 wheels, so
-  the experimental Linux path needs glibc 2.27 or newer for a prebuilt wheel.
+  image-viewer helper. 12.3.0 no longer publishes manylinux2014 wheels (its
+  oldest Linux wheels need glibc 2.27); that does not narrow the experimental
+  Linux path, which already needed glibc 2.28 for PyQt6's Qt wheels.
+- **The install doctor checks Pillow.** `diagnose.bat` (or
+  `.venv/bin/python doctor.py`) reports a Pillow older than 12.3.0 as a
+  problem, with the command that updates it. Unzipping a new version over an
+  old folder keeps the old venv, and the app starts normally on the old
+  Pillow, so nothing else would say so.
 - **`huggingface-hub` is now `>=0.32,<3`.** 2.0.0 is the current release;
   the app's three hub calls (`hf_hub_download`, `HfApi.list_repo_files`,
   `hf_hub_url`) were checked on both 1.33.0 and 2.0.0, and the range is
@@ -159,6 +167,8 @@ Pillow until then.
   test count differs from the suite, and the release job reads
   `gui/version.py` with the same pattern as the guard, so a quoting change
   can no longer pass CI and then fail the release (#34).
+- The Linux test job installs `requirements.txt` instead of repeating its
+  pins, so CI resolves and tests the same floors and caps users get.
 - Every release now carries `QWEN3-VL-Captioner.zip`, built from the tagged
   commit, under a name that never changes, so
   `releases/latest/download/QWEN3-VL-Captioner.zip` always serves the newest
@@ -169,13 +179,17 @@ Pillow until then.
 
 ### Tests
 
-- 362 collected, up from 143 at 1.4.3. CI runs the suite on Linux; it also
+- 367 collected, up from 143 at 1.4.3. CI runs the suite on Linux; it also
   passed natively on Windows when #34 was validated (311 passed, 2 POSIX-only
   skips).
 - Both defects in the first section were reproduced before being changed.
-  Ten of the thirteen new tests fail against the pre-fix code; the other
-  three check the opposite direction (an encoder already on disk is not
+  Ten of the thirteen tests added for them fail against the pre-fix code; the
+  other three check the opposite direction (an encoder already on disk is not
   downloaded again, a real caption is left alone) and pass either way.
+- A batch test checks that an empty result names its image in the
+  notification bell, and `tests/test_doctor.py` (new) checks the doctor's
+  Pillow warning and that its floor matches `requirements.txt` and
+  `pyproject.toml`.
 - `tests/test_mmproj_queue.py` (new) drives the real `MainWindow` offscreen
   with the download stubbed, covering both encoder-queue gates in both
   directions. The two models are selected out of `MODEL_REGISTRY` rather

@@ -550,6 +550,24 @@ def test_batch_reports_failures_instead_of_claiming_success(win, images, monkeyp
     assert "1 could not be written" in shown["text"]
 
 
+def test_batch_explains_an_empty_result_in_the_bell(win, images, monkeypatch):
+    # _auto_save_caption refuses an empty caption before it posts anything,
+    # so an image the model returned nothing for was counted as failed while
+    # the summary sent the user to a notification bell with no entry for it.
+    win._on_image_selected(images[0])
+    win._caption_worker = _FakeWorker(images[0])
+    win._is_generating = True
+    win._batch_active = True
+    monkeypatch.setattr(win, "_process_next_batch_item", lambda: None)
+
+    win._on_caption_finished("")
+
+    assert win._batch_failed == 1 and win._batch_saved == 0
+    assert read_caption(images[0]).exists is False
+    messages = [n.message for n in win._notification_store.entries()]
+    assert any("No caption for a.jpg" in m for m in messages)
+
+
 # ── Cache freshness ─────────────────────────────────────────────────────
 
 def test_cache_is_revalidated_against_disk(win, images):

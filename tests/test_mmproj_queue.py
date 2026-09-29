@@ -1,12 +1,13 @@
 """The queued vision-encoder download must be keyed to the model being downloaded.
 
-Downloading a second model family into a folder that already holds another
-family's mmproj skipped the new encoder entirely: both gates asked
+Downloading a second model into a folder that already holds another model's
+mmproj skipped the new model's encoder: both gates asked
 ``find_mmproj_file(target_dir)`` with no model, which accepts whichever
-encoder is already there. The new model then loaded against a foreign vision
-tower, which llama.cpp does not reject cleanly.
+encoder is already there. Load Model then had to stop and ask for the
+missing encoder, because a registry model only loads with its exact
+``mmproj_filename``.
 
-The registry ships four GGUF families with four different ``mmproj_filename``
+The registry ships four GGUF models with four different ``mmproj_filename``
 values, so this is reachable with nothing but the shipped models.
 
 The window is real; the download itself is stubbed, so nothing touches the
@@ -38,8 +39,8 @@ def win(qapp, tmp_path):
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
 
 
-def _two_families():
-    """A GGUF entry plus a *different* family's encoder filename.
+def _two_models():
+    """A GGUF entry plus a *different* model's encoder filename.
 
     Picked from the registry rather than hardcoded so renaming a model or
     swapping a repo cannot quietly turn this test into a no-op.
@@ -53,7 +54,7 @@ def _two_families():
         for _, other in entries:
             if other["mmproj_filename"] != info["mmproj_filename"]:
                 return label, info, other["mmproj_filename"]
-    pytest.skip("registry has no two GGUF families with distinct encoders")
+    pytest.skip("registry has no two GGUF models with distinct encoders")
 
 
 @pytest.fixture
@@ -81,10 +82,10 @@ def downloads(win, monkeypatch):
     return started
 
 
-def test_new_family_still_queues_its_own_encoder(win, downloads, tmp_path):
-    """A foreign mmproj already on disk must not satisfy this model."""
-    label, info, foreign_mmproj = _two_families()
-    (tmp_path / foreign_mmproj).write_bytes(b"x")
+def test_second_model_still_queues_its_own_encoder(win, downloads, tmp_path):
+    """Another model's mmproj already on disk must not satisfy this one."""
+    label, info, other_mmproj = _two_models()
+    (tmp_path / other_mmproj).write_bytes(b"x")
 
     win._download_model(label)
 
@@ -95,7 +96,7 @@ def test_new_family_still_queues_its_own_encoder(win, downloads, tmp_path):
 
 def test_the_models_own_encoder_is_not_downloaded_twice(win, downloads, tmp_path):
     """Exact-name match is still a skip — no redundant re-download."""
-    label, info, _ = _two_families()
+    label, info, _ = _two_models()
     (tmp_path / info["mmproj_filename"]).write_bytes(b"x")
 
     win._download_model(label)
@@ -120,11 +121,11 @@ def test_chained_encoder_download_rechecks_by_exact_name(
 
     This is the second gate: the model download can take an hour, so the
     folder is re-examined before the encoder is fetched. It asked the same
-    model-less question, so the foreign encoder skipped it here too.
+    model-less question, so the other model's encoder skipped it here too.
     """
     _run_timers_immediately(monkeypatch)
-    _, info, foreign_mmproj = _two_families()
-    (tmp_path / foreign_mmproj).write_bytes(b"x")
+    _, info, other_mmproj = _two_models()
+    (tmp_path / other_mmproj).write_bytes(b"x")
     win._pending_mmproj = (info["repo_id"], info["mmproj_filename"], tmp_path)
 
     win._on_download_finished(str(tmp_path / info["filename"]))
@@ -138,7 +139,7 @@ def test_chain_skips_when_the_exact_encoder_arrived_meanwhile(
 ):
     """The re-check still prevents a redundant second download."""
     _run_timers_immediately(monkeypatch)
-    _, info, _ = _two_families()
+    _, info, _ = _two_models()
     (tmp_path / info["mmproj_filename"]).write_bytes(b"x")
     win._pending_mmproj = (info["repo_id"], info["mmproj_filename"], tmp_path)
 

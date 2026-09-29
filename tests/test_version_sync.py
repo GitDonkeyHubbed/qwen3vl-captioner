@@ -63,6 +63,10 @@ def test_readme_title_and_badge_match_app_version():
     )
     asset = re.search(r"^\s*DOWNLOAD_ZIP:\s*(\S+)\s*$", workflow, re.MULTILINE)
     assert asset, "DOWNLOAD_ZIP not found in release.yml"
+    assert asset.group(1) == "QWEN3-VL-Captioner.zip", (
+        f"release.yml renamed the download ZIP to {asset.group(1)!r}; "
+        "releases/latest/download/QWEN3-VL-Captioner.zip depends on the name"
+    )
     publish = re.search(r"gh release create(?:[^\n]*\\\n)*[^\n]*", workflow)
     assert publish and '"$DOWNLOAD_ZIP"' in publish.group(0), (
         "release.yml must attach $DOWNLOAD_ZIP to every release it publishes"

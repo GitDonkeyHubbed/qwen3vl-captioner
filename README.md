@@ -41,7 +41,7 @@
 
 ---
 
-## 🧹 What's New in V1.4.4 — Everything That Was Sitting Untagged, Plus Two Dataset Fixes
+## 🧹 What's New in V1.4.4 — Audit Fixes, a Security Update and Two Bug Fixes
 
 If you are on V1.4.3, this is a big one. Fixes for most of the 66 defects a
 full-repository audit verified landed after V1.4.3 was tagged and were never
@@ -54,7 +54,10 @@ audit fixes, although it still reports V1.4.3.)
   open your images, now has to be 12.3.0 or newer: 12.2.0 has 13 known
   vulnerabilities (10 rated HIGH). Run `setup.bat` / `./setup.sh` again in
   your app folder to update an existing install; your models and settings
-  are kept.
+  are kept. (Manual Linux installs: run `pip install -r requirements.txt`
+  again inside your venv.) The install check (`diagnose.bat`, or
+  `.venv/bin/python doctor.py` on macOS) now warns if the old Pillow is still
+  installed.
 - **Your hand-edited captions survive.** Editing a caption and then changing
   the selection, regenerating, or hitting Clear All used to destroy the edit
   with no prompt. Every overwrite path now asks Save / Discard / Cancel.
@@ -66,23 +69,25 @@ audit fixes, although it still reports V1.4.3.)
   suffix configured, an image the model returned nothing for was saved as just
   the affixes — `photo of  high quality` — and counted as a success. In a batch
   run nobody is watching, so every failed image landed the same stock string in
-  your training set. Empty stays empty now, and the summary counts it failed.
+  your training set. Empty stays empty now, the summary counts it failed, and
+  the notification bell names the image.
 - **A second model downloads its own vision encoder.** Downloading a second
   model into your models folder used to skip its encoder, so Load Model had
   to stop and ask for it.
 - **Mismatched encoders are refused, not guessed at.** Pairing is now
-  model- and family-aware instead of grabbing whichever `mmproj` was in the folder —
-  the mismatch that crashed on the first caption.
-- **"Re-run setup" actually works.** `setup.bat` no longer aborts with
-  "Failed to install uv" right after installing uv, the venv is re-creatable,
-  and uv installs correctly from PowerShell 7. Verified on clean Windows.
+  model- and family-aware instead of grabbing whichever encoder file was in the
+  folder — the mismatch that crashed on the first caption.
+- **"Re-run setup" actually works.** `setup.bat` no longer stops with
+  "Failed to install uv" right after installing it, running setup again over
+  an existing install works, and it also works when started from PowerShell 7.
+  Verified on clean Windows.
 - **Light mode is usable.** Controls that rendered white-on-white are fixed,
   and switching theme at runtime repaints instead of leaving frozen colours.
 - **Less freezing on big folders and big photos** — thumbnails decode off the
   UI thread, zoom no longer re-scales the full-resolution image on every wheel
   notch, and Windows downloads no longer write gigabytes of zeros before
   starting.
-- Test suite grew to **362 tests** (143 at the V1.4.3 tag), and CI now fails if this README's test count drifts from the suite. Pull-request CI gained Ruff, GitGuardian secret scanning and Dependabot, dropped two unvetted third-party actions, and pins the one third-party action it still uses to a commit.
+- Test suite grew to **367 tests** (143 at the V1.4.3 tag), and CI now fails if this README's test count drifts from the suite. Pull-request CI gained Ruff, GitGuardian secret scanning and Dependabot, dropped two unvetted third-party actions, and pins the one third-party action it still uses to a commit.
 
 Known gaps: on datasets of a few thousand images, clearing a search filter and
 Clear All are still slow, and the file browser still builds a widget per image.

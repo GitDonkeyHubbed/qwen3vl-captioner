@@ -1424,9 +1424,9 @@ class MainWindow(QMainWindow):
         # Queue the matching mmproj to auto-download right after the model.
         # Ask for *this model's* encoder by name. Asking find_mmproj_file()
         # with no model returns whichever encoder sorts first in the folder,
-        # so downloading a second model family into a directory that already
-        # held one skipped its encoder entirely and left it to load against a
-        # mismatched vision tower.
+        # so downloading a second model into a directory that already held
+        # another model's encoder skipped its own, and Load Model then had to
+        # stop and ask for it.
         self._pending_mmproj = None
         if not is_mlx and info.get("mmproj_filename"):
             if not model_file_exists(target_dir, info["mmproj_filename"]):
@@ -1517,7 +1517,7 @@ class MainWindow(QMainWindow):
 
         # Chain the matching vision encoder download if one was queued.
         # Same exact-name check as the queueing gate above: a different
-        # family's encoder sitting in the folder must not satisfy this one.
+        # model's encoder sitting in the folder must not satisfy this one.
         if self._pending_mmproj and "mmproj" not in filename.lower():
             from gui.model_download_manager import model_file_exists
 
@@ -1971,6 +1971,15 @@ class MainWindow(QMainWindow):
                 self._batch_saved += 1
             else:
                 self._batch_failed += 1
+                if not caption:
+                    # _auto_save_caption refuses an empty caption without a
+                    # notification of its own; the batch summary points the
+                    # user at the bell, so say why this image failed there.
+                    name = worker_path.name if worker_path else "an image"
+                    self._notify(
+                        f"No caption for {name}: the model returned nothing",
+                        "error",
+                    )
             self._process_next_batch_item()
         elif self._settings_panel.get_auto_save():
             self._auto_save_caption(worker_path, caption)
@@ -2258,9 +2267,10 @@ class MainWindow(QMainWindow):
                 self, "Batch Finished With Errors",
                 f"Batch finished — {saved} caption(s) saved as .txt files, "
                 f"but {failed} could not be written.\n\n"
-                "See the notification bell for the individual errors; those "
-                "captions are still in the app and can be saved from the "
-                "caption box.",
+                "See the notification bell for each one. A caption that "
+                "failed to save is still in the app and can be saved from "
+                "the caption box; an image the model returned no caption "
+                "for needs to be generated again.",
             )
         else:
             QMessageBox.information(
