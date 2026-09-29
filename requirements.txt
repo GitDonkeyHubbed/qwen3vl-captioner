@@ -2,8 +2,8 @@
 # For llama-cpp-python with CUDA, see README.md for special instructions.
 
 PyQt6>=6.7
-Pillow>=12.2.0
-huggingface-hub>=0.32
+Pillow>=12.3.0  # 12.2.0 and older carry 13 advisories fixed in 12.3.0
+huggingface-hub>=0.32,<3  # tested on 1.x and 2.x; capped below the next major
 hf_xet>=1.0  # Rust Xet client; high-performance hf_hub_download/snapshot_download
 numpy>=1.26
 nvidia-ml-py>=12.0  # official NVML bindings; provides the `pynvml` module without the deprecated-package FutureWarning

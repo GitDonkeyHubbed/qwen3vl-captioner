@@ -397,7 +397,9 @@ source .venv/bin/activate
 pip install -r requirements.txt
 
 # For CUDA on Linux (JamePeng's fork also publishes linux cu1xx wheels):
-CMAKE_ARGS="-DGGML_CUDA=on" pip install "llama_cpp_python @ git+https://github.com/JamePeng/llama-cpp-python"
+# Pinned to the same fork commit setup.sh builds on macOS
+# (tag v0.3.40-Metal-macos-20260607), so you get the tested source:
+CMAKE_ARGS="-DGGML_CUDA=on" pip install "llama_cpp_python @ git+https://github.com/JamePeng/llama-cpp-python@12861b918f67b62f78f28c5cabb7223f766e1097"
 
 python app.py
 ```

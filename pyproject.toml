@@ -9,8 +9,8 @@ dependencies = [
     # needs JamePeng's fork wheels, installed by setup.bat / setup.sh
     "llama-cpp-python>=0.3.0",
     "PyQt6>=6.7",
-    "Pillow>=12.2.0",
-    "huggingface-hub>=0.32",
+    "Pillow>=12.3.0",
+    "huggingface-hub>=0.32,<3",
     "hf_xet>=1.0",
     "numpy>=1.26",
     "nvidia-ml-py>=12.0",
@@ -25,7 +25,9 @@ mlx = ["mlx-vlm>=0.6"]
 qwen3vl-captioner = "app:main"
 
 [build-system]
-requires = ["setuptools>=75.0"]
+# Older setuptools carries a path-traversal and an sdist-exclusion advisory
+# (fixed in 78.1.1 and 83.0.0); the 1.4.4 wheel build was verified on 84.0.0.
+requires = ["setuptools>=84.0.0"]
 build-backend = "setuptools.build_meta"
 
 # Explicit discovery: with app.py/doctor.py at the root next to two packages,
