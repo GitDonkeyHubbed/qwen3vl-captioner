@@ -33,7 +33,11 @@ encoder that should have arrived with the model.
   stays empty at the single point both engines funnel through, so the
   existing falsy-caption guard refuses it, the batch summary counts it as
   failed, and the notification bell says the model returned nothing for that
-  image.
+  image. In 1.4.3 an empty result with no prefix or suffix was also cached as
+  a caption, and Export then wrote it out as an empty `.txt`, over a good one
+  too. Now nothing is cached for it: the image keeps the caption and badge it
+  had, Export writes nothing for it, and closing the app does not warn about
+  it.
 - **Downloading a second model skipped its vision encoder.** Both gates
   that decide whether to queue an `mmproj` asked
   `find_mmproj_file(target_dir)` with no model, which accepts whichever
@@ -179,17 +183,18 @@ requirements.txt` again inside the venv.
 
 ### Tests
 
-- 367 collected, up from 143 at 1.4.3. CI runs the suite on Linux; it also
+- 370 collected, up from 143 at 1.4.3. CI runs the suite on Linux; it also
   passed natively on Windows when #34 was validated (311 passed, 2 POSIX-only
   skips).
 - Both defects in the first section were reproduced before being changed.
   Ten of the thirteen tests added for them fail against the pre-fix code; the
   other three check the opposite direction (an encoder already on disk is not
   downloaded again, a real caption is left alone) and pass either way.
-- A batch test checks that an empty result names its image in the
-  notification bell, and `tests/test_doctor.py` (new) checks the doctor's
-  Pillow warning and that its floor matches `requirements.txt` and
-  `pyproject.toml`.
+- Caption-workflow tests check that an empty result names its image in the
+  notification bell and leaves the image's caption, badge and sidecar as
+  they were, including through Export and the unsaved-captions check on
+  close. `tests/test_doctor.py` (new) checks the doctor's Pillow warning and
+  that its floor matches `requirements.txt` and `pyproject.toml`.
 - `tests/test_mmproj_queue.py` (new) drives the real `MainWindow` offscreen
   with the download stubbed, covering both encoder-queue gates in both
   directions. The two models are selected out of `MODEL_REGISTRY` rather

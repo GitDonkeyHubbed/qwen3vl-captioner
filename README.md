@@ -69,8 +69,8 @@ audit fixes, although it still reports V1.4.3.)
   suffix configured, an image the model returned nothing for was saved as just
   the affixes — `photo of  high quality` — and counted as a success. In a batch
   run nobody is watching, so every failed image landed the same stock string in
-  your training set. Empty stays empty now, the summary counts it failed, and
-  the notification bell names the image.
+  your training set. Empty stays empty now: the image keeps the caption it
+  had, the summary counts it failed, and the notification bell names it.
 - **A second model downloads its own vision encoder.** Downloading a second
   model into your models folder used to skip its encoder, so Load Model had
   to stop and ask for it.
@@ -87,7 +87,7 @@ audit fixes, although it still reports V1.4.3.)
   UI thread, zoom no longer re-scales the full-resolution image on every wheel
   notch, and Windows downloads no longer write gigabytes of zeros before
   starting.
-- Test suite grew to **367 tests** (143 at the V1.4.3 tag), and CI now fails if this README's test count drifts from the suite. Pull-request CI gained Ruff, GitGuardian secret scanning and Dependabot, dropped two unvetted third-party actions, and pins the one third-party action it still uses to a commit.
+- Test suite grew to **370 tests** (143 at the V1.4.3 tag), and CI now fails if this README's test count drifts from the suite. Pull-request CI gained Ruff, GitGuardian secret scanning and Dependabot, dropped two unvetted third-party actions, and pins the one third-party action it still uses to a commit.
 
 Known gaps: on datasets of a few thousand images, clearing a search filter and
 Clear All are still slow, and the file browser still builds a widget per image.

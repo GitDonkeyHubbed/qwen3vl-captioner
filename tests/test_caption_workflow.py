@@ -568,6 +568,62 @@ def test_batch_explains_an_empty_result_in_the_bell(win, images, monkeypatch):
     assert any("No caption for a.jpg" in m for m in messages)
 
 
+def _finish_with_an_empty_result(win, image, monkeypatch, *, batch):
+    win._on_image_selected(image)
+    win._caption_worker = _FakeWorker(image)
+    win._is_generating = True
+    win._batch_active = batch
+    monkeypatch.setattr(win, "_process_next_batch_item", lambda: None)
+    monkeypatch.setattr(
+        QMessageBox, "question",
+        staticmethod(lambda *a, **k: pytest.fail("no dialog for an empty result")),
+    )
+    win._on_caption_finished("")
+
+
+@pytest.mark.parametrize("batch", [True, False], ids=["batch", "single"])
+def test_an_empty_result_leaves_the_image_as_it_was(win, images, monkeypatch, batch):
+    # An empty result was cached as an unsaved generated caption: the box
+    # went blank over a good sidecar, the badge lost its green check,
+    # closing the app warned about a caption that did not exist, and Export
+    # offered to overwrite the good sidecar with an empty file.
+    caption_path(images[0]).write_text("a good existing caption", encoding="utf-8")
+
+    _finish_with_an_empty_result(win, images[0], monkeypatch, batch=batch)
+
+    assert win._unsaved_summary() == []
+    assert win._file_browser.get_item_status(images[0]) == "done"
+    assert win._caption_panel.get_caption() == "a good existing caption"
+    assert win._load_caption(images[0]) == "a good existing caption"
+    messages = [n.message for n in win._notification_store.entries()]
+    assert any("No caption for a.jpg" in m for m in messages)
+
+    conflicts = []
+    monkeypatch.setattr(QMessageBox, "exec", lambda box: conflicts.append(box.windowTitle()))
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: None))
+    win._export_all_captions()
+    assert conflicts == []
+    assert read_caption(images[0]).text == "a good existing caption"
+
+
+def test_export_writes_no_sidecar_for_an_empty_result(win, images, monkeypatch):
+    # Export treated the cached '' as a caption: it wrote a 0-byte sidecar,
+    # gave the image a green check and reported "Exported 1 caption files."
+    _finish_with_an_empty_result(win, images[0], monkeypatch, batch=True)
+    assert win._file_browser.get_item_status(images[0]) == "idle"
+
+    shown = []
+    monkeypatch.setattr(
+        QMessageBox, "information",
+        staticmethod(lambda parent, title, text, *a, **k: shown.append(title)),
+    )
+    win._export_all_captions()
+
+    assert shown == ["Nothing to Export"]
+    assert read_caption(images[0]).exists is False
+    assert win._file_browser.get_item_status(images[0]) == "idle"
+
+
 # ── Cache freshness ─────────────────────────────────────────────────────
 
 def test_cache_is_revalidated_against_disk(win, images):
