@@ -54,10 +54,11 @@ def test_readme_title_and_badge_match_app_version():
         f"README badge says {badge.group(1)} but APP_VERSION is {version}"
     )
 
-    # Every release carries a download ZIP under one fixed name, so
-    # releases/latest/download/<name> always serves the newest published
-    # release — the link the README's download button is meant to use.
-    # Dropping the attachment, or renaming it, would 404 that link.
+    # The big download button is part of the revision block too: it must
+    # serve the newest *published* release, never a branch. It linked to
+    # main.zip, so every merge reached users at once, released or not.
+    # The file name is single-sourced from release.yml, which attaches it
+    # to every release it publishes.
     workflow = (REPO / ".github" / "workflows" / "release.yml").read_text(
         encoding="utf-8"
     )
@@ -70,6 +71,27 @@ def test_readme_title_and_badge_match_app_version():
     publish = re.search(r"gh release create(?:[^\n]*\\\n)*[^\n]*", workflow)
     assert publish and '"$DOWNLOAD_ZIP"' in publish.group(0), (
         "release.yml must attach $DOWNLOAD_ZIP to every release it publishes"
+    )
+    repo = re.search(
+        r"""GITHUB_REPO\s*=\s*['"]([^'"]+)['"]""",
+        (REPO / "gui" / "version.py").read_text(encoding="utf-8"),
+    )
+    assert repo, "GITHUB_REPO not found in gui/version.py"
+    button = re.search(
+        r'<a href="([^"]+)">\s*<img src="https://img\.shields\.io/badge/[^"]*DOWNLOAD',
+        readme,
+    )
+    assert button, "README download button not found"
+    expected = (
+        f"https://github.com/{repo.group(1)}/releases/latest/download/"
+        f"{asset.group(1)}"
+    )
+    assert button.group(1) == expected, (
+        f"README download button links {button.group(1)!r}; it must be "
+        f"{expected!r} so users only ever get a published release"
+    )
+    assert "archive/refs/heads/" not in readme, (
+        "README links a branch archive, which ships unreleased code"
     )
 
 

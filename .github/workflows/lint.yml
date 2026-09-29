@@ -76,7 +76,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: HEAD-check all pinned wheel URLs
+      - name: HEAD-check all pinned wheel URLs and the README download button
         run: |
           python - <<'EOF'
           import re, sys, time, urllib.request
@@ -92,9 +92,22 @@ jobs:
           sys.path.insert(0, ".")
           from engine.cuda_setup import _WHEEL_TAGS
 
+          checks = [
+              (tag, template.replace("!CUDA_WHEEL!", tag).replace("%%2B", "%2B"))
+              for _, tag in _WHEEL_TAGS
+          ]
+          # The README download button resolves against the newest published
+          # release, so it can be checked here too: a release published
+          # without the button's ZIP would 404 every new user.
+          button = re.search(
+              r'<a href="([^"]+)">\s*<img src="https://img\.shields\.io/badge/[^"]*DOWNLOAD',
+              open("README.md", encoding="utf-8").read(),
+          )
+          assert button, "README download button not found"
+          checks.append(("README download button", button.group(1)))
+
           failures = []
-          for _, tag in _WHEEL_TAGS:
-              url = template.replace("!CUDA_WHEEL!", tag).replace("%%2B", "%2B")
+          for tag, url in checks:
               # Retry with backoff so a transient network hiccup / rate limit
               # doesn't fail CI when the URL hasn't actually rotted.
               last_exc = None
@@ -111,5 +124,5 @@ jobs:
                   failures.append(tag)
                   print(f"FAIL {tag}: {last_exc}\n     {url}")
           if failures:
-              sys.exit(f"wheel URL(s) no longer published: {', '.join(failures)}")
+              sys.exit(f"URL(s) no longer published: {', '.join(failures)}")
           EOF
