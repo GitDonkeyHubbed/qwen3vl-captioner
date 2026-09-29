@@ -84,6 +84,49 @@ def test_apply_prefix_suffix_strips_affix_whitespace():
     )
 
 
+# ── Affixes must never manufacture a caption out of a failed generation ──
+#
+# apply_prefix_suffix("") returned the prefix and suffix joined around
+# nothing — "photo of  high quality" — which is truthy, so _auto_save_caption
+# wrote it to the .txt sidecar and counted the image as saved. In a batch run
+# nobody sees the caption box, so every image the model failed on landed the
+# same stock string in the training set.
+
+def test_prefix_does_not_invent_a_caption_from_an_empty_result():
+    assert apply_prefix_suffix("", prefix="photo of") == ""
+
+
+def test_suffix_does_not_invent_a_caption_from_an_empty_result():
+    assert apply_prefix_suffix("", suffix="high quality") == ""
+
+
+def test_prefix_and_suffix_together_leave_an_empty_caption_empty():
+    assert apply_prefix_suffix("", prefix="photo of", suffix="high quality") == ""
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\n", "\t\n "])
+def test_no_whitespace_only_result_can_become_a_caption(blank):
+    """Whitespace is not content, whatever the affixes are."""
+    assert apply_prefix_suffix(blank, prefix="photo of", suffix="high quality") == ""
+
+
+def test_an_empty_caption_is_falsy_so_auto_save_refuses_it():
+    """The guarantee the sidecar write depends on, stated as a test.
+
+    _auto_save_caption returns False on a falsy caption and writes nothing.
+    That is the whole reason returning "" is the right answer here rather
+    than a bare prefix.
+    """
+    assert not apply_prefix_suffix("", prefix="photo of", suffix="high quality")
+
+
+def test_a_real_caption_is_unaffected_by_the_guard():
+    assert (
+        apply_prefix_suffix("a red car", prefix="photo of", suffix="high quality")
+        == "photo of a red car high quality"
+    )
+
+
 # ── Reasoning traces must never reach a .txt sidecar ─────────────────────
 
 def test_strip_reasoning_removes_a_think_block():
@@ -155,8 +198,8 @@ def test_clean_caption_does_not_resurrect_a_reasoning_only_response():
     """
     assert clean_caption("<think>examining the image</think>") == ""
     assert clean_caption("<think>a</think>   ") == ""
-    # The GUI shows "Nothing to save" for an empty caption, so this surfaces
-    # rather than silently writing a monologue.
+    # The GUI reports an empty result ("The model returned no caption") and
+    # saves nothing, so this surfaces rather than silently writing a monologue.
 
 
 def test_clean_caption_still_protects_a_prefix_only_caption():

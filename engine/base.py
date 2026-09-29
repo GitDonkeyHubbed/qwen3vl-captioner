@@ -194,12 +194,14 @@ def clean_caption(caption: str) -> str:
 def apply_prefix_suffix(caption: str, prefix: str = "", suffix: str = "") -> str:
     """Apply the user's fixed prefix/suffix to a cleaned caption.
 
-    An empty caption stays empty. Affixes decorate a description; with no
-    description there is nothing to decorate, and a configured prefix would
-    otherwise manufacture a truthy string ("photo of ") out of a generation
-    that produced nothing — which auto-save then writes to a sidecar as if it
-    were a caption. Guarding here rather than at each call site keeps the
-    invariant in one place for both backends and both caption methods.
+    An empty caption stays empty. Affixing a prefix to nothing manufactured a
+    caption out of a failed generation: with "photo of" configured, a model
+    that returned nothing produced "photo of  high quality", which is truthy,
+    so _auto_save_caption wrote it to the .txt sidecar. In a batch run nobody
+    is watching, so every failed image landed an identical stock string in the
+    training set and was counted as saved. The guard lives here, at the single
+    point both engines funnel through after clean_caption, rather than in each
+    backend.
     """
     if not caption.strip():
         return ""

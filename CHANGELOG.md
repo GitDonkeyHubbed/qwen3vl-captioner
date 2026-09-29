@@ -4,15 +4,20 @@ All notable changes to this project are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versions correspond to
 git tags (`V1.x.x`).
 
-## [Unreleased] — video captioning engine
+## [Unreleased] — video engine (targets 1.5.0)
 
 **Not a release, and not a user-facing feature yet.** This section covers the
 *engine* half of issue #26: video captioning exists in `engine/` and in the
 test suite, but no GUI code calls it — `caption_video()`, `first_frame()` and
 `is_video_file()` have no caller outside `engine/` and `tests/`. The app
-still captions images only, `APP_VERSION` stays at the released **1.4.3**,
+still captions images only, `APP_VERSION` stays at the released **1.4.4**,
 and the GUI wiring (video files in the picker, a "Frames per video" control,
 video thumbnails, video-aware batch runs) is part 2 of #26.
+
+Two fixes first written for this work shipped in 1.4.4 and are described
+there, not repeated here: the empty-caption guard in `apply_prefix_suffix`
+(which `caption_video()` passes through too) and the exact-name check that
+queues each model's own vision encoder.
 
 Validated by hand on an RTX 4080: frames arrive in temporal order, 16 frames
 take 9.1 s at 9.4 GB peak VRAM, the context preflight refuses cleanly and
@@ -26,14 +31,8 @@ images (OCR, chart-reading and fine-detail cases) with no caption regression.
   closed `<think>` block also cleans to empty — so the fallback handed the
   trace straight back, the one outcome `strip_reasoning` exists to prevent.
   The fallback now restores the post-reasoning text, so a reasoning-only
-  response cleans to `""` (the GUI shows "Nothing to save") while a
-  prefix-only one is still preserved.
-- **A configured prefix manufactured a caption out of nothing.** Emptying a
-  reasoning-only response only helps if the emptiness survives: with a prefix
-  set, `apply_prefix_suffix("")` returned `"photo of "`, a truthy string that
-  batch auto-save writes to a sidecar. The caption a user got was their own
-  prefix with nothing from the image. Affixes now leave an empty caption
-  empty, guarded once for both backends and both caption methods.
+  response cleans to `""` (reported as "The model returned no caption" and
+  never saved) while a prefix-only one is still preserved.
 - **An unclosed reasoning block still reached sidecars.** It was returned
   unchanged on the reasoning that a visible monologue beats an empty caption
   box — true only while a human is looking at the box. A batch run with
@@ -147,13 +146,6 @@ images (OCR, chart-reading and fine-detail cases) with no caption regression.
   matched the `mmproj` published beside them. Gemma's `E4B`
   effective-parameter size is now read as a size too, and kept distinct from
   a dense 4B.
-- **Downloading a second model family skipped its vision encoder.** The
-  "already have one?" check asked `find_mmproj_file(target_dir)` with no
-  model, which returns whichever encoder sorts first — so a Gemma-4 download
-  into a folder holding a Qwen3-VL encoder queued nothing. Both the queue and
-  the post-download re-check now match the registry's exact `mmproj_filename`.
-  (Pairing a model with another model's `mmproj` does not fail cleanly; it
-  crashes llama.cpp natively.)
 - **A frame count that *over*-reports silently shrank the sample.** The
   sampler trusted
   `CAP_PROP_FRAME_COUNT` and seeked to evenly-spaced indices from it. Seeking
@@ -208,6 +200,221 @@ images (OCR, chart-reading and fine-detail cases) with no caption regression.
   single-image path — the chat handler re-encodes to JPEG regardless, so PNG
   only cost a slow compression pass and a much larger base64 payload, N times
   over per clip.
+
+## [1.4.4] — 2026-09-29
+
+The first release since 1.4.3, and it carries considerably more than a patch
+number suggests. The full-repository audit fixes that landed on `main` after
+1.4.3 was tagged (#34, which fixed most of the 66 verified findings in #33;
+the ones still open on `main` are listed under Known gaps) were never given
+a changelog entry; they ship here, documented, alongside two defects found
+while developing the next feature release and raised dependency floors that
+clear 13 Pillow advisories. None of it is in the 1.4.3 release build: users
+of that build get all of it at once, because `main` has been carrying it
+untagged.
+
+### Fixed — a fake caption and a skipped encoder download
+
+Both found while developing the video engine. The first put wrong data in a
+training set without raising an error, which is why it did not show up in
+normal use. The second was a missed download: Load Model had to ask for an
+encoder that should have arrived with the model.
+
+- **Prefix/suffix manufactured a caption out of a failed generation.**
+  `apply_prefix_suffix("")` returned the affixes joined around nothing —
+  `"photo of  high quality"` — which is truthy, so `_auto_save_caption` wrote
+  it to the `.txt` sidecar, cached it as saved and marked the image done. A
+  single image shows it in the caption box, but a batch run with auto-save is
+  unattended, so every image the model returned nothing for received the same
+  stock string and was counted in the "saved" total. An empty caption now
+  stays empty at the single point both engines funnel through, so the
+  existing falsy-caption guard refuses it, the batch summary counts it as
+  failed, and the notification bell says the model returned nothing for that
+  image. In 1.4.3 an empty result with no prefix or suffix was also cached as
+  a caption, and Export then wrote it out as an empty `.txt`, over a good one
+  too. Now nothing is cached for it: the image keeps the caption and badge it
+  had, Export writes nothing for it, and closing the app does not warn about
+  it.
+- **Downloading a second model skipped its vision encoder.** Both gates
+  that decide whether to queue an `mmproj` asked
+  `find_mmproj_file(target_dir)` with no model, which accepts whichever
+  encoder is already in the folder. The registry ships four GGUF models,
+  each with its own encoder file, so a user who downloaded a second one into
+  the same folder did not get its encoder, and Load Model had to stop and
+  ask for it. Both gates now match the registry's exact `mmproj_filename`;
+  an encoder genuinely already present is still skipped.
+
+### Fixed — caption safety (#34)
+
+- Dirty-state tracking with Save/Discard/Cancel on every overwrite path, so a
+  hand-edited caption is no longer destroyed by changing the selection,
+  regenerating, or Clear All.
+- Streamed tokens are pinned to the image that requested them, so selecting a
+  different image mid-generation can no longer write one image's caption into
+  another's sidecar.
+- Atomic sidecar writes, with a retry for the Windows sharing lock.
+- Unreadable sidecars are treated as captioned by batch, export and delete
+  rather than silently re-captioned and overwritten.
+- Clearing a caption with the trash button and then saving now deletes its
+  `.txt` sidecar; in 1.4.3 an emptied caption could not be saved, so the old
+  file stayed.
+- The caption editor is read-only while generating.
+- The caption cache and thumbnails follow external sidecar changes instead of
+  serving a stale first read.
+
+### Fixed — engine and model pairing (#34)
+
+- Shared image preprocessing across backends: the MLX engine now gets the
+  same EXIF-corrected image, clamped to 1280 px, as the GGUF engine (it was
+  handed the original file at full resolution), JPEG sources are downscaled
+  while decoding, and the GGUF engine sends JPEG q95 instead of PNG.
+- Model-aware, family-aware `mmproj` pairing that refuses a foreign encoder
+  instead of guessing — the mismatch that previously crashed natively on the
+  first caption.
+
+### Fixed — setup and install (#34)
+
+- `setup.bat` no longer aborts with "Failed to install uv" immediately after
+  installing uv successfully.
+- The venv is re-creatable, so "re-run setup" — the remedy the app, the
+  doctor and the README all prescribe — actually works.
+- uv installs correctly when launched from PowerShell 7.
+- Verified on fresh `windows-latest` runners.
+
+### Fixed — interface (#34)
+
+- Light theme contrast, including controls that previously rendered
+  white-on-white, and a runtime theme switch that now repaints rather than
+  freezing colours from whichever palette was loaded at import.
+- Batch busy state no longer lets a finishing caption re-enable a button
+  mid-download.
+- Thumbnails decode asynchronously.
+- Zoom goes through a `QGraphicsView` transform instead of re-scaling the
+  full-resolution pixmap on every wheel notch.
+- Windows download pre-allocation no longer physically writes gigabytes of
+  zeros before the first byte arrives.
+
+### Fixed — batch, import and diagnostics (#34)
+
+- Batch Caption All asks before overwriting existing captions (Skip
+  already-captioned / Overwrite all / Cancel, defaulting to Skip), and Export
+  writes only captions with no file yet unless you choose to overwrite ones
+  that differ.
+- A failed caption write is reported and counted; the green check now appears
+  only once the caption is on disk.
+- The Caption Length setting works for the Stable Diffusion and Pony tag
+  presets (all three lengths used to ask for 15-30 tags).
+- Folder import skips macOS `._` files, a folder that cannot be read no longer
+  aborts the app, and dropping an image from a browser tab no longer imports
+  every image in the working directory.
+- Cancel no longer stops a running model download without asking.
+- Qt's image allocation limit is restored (2048 MB) instead of removed.
+- CUDA detection requires `cudart64_*.dll`, so a leftover version folder no
+  longer wins; a missing `nvidia-ml-py` is no longer reported as a missing
+  driver; the Intel-Mac build is pinned to the release tag.
+
+### Changed — dependencies
+
+Re-run `setup.bat` / `./setup.sh` to pick these up: setup recreates the venv
+and installs from `requirements.txt`, so an existing install keeps its old
+Pillow until then. Manual (Linux) installs: run `pip install -r
+requirements.txt` again inside the venv.
+
+- **Pillow floor raised from 12.2.0 to 12.3.0.** 12.2.0 is affected by 13
+  advisories (10 HIGH, 3 MODERATE, each with its own CVE), all fixed in
+  12.3.0 and none known to affect it: decompression-bomb checks skipped when
+  loading BDF, PCF and GD files; heap out-of-bounds writes in
+  `Image.paste()`/`Image.crop()`, `ImageFilter.RankFilter` and
+  `ImageCmsTransform.apply()`; an out-of-bounds read on McIdas AREA files;
+  denial of service through PDF streams, EPS files and tiled JPEG 2000; heap
+  data copied into TGA RLE output; and command injection in the Windows
+  image-viewer helper. 12.3.0 no longer publishes manylinux2014 wheels (its
+  oldest Linux wheels need glibc 2.27); that does not narrow the experimental
+  Linux path, which already needed glibc 2.28 for PyQt6's Qt wheels.
+- **The install doctor checks Pillow.** `diagnose.bat` (or
+  `.venv/bin/python doctor.py`) reports a Pillow older than 12.3.0 as a
+  problem, with the command that updates it. Unzipping a new version over an
+  old folder keeps the old venv, and the app starts normally on the old
+  Pillow, so nothing else would say so.
+- **`huggingface-hub` is now `>=0.32,<3`.** 2.0.0 is the current release;
+  the app's three hub calls (`hf_hub_download`, `HfApi.list_repo_files`,
+  `hf_hub_url`) were checked on both 1.33.0 and 2.0.0, and the range is
+  capped below the next major until it can be checked too. On Apple Silicon
+  the MLX backend's `transformers` currently requires `huggingface-hub<2.0`,
+  so Macs stay on 1.x; both work.
+- **Build requirement raised from `setuptools>=75.0` to `>=84.0.0`**,
+  clearing CVE-2025-47273 (HIGH, path traversal in
+  `PackageIndex.download`, fixed in 78.1.1) and CVE-2026-59890 (MODERATE,
+  sdist `MANIFEST.in` exclusion bypass, fixed in 83.0.0). This affects
+  `pip install .` and wheel builds only; setup does not build the package.
+- The Linux manual-install command in the README pins the llama-cpp-python
+  fork to commit `12861b91` (tag `v0.3.40-Metal-macos-20260607`, the source
+  `setup.sh` builds) instead of the fork's default branch.
+
+### Changed — CI and supply chain (#28, #34, #36, #37, #38)
+
+- Ruff replaces pyflakes; PR checks, GitGuardian secret scanning and
+  Dependabot added (#28).
+- The two unvetted third-party pull-request actions added in #28 were
+  removed; "Require test plan" is now an inline step that runs with no
+  token (#37).
+- Third-party actions that receive secrets are pinned to commit SHAs, so a
+  moved tag cannot change what runs (#38). The GitGuardian scan is now the
+  only third-party action left.
+- Dependabot pull requests are exempt from the "Require test plan" check (#36).
+- The unused TestingBot Maestro workflow, a mobile-UI test scaffold with no
+  test flows in this repository, was removed (#36).
+- The version-sync guard added in 1.4.3 now also fails when the README's
+  test count differs from the suite, and the release job reads
+  `gui/version.py` with the same pattern as the guard, so a quoting change
+  can no longer pass CI and then fail the release (#34).
+
+### Changed — release and CI (this release)
+
+- The Linux test job installs `requirements.txt` instead of repeating its
+  pins, so CI resolves the same ranges users install from: the newest version
+  each range allows, which is what a fresh setup gets.
+- Every release now carries `QWEN3-VL-Captioner.zip`, built from the tagged
+  commit, under a name that never changes, so
+  `releases/latest/download/QWEN3-VL-Captioner.zip` always serves the newest
+  published release. The release job refuses to publish if the ZIP lacks
+  the setup or run scripts or `app.py`, and checks afterwards that the link
+  resolves to the new release. The README's download button still links to
+  `main` in this release.
+
+### Tests
+
+- 371 collected, up from 143 at 1.4.3. CI runs the suite on Linux; it also
+  passed natively on Windows when #34 was validated (311 passed, 2 POSIX-only
+  skips).
+- Both defects in the first section were reproduced before being changed.
+  Ten of the thirteen tests added for them fail against the pre-fix code; the
+  other three check the opposite direction (an encoder already on disk is not
+  downloaded again, a real caption is left alone) and pass either way.
+- Caption-workflow tests check that an empty result names its image in the
+  notification bell and leaves the image's caption, badge and sidecar as
+  they were, including through Export and the unsaved-captions check on
+  close. `tests/test_doctor.py` (new) checks the doctor's Pillow warning and
+  that its floor matches `requirements.txt` and `pyproject.toml`.
+- `tests/test_mmproj_queue.py` (new) drives the real `MainWindow` offscreen
+  with the download stubbed, covering both encoder-queue gates in both
+  directions. The two models are selected out of `MODEL_REGISTRY` rather
+  than hardcoded, so renaming a model cannot turn the test into a no-op.
+
+### Known gaps
+
+- Two performance findings from #33 remain open: clearing or widening the
+  list filter and Clear All are still O(n²) on large imports, and the file
+  browser still builds a widget tree per image rather than virtualizing.
+  Both are visible only on datasets of a few thousand images.
+- On mlx-vlm 0.3.4 through 0.3.11 the MLX engine ignores the Temperature
+  setting and decodes greedily (always the most likely token). Those
+  versions accept the `sampler` argument the app passes to `stream_generate`
+  without error and never use it, and the fallback to the older
+  `temperature`/`top_p` arguments waits for a `TypeError` that no mlx-vlm
+  release since 0.1.0 raises. mlx-vlm 0.3.12 and later honour the setting.
+  `setup.sh` installs mlx-vlm unpinned; on macOS 13 the newest release that
+  installs is 0.3.9, because mlx 0.29.4 and later publish no macOS 13 wheels.
 
 ## [1.4.3] — 2026-07-30
 

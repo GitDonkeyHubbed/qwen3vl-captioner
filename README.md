@@ -2,11 +2,11 @@
   <img src="assets/VL_GGUF_Captioner GUI Screenshot 2.png" alt="QWEN 3 VL ABL Captioner" width="900"/>
 </p>
 
-<h1 align="center">QWEN 3 VL ABL Captioner V1.4.3 — GGUF + MLX Engines</h1>
+<h1 align="center">QWEN 3 VL ABL Captioner V1.4.4 — GGUF + MLX Engines</h1>
 <h3 align="center">Professional GPU-Accelerated Image Captioning for Datasets</h3>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.4.3-blue" alt="Version"/>
+  <img src="https://img.shields.io/badge/version-1.4.4-blue" alt="Version"/>
   <img src="https://img.shields.io/badge/python-3.12-blue?logo=python" alt="Python"/>
   <img src="https://img.shields.io/badge/GPU-CUDA%2012.4%E2%80%9313.x-green?logo=nvidia" alt="CUDA"/>
   <img src="https://img.shields.io/badge/Apple%20Silicon-Metal%20%2B%20MLX-black?logo=apple" alt="Apple Silicon"/>
@@ -41,10 +41,10 @@
 
 ---
 
-## 🎬 In development — video captioning **engine** (not in a release yet)
+## 🎬 In development — video captioning **engine** (unreleased, planned for V1.5.0)
 
 > **The app you download today captions images only.** The latest release is
-> **V1.4.3**. The video work below is the *engine* half: `engine/video.py`
+> **V1.4.4**. The video work below is the *engine* half: `engine/video.py`
 > plus `caption_video()` on both backends, covered by the test suite and
 > validated by hand on an RTX 4080 — but **nothing in the GUI calls it yet**.
 > The file picker accepting videos, the "Frames per video" control, video
@@ -53,11 +53,9 @@
 > and land in a later PR. Until then video captioning is reachable only from
 > Python, and there is no version bump for it.
 
-What has landed so far. The green button above downloads `main`, not a tagged
-release, so the model-list and prompt items below reach anyone who downloads
-the app as soon as this merges — there is simply no tagged release carrying
-them yet. The video items stay engine-only until part 2, whenever you
-downloaded:
+What has landed so far on the `feature/video` branch. None of it is in V1.4.4
+or on `main`, which the green button above downloads: it reaches `main` with
+the V1.5.0 release, and the video items stay engine-only until part 2:
 
 - **The engine captions a video by sampling frames.** Given an `.mp4`, `.mov`,
   `.mkv`, `.webm`, `.avi` or `.m4v`, `caption_video()` decodes evenly-spaced
@@ -92,12 +90,83 @@ downloaded:
   argument to lower (`num_frames` — there is no GUI control for it yet).
 - **Every Gemma-4 quant finds its vision encoder.** Six of the eleven
   published builds use the `_K_P` "pure" naming, which the pairing logic did
-  not recognise — so they downloaded without an encoder. Downloading a second
-  model family into a folder no longer skips its encoder because another
-  family's was already sitting there.
-- Test suite grew to **586 tests**; CI now HEAD-checks the pinned wheel URLs
-  so a deleted release breaks CI (not your install), and every release tag is
-  verified against the in-app version before it publishes.
+  not recognise — so they downloaded without an encoder.
+- Test suite grew to **604 tests** on this branch (371 in V1.4.4).
+
+See [CHANGELOG.md](CHANGELOG.md) for the complete list.
+
+---
+
+## 🧹 What's New in V1.4.4 — Audit Fixes, a Security Update and Two Bug Fixes
+
+If you are on V1.4.3, this is a big one. Fixes for most of the 66 defects a
+full-repository audit verified landed after V1.4.3 was tagged and were never
+released as a version, so they reach you here — together with two defects
+found while building the next feature and a security update to the image
+library. (If you downloaded with the green button after 2026-09-15, you
+already have the audit fixes, although the app still says V1.4.3.)
+
+- **Security update — re-run setup once.** Pillow, one of the libraries that
+  open your images, now has to be 12.3.0 or newer: 12.2.0 has 13 known
+  vulnerabilities (10 rated HIGH). Run `setup.bat` / `./setup.sh` again in
+  your app folder to update an existing install; your models and settings
+  are kept. (Manual Linux installs: run `pip install -r requirements.txt`
+  again inside your venv.) The install check (`diagnose.bat`, or
+  `.venv/bin/python doctor.py` on macOS) now warns if the old Pillow is still
+  installed.
+- **Your hand-edited captions survive.** Editing a caption and then changing
+  the selection, regenerating, or hitting Clear All used to destroy the edit
+  with no prompt. Every overwrite path now asks Save / Discard / Cancel.
+- **Captions can no longer land on the wrong image.** Selecting a different
+  image while one was generating could write the in-flight caption into the
+  newly selected image's `.txt`. Streamed text is now pinned to the image that
+  asked for it.
+- **A failed caption is no longer saved as a fake one.** With a prefix or
+  suffix configured, an image the model returned nothing for was saved as just
+  the affixes — `photo of  high quality` — and counted as a success. In a batch
+  run nobody is watching, so every failed image landed the same stock string in
+  your training set. Empty stays empty now: the image keeps the caption it
+  had, the summary counts it failed, and the notification bell names it.
+- **A second model downloads its own vision encoder.** Downloading a second
+  model into your models folder used to skip its encoder, so Load Model had
+  to stop and ask for it.
+- **Mismatched encoders are refused, not guessed at.** Pairing is now
+  model- and family-aware instead of grabbing whichever encoder file was in the
+  folder — the mismatch that crashed on the first caption.
+- **"Re-run setup" actually works.** `setup.bat` no longer stops with
+  "Failed to install uv" right after installing it, running setup again over
+  an existing install works, and it also works when started from PowerShell 7.
+  Verified on clean Windows.
+- **Light mode is usable.** Controls that rendered white-on-white are fixed,
+  and switching theme at runtime repaints instead of leaving frozen colours.
+- **Less freezing on big folders and big photos** — thumbnails decode off the
+  UI thread, zoom no longer re-scales the full-resolution image on every wheel
+  notch, and Windows downloads no longer write gigabytes of zeros before
+  starting.
+- Test suite grew to **371 tests** (143 at the V1.4.3 tag), and CI now fails if this README's test count drifts from the suite. Pull-request CI gained Ruff, GitGuardian secret scanning and Dependabot, dropped two unvetted third-party actions, and pins the one third-party action it still uses to a commit.
+
+Known gaps: on datasets of a few thousand images, clearing a search filter and
+Clear All are still slow, and the file browser still builds a widget per image.
+On Apple Silicon Macs running macOS 13, the Temperature slider has no effect
+with the MLX engine: the newest mlx-vlm that installs there (0.3.9) silently
+ignores it, so the same image and prompt always produce the same caption.
+Installs on macOS 14 or later get a current mlx-vlm and are not affected.
+
+See [CHANGELOG.md](CHANGELOG.md) for the details.
+
+---
+
+## 🩺 What's New in V1.4.3 — Health-Check & Deep-QC Fixes
+
+No new models — two full audit passes over the codebase (85 verified findings fixed in total), plus quality-of-life upgrades.
+
+- **Your captions can no longer cross-save.** Clicking another image while a caption was generating could silently overwrite that image's `.txt` with the wrong caption — fixed at the root.
+- **Phone photos caption correctly now.** EXIF rotation is applied before inference, so sideways camera JPEGs no longer produce captions describing a rotated scene.
+- **No more phantom "update available" popup**, no more window freeze during vision-encoder downloads, and your saved **light/dark theme actually applies at startup**.
+- **Downloads got smarter**: live **speed + ETA**, free-disk-space pre-flight, corruption-safe partials (a multi-connection download that is interrupted discards its `.part` rather than resuming a file it cannot verify; single-stream downloads do resume), and your HF token is stored with owner-only permissions (`0600` on macOS/Linux; on Windows it inherits the user profile's ACL) and never sent over plain HTTP.
+- **Faster & smoother**: thumbnails decode at thumbnail size (no more UI stalls on big imports), **keyboard shortcuts** (Ctrl+S save, Ctrl+G generate, Ctrl+←/→ navigate), **drag & drop anywhere**, batch ETA, and a download offer right in the "model not downloaded" dialog.
+- **The install doctor got real diagnostic teeth.** The false "CPU build detected" warning on healthy GPU installs is gone, and `diagnose.bat` now pinpoints the exact conflicting DLL (System32, PATH, another AI app) behind `WinError 127` startup failures — with safe, reversible fix steps.
+- 143 tests at the V1.4.3 tag; CI now HEAD-checks the pinned wheel URLs so a deleted release breaks CI (not your install), and every release tag is verified against the in-app version before it publishes.
 
 See [CHANGELOG.md](CHANGELOG.md) for the complete list.
 
@@ -107,7 +176,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the complete list.
 
 No new features — just keeping things safe and clean for everyone.
 
-- **Pillow patched to >=12.2.0** — fixes 5 CVEs (2 HIGH, 3 MODERATE): integer overflow / OOB writes when loading certain PSD and font files, a FITS decompression bomb, and a PDF trailer denial-of-service. If you're on an older install, run `setup.bat` / `setup.sh` again or `pip install --upgrade Pillow` inside your venv.
+- **Pillow patched to >=12.2.0** — fixes 5 CVEs (2 HIGH, 3 MODERATE): integer overflow / OOB writes when loading certain PSD and font files, a FITS decompression bomb, and a PDF trailer denial-of-service. If you're on an older install, run `setup.bat` / `setup.sh` again or `pip install --upgrade Pillow` inside your venv. *(Superseded: V1.4.4 raises the floor to 12.3.0 — 12.2.0 is no longer enough.)*
 - `nvidia-ml-py>=12.0` replaces the deprecated `pynvml` package — same module, eliminates an import FutureWarning for NVIDIA GPU users.
 - `huggingface-hub>=0.32` floor raised; `hf_xet>=1.0` pinned as an explicit dependency.
 - Windows smoke CI restored after a PowerShell incompatibility broke it silently.
@@ -401,7 +470,9 @@ source .venv/bin/activate
 pip install -r requirements.txt
 
 # For CUDA on Linux (JamePeng's fork also publishes linux cu1xx wheels):
-CMAKE_ARGS="-DGGML_CUDA=on" pip install "llama_cpp_python @ git+https://github.com/JamePeng/llama-cpp-python"
+# Pinned to the same fork commit setup.sh builds on macOS
+# (tag v0.3.40-Metal-macos-20260607), so you get the tested source:
+CMAKE_ARGS="-DGGML_CUDA=on" pip install "llama_cpp_python @ git+https://github.com/JamePeng/llama-cpp-python@12861b918f67b62f78f28c5cabb7223f766e1097"
 
 python app.py
 ```

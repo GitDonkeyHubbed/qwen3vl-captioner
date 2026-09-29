@@ -7,7 +7,7 @@ name: Windows Smoke Test
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/video]
   pull_request:
   workflow_dispatch:
 
