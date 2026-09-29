@@ -54,6 +54,24 @@ def test_readme_title_and_badge_match_app_version():
         f"README badge says {badge.group(1)} but APP_VERSION is {version}"
     )
 
+    # Every release carries a download ZIP under one fixed name, so
+    # releases/latest/download/<name> always serves the newest published
+    # release — the link the README's download button is meant to use.
+    # Dropping the attachment, or renaming it, would 404 that link.
+    workflow = (REPO / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8"
+    )
+    asset = re.search(r"^\s*DOWNLOAD_ZIP:\s*(\S+)\s*$", workflow, re.MULTILINE)
+    assert asset, "DOWNLOAD_ZIP not found in release.yml"
+    assert asset.group(1) == "QWEN3-VL-Captioner.zip", (
+        f"release.yml renamed the download ZIP to {asset.group(1)!r}; "
+        "releases/latest/download/QWEN3-VL-Captioner.zip depends on the name"
+    )
+    publish = re.search(r"gh release create(?:[^\n]*\\\n)*[^\n]*", workflow)
+    assert publish and '"$DOWNLOAD_ZIP"' in publish.group(0), (
+        "release.yml must attach $DOWNLOAD_ZIP to every release it publishes"
+    )
+
 
 def test_newest_changelog_entry_matches_app_version():
     changelog = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")

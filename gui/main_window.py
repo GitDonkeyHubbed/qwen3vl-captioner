@@ -923,13 +923,16 @@ class MainWindow(QMainWindow):
         for path in self._file_browser.get_all_paths():
             status = self._file_browser.get_item_status(path)
             if status in ("queued", "processing"):
-                key = str(path)
-                if key in self._unsaved:
-                    self._file_browser.set_item_status(path, "generated")
-                elif read_caption(path).has_caption:
-                    self._file_browser.set_item_status(path, "done")
-                else:
-                    self._file_browser.set_item_status(path, "idle")
+                self._settle_item_status(path)
+
+    def _settle_item_status(self, path: Path):
+        """Give *path* the badge its cached and on-disk caption warrant."""
+        if str(path) in self._unsaved:
+            self._file_browser.set_item_status(path, "generated")
+        elif read_caption(path).has_caption:
+            self._file_browser.set_item_status(path, "done")
+        else:
+            self._file_browser.set_item_status(path, "idle")
 
     # --- Model Loading ---
 
@@ -1421,11 +1424,15 @@ class MainWindow(QMainWindow):
         if answer != QMessageBox.StandardButton.Yes:
             return
 
-        # Queue the matching mmproj to auto-download right after the model
-        # (skipped if any mmproj already exists in the target dir)
+        # Queue the matching mmproj to auto-download right after the model.
+        # Ask for *this model's* encoder by name. Asking find_mmproj_file()
+        # with no model returns whichever encoder sorts first in the folder,
+        # so downloading a second model into a directory that already held
+        # another model's encoder skipped its own, and Load Model then had to
+        # stop and ask for it.
         self._pending_mmproj = None
         if not is_mlx and info.get("mmproj_filename"):
-            if find_mmproj_file(target_dir) is None:
+            if not model_file_exists(target_dir, info["mmproj_filename"]):
                 self._pending_mmproj = (
                     info["repo_id"], info["mmproj_filename"], target_dir
                 )
@@ -1511,11 +1518,15 @@ class MainWindow(QMainWindow):
         # Refresh the dropdown so the new model shows its ✓ marker
         self._refresh_model_list()
 
-        # Chain the matching vision encoder download if one was queued
+        # Chain the matching vision encoder download if one was queued.
+        # Same exact-name check as the queueing gate above: a different
+        # model's encoder sitting in the folder must not satisfy this one.
         if self._pending_mmproj and "mmproj" not in filename.lower():
+            from gui.model_download_manager import model_file_exists
+
             repo_id, mmproj_name, target_dir = self._pending_mmproj
             self._pending_mmproj = None
-            if find_mmproj_file(target_dir) is None:
+            if not model_file_exists(target_dir, mmproj_name):
                 QTimer.singleShot(
                     150,
                     lambda: self._start_file_download(
@@ -1921,17 +1932,26 @@ class MainWindow(QMainWindow):
         self._settings_panel.set_generating(False)
         self._image_viewer.set_processing(False)
 
+        # An empty result is not a caption. Cached like one, it blanked the
+        # box over a good sidecar, made Export write a 0-byte .txt (or offer
+        # to overwrite a good one with it), and made Close warn about an
+        # unsaved caption that did not exist. Leave the image as it was.
+        empty = not caption.strip()
+
         # Cache the caption under the image it belongs to. It is NOT saved
         # yet — the status stays "generated" (no green check) until a write
         # actually succeeds, and Export must not push it over a good file.
-        if worker_path:
+        if worker_path and not empty:
             self._cache_caption(worker_path, caption, saved=False)
             self._file_browser.set_item_caption(worker_path, caption)
             self._file_browser.set_item_status(worker_path, "generated")
+        elif worker_path:
+            self._settle_item_status(worker_path)
 
-        if worker_path != self._current_image and self._current_image:
-            # The selection moved mid-generation: the panel holds the streamed
-            # text of ANOTHER image — restore the selected image's own caption.
+        if self._current_image and (empty or worker_path != self._current_image):
+            # The selection moved mid-generation, so the panel holds the
+            # streamed text of ANOTHER image, or the model returned nothing:
+            # restore the selected image's own caption.
             own = self._load_caption(self._current_image)
             if own:
                 self._caption_panel.set_caption(own)
@@ -1953,17 +1973,30 @@ class MainWindow(QMainWindow):
 
         self._set_connection_status("ready", "Ready")
 
+        if empty:
+            # Nothing is saved or cached for it, so say why. The batch
+            # summary also points the user at the bell for each failure.
+            name = worker_path.name if worker_path else "an image"
+            self._caption_panel.show_feedback(
+                "The model returned no caption", is_success=False
+            )
+            self._notify(
+                f"No caption for {name}: the model returned nothing", "error"
+            )
+
         # ── Auto-Save ──
         # Branch on the batch FLAG, not the queue: the queue is popped before
         # the final image generates, so it is already empty while the last
         # caption is in flight. Using the flag ensures the last item is saved
         # silently like the rest and that _on_batch_complete still runs.
         if self._batch_active:
-            if self._auto_save_caption(worker_path, caption):
+            if not empty and self._auto_save_caption(worker_path, caption):
                 self._batch_saved += 1
             else:
                 self._batch_failed += 1
             self._process_next_batch_item()
+        elif empty:
+            return
         elif self._settings_panel.get_auto_save():
             self._auto_save_caption(worker_path, caption)
         else:
@@ -2250,9 +2283,10 @@ class MainWindow(QMainWindow):
                 self, "Batch Finished With Errors",
                 f"Batch finished — {saved} caption(s) saved as .txt files, "
                 f"but {failed} could not be written.\n\n"
-                "See the notification bell for the individual errors; those "
-                "captions are still in the app and can be saved from the "
-                "caption box.",
+                "See the notification bell for each one. A caption that "
+                "failed to save is still in the app and can be saved from "
+                "the caption box; an image the model returned no caption "
+                "for needs to be generated again.",
             )
         else:
             QMessageBox.information(

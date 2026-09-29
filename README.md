@@ -2,11 +2,11 @@
   <img src="assets/VL_GGUF_Captioner GUI Screenshot 2.png" alt="QWEN 3 VL ABL Captioner" width="900"/>
 </p>
 
-<h1 align="center">QWEN 3 VL ABL Captioner V1.4.3 — GGUF + MLX Engines</h1>
+<h1 align="center">QWEN 3 VL ABL Captioner V1.4.4 — GGUF + MLX Engines</h1>
 <h3 align="center">Professional GPU-Accelerated Image Captioning for Datasets</h3>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.4.3-blue" alt="Version"/>
+  <img src="https://img.shields.io/badge/version-1.4.4-blue" alt="Version"/>
   <img src="https://img.shields.io/badge/python-3.12-blue?logo=python" alt="Python"/>
   <img src="https://img.shields.io/badge/GPU-CUDA%2012.4%E2%80%9313.x-green?logo=nvidia" alt="CUDA"/>
   <img src="https://img.shields.io/badge/Apple%20Silicon-Metal%20%2B%20MLX-black?logo=apple" alt="Apple Silicon"/>
@@ -41,6 +41,65 @@
 
 ---
 
+## 🧹 What's New in V1.4.4 — Audit Fixes, a Security Update and Two Bug Fixes
+
+If you are on V1.4.3, this is a big one. Fixes for most of the 66 defects a
+full-repository audit verified landed after V1.4.3 was tagged and were never
+released as a version, so they reach you here — together with two defects
+found while building the next feature and a security update to the image
+library. (If you downloaded with the green button after 2026-09-15, you
+already have the audit fixes, although the app still says V1.4.3.)
+
+- **Security update — re-run setup once.** Pillow, one of the libraries that
+  open your images, now has to be 12.3.0 or newer: 12.2.0 has 13 known
+  vulnerabilities (10 rated HIGH). Run `setup.bat` / `./setup.sh` again in
+  your app folder to update an existing install; your models and settings
+  are kept. (Manual Linux installs: run `pip install -r requirements.txt`
+  again inside your venv.) The install check (`diagnose.bat`, or
+  `.venv/bin/python doctor.py` on macOS) now warns if the old Pillow is still
+  installed.
+- **Your hand-edited captions survive.** Editing a caption and then changing
+  the selection, regenerating, or hitting Clear All used to destroy the edit
+  with no prompt. Every overwrite path now asks Save / Discard / Cancel.
+- **Captions can no longer land on the wrong image.** Selecting a different
+  image while one was generating could write the in-flight caption into the
+  newly selected image's `.txt`. Streamed text is now pinned to the image that
+  asked for it.
+- **A failed caption is no longer saved as a fake one.** With a prefix or
+  suffix configured, an image the model returned nothing for was saved as just
+  the affixes — `photo of  high quality` — and counted as a success. In a batch
+  run nobody is watching, so every failed image landed the same stock string in
+  your training set. Empty stays empty now: the image keeps the caption it
+  had, the summary counts it failed, and the notification bell names it.
+- **A second model downloads its own vision encoder.** Downloading a second
+  model into your models folder used to skip its encoder, so Load Model had
+  to stop and ask for it.
+- **Mismatched encoders are refused, not guessed at.** Pairing is now
+  model- and family-aware instead of grabbing whichever encoder file was in the
+  folder — the mismatch that crashed on the first caption.
+- **"Re-run setup" actually works.** `setup.bat` no longer stops with
+  "Failed to install uv" right after installing it, running setup again over
+  an existing install works, and it also works when started from PowerShell 7.
+  Verified on clean Windows.
+- **Light mode is usable.** Controls that rendered white-on-white are fixed,
+  and switching theme at runtime repaints instead of leaving frozen colours.
+- **Less freezing on big folders and big photos** — thumbnails decode off the
+  UI thread, zoom no longer re-scales the full-resolution image on every wheel
+  notch, and Windows downloads no longer write gigabytes of zeros before
+  starting.
+- Test suite grew to **371 tests** (143 at the V1.4.3 tag), and CI now fails if this README's test count drifts from the suite. Pull-request CI gained Ruff, GitGuardian secret scanning and Dependabot, dropped two unvetted third-party actions, and pins the one third-party action it still uses to a commit.
+
+Known gaps: on datasets of a few thousand images, clearing a search filter and
+Clear All are still slow, and the file browser still builds a widget per image.
+On Apple Silicon Macs running macOS 13, the Temperature slider has no effect
+with the MLX engine: the newest mlx-vlm that installs there (0.3.9) silently
+ignores it, so the same image and prompt always produce the same caption.
+Installs on macOS 14 or later get a current mlx-vlm and are not affected.
+
+See [CHANGELOG.md](CHANGELOG.md) for the details.
+
+---
+
 ## 🩺 What's New in V1.4.3 — Health-Check & Deep-QC Fixes
 
 No new models — two full audit passes over the codebase (85 verified findings fixed in total), plus quality-of-life upgrades.
@@ -51,7 +110,7 @@ No new models — two full audit passes over the codebase (85 verified findings 
 - **Downloads got smarter**: live **speed + ETA**, free-disk-space pre-flight, corruption-safe partials (a multi-connection download that is interrupted discards its `.part` rather than resuming a file it cannot verify; single-stream downloads do resume), and your HF token is stored with owner-only permissions (`0600` on macOS/Linux; on Windows it inherits the user profile's ACL) and never sent over plain HTTP.
 - **Faster & smoother**: thumbnails decode at thumbnail size (no more UI stalls on big imports), **keyboard shortcuts** (Ctrl+S save, Ctrl+G generate, Ctrl+←/→ navigate), **drag & drop anywhere**, batch ETA, and a download offer right in the "model not downloaded" dialog.
 - **The install doctor got real diagnostic teeth.** The false "CPU build detected" warning on healthy GPU installs is gone, and `diagnose.bat` now pinpoints the exact conflicting DLL (System32, PATH, another AI app) behind `WinError 127` startup failures — with safe, reversible fix steps.
-- Test suite grew to **349 tests**; CI now HEAD-checks the pinned wheel URLs so a deleted release breaks CI (not your install), and every release tag is verified against the in-app version before it publishes.
+- 143 tests at the V1.4.3 tag; CI now HEAD-checks the pinned wheel URLs so a deleted release breaks CI (not your install), and every release tag is verified against the in-app version before it publishes.
 
 See [CHANGELOG.md](CHANGELOG.md) for the complete list.
 
@@ -61,7 +120,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the complete list.
 
 No new features — just keeping things safe and clean for everyone.
 
-- **Pillow patched to >=12.2.0** — fixes 5 CVEs (2 HIGH, 3 MODERATE): integer overflow / OOB writes when loading certain PSD and font files, a FITS decompression bomb, and a PDF trailer denial-of-service. If you're on an older install, run `setup.bat` / `setup.sh` again or `pip install --upgrade Pillow` inside your venv.
+- **Pillow patched to >=12.2.0** — fixes 5 CVEs (2 HIGH, 3 MODERATE): integer overflow / OOB writes when loading certain PSD and font files, a FITS decompression bomb, and a PDF trailer denial-of-service. If you're on an older install, run `setup.bat` / `setup.sh` again or `pip install --upgrade Pillow` inside your venv. *(Superseded: V1.4.4 raises the floor to 12.3.0 — 12.2.0 is no longer enough.)*
 - `nvidia-ml-py>=12.0` replaces the deprecated `pynvml` package — same module, eliminates an import FutureWarning for NVIDIA GPU users.
 - `huggingface-hub>=0.32` floor raised; `hf_xet>=1.0` pinned as an explicit dependency.
 - Windows smoke CI restored after a PowerShell incompatibility broke it silently.
@@ -355,7 +414,9 @@ source .venv/bin/activate
 pip install -r requirements.txt
 
 # For CUDA on Linux (JamePeng's fork also publishes linux cu1xx wheels):
-CMAKE_ARGS="-DGGML_CUDA=on" pip install "llama_cpp_python @ git+https://github.com/JamePeng/llama-cpp-python"
+# Pinned to the same fork commit setup.sh builds on macOS
+# (tag v0.3.40-Metal-macos-20260607), so you get the tested source:
+CMAKE_ARGS="-DGGML_CUDA=on" pip install "llama_cpp_python @ git+https://github.com/JamePeng/llama-cpp-python@12861b918f67b62f78f28c5cabb7223f766e1097"
 
 python app.py
 ```

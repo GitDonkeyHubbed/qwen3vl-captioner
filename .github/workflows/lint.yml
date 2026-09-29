@@ -50,8 +50,10 @@ jobs:
       - name: Install Qt runtime libs
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libegl1 libgl1
 
+      # The app's own requirements.txt, not a copy of its pins, so CI resolves
+      # the same ranges a fresh install does (the newest version each allows).
       - name: Install test dependencies
-        run: pip install --quiet -r requirements-dev.txt "PyQt6>=6.7" "Pillow>=12.2.0"
+        run: pip install --quiet -r requirements-dev.txt -r requirements.txt
 
       - name: Run pytest (core logic, headless)
         env:

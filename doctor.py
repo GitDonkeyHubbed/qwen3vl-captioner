@@ -9,6 +9,7 @@ this report into it.
 """
 
 import platform
+import re
 import sys
 from pathlib import Path
 
@@ -22,6 +23,12 @@ OK = "[ OK ]"
 WARN = "[WARN]"
 FAIL = "[FAIL]"
 INFO = "[ -- ]"
+
+# Pillow floor from requirements.txt (tests/test_doctor.py keeps the two in
+# step). Older builds carry known vulnerabilities, and an install made before
+# the floor was raised keeps its old Pillow until setup runs again; the app
+# starts normally on it, so this check is the only thing that says so.
+PILLOW_MIN = (12, 3, 0)
 
 
 def _check_llama(report: dict, problems: list, setup_cmd: str):
@@ -42,6 +49,29 @@ def _check_llama(report: dict, problems: list, setup_cmd: str):
     else:
         print(f"{FAIL} llama-cpp-python: NOT INSTALLED")
         problems.append(f"Run {setup_cmd} to install all dependencies")
+
+
+def _check_pillow(problems: list, setup_cmd: str):
+    """Pillow below the security floor: the app runs, on a vulnerable build."""
+    from importlib.metadata import PackageNotFoundError, version
+
+    floor = ".".join(map(str, PILLOW_MIN))
+    try:
+        installed = version("Pillow")
+    except PackageNotFoundError:
+        print(f"{FAIL} Pillow:          NOT INSTALLED")
+        problems.append(f"Pillow is missing. Run {setup_cmd} to install it")
+        return
+    m = re.match(r"(\d+)\.(\d+)(?:\.(\d+))?", installed)
+    parsed = tuple(int(g or 0) for g in m.groups()) if m else None
+    if parsed is not None and parsed < PILLOW_MIN:
+        print(f"{FAIL} Pillow:          {installed} is older than {floor} (known vulnerabilities)")
+        problems.append(
+            f"Pillow {installed} has known security vulnerabilities fixed in {floor}.\n"
+            f"         Run {setup_cmd} to update it; your models and settings are kept."
+        )
+    else:
+        print(f"{OK} Pillow:          {installed}")
 
 
 def _report_winerror_127(report: dict, problems: list):
@@ -185,10 +215,13 @@ def main() -> int:
 
     if sys.platform == "win32":
         _windows_checks(report, problems)
+        _check_pillow(problems, "setup.bat")
     elif sys.platform == "darwin":
         _macos_checks(report, problems)
+        _check_pillow(problems, "./setup.sh")
     else:
         _check_llama(report, problems, "pip install (see README — Linux)")
+        _check_pillow(problems, "pip install -r requirements.txt (inside the venv)")
 
     print("-" * 64)
     if problems:

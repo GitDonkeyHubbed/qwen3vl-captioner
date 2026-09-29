@@ -77,3 +77,46 @@ def test_apply_prefix_suffix_strips_affix_whitespace():
         apply_prefix_suffix("cat", prefix="  photo  ", suffix="  now  ")
         == "photo cat now"
     )
+
+
+# ── Affixes must never manufacture a caption out of a failed generation ──
+#
+# apply_prefix_suffix("") returned the prefix and suffix joined around
+# nothing — "photo of  high quality" — which is truthy, so _auto_save_caption
+# wrote it to the .txt sidecar and counted the image as saved. In a batch run
+# nobody sees the caption box, so every image the model failed on landed the
+# same stock string in the training set.
+
+def test_prefix_does_not_invent_a_caption_from_an_empty_result():
+    assert apply_prefix_suffix("", prefix="photo of") == ""
+
+
+def test_suffix_does_not_invent_a_caption_from_an_empty_result():
+    assert apply_prefix_suffix("", suffix="high quality") == ""
+
+
+def test_prefix_and_suffix_together_leave_an_empty_caption_empty():
+    assert apply_prefix_suffix("", prefix="photo of", suffix="high quality") == ""
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\n", "\t\n "])
+def test_no_whitespace_only_result_can_become_a_caption(blank):
+    """Whitespace is not content, whatever the affixes are."""
+    assert apply_prefix_suffix(blank, prefix="photo of", suffix="high quality") == ""
+
+
+def test_an_empty_caption_is_falsy_so_auto_save_refuses_it():
+    """The guarantee the sidecar write depends on, stated as a test.
+
+    _auto_save_caption returns False on a falsy caption and writes nothing.
+    That is the whole reason returning "" is the right answer here rather
+    than a bare prefix.
+    """
+    assert not apply_prefix_suffix("", prefix="photo of", suffix="high quality")
+
+
+def test_a_real_caption_is_unaffected_by_the_guard():
+    assert (
+        apply_prefix_suffix("a red car", prefix="photo of", suffix="high quality")
+        == "photo of a red car high quality"
+    )
