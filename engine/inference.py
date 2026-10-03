@@ -205,9 +205,10 @@ def _construct_chat_handler(handler_cls, mmproj_path, verbose: bool):
     specifies is added. An A/B over 7 images (including OCR and chart reading)
     found no factual regression from the change.
 
-    Unknown keywords are dropped by inspecting the constructor signature so
-    other llama-cpp-python builds, whose handlers may not accept them, still
-    load. Filtering up front (rather than retrying on TypeError) means a
+    Only explicitly declared keyword parameters enable optional flags.
+    The pinned handlers forward **kwargs to MTMDChatHandler, which rejects
+    flags the subclass did not consume. Inherited constructors are resolved
+    by inspect.signature as well. Filtering up front means a
     TypeError raised from *inside* a compatible constructor propagates on the
     first attempt instead of triggering silent retries that could repeat the
     constructor's side effects before surfacing the real error.
@@ -229,11 +230,13 @@ def _construct_chat_handler(handler_cls, mmproj_path, verbose: bool):
         params = None
 
     if params is not None:
-        if not any(
-            p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
-        ):
-            # No **kwargs catch-all, so only pass flags the constructor names.
-            extra = {k: v for k, v in extra.items() if k in params}
+        extra = {
+            k: v for k, v in extra.items()
+            if k in params and params[k].kind in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            )
+        }
         return handler_cls(**kwargs, **extra)
 
     # Opaque constructor (an extension type with no readable signature).

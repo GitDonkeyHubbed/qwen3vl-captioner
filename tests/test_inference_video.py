@@ -506,6 +506,96 @@ def test_construct_chat_handler_falls_back_to_plain_construction():
     assert Handler.seen == {"clip_model_path": str(Path("/m/mmproj.gguf"))}
 
 
+@pytest.mark.parametrize("family", list(inference.CHAT_FAMILY_HANDLERS))
+def test_load_model_with_forwarding_handler_kwargs(monkeypatch, tmp_path, family):
+    """Mirror the v0.3.40 handlers' forwarding to a keyword-rejecting base.
+
+    Both setup-pinned macOS and Windows tags use this constructor contract.
+    **kwargs carries clip_model_path/verbose; it does not accept extra flags.
+    """
+    class BaseHandler:
+        def __init__(self, clip_model_path, verbose=False, **kwargs):
+            if kwargs:
+                raise TypeError(f"Unexpected keyword arguments: {kwargs}")
+            self.clip_model_path = clip_model_path
+
+    class Qwen3Handler(BaseHandler):
+        def __init__(self, add_vision_id=True, **kwargs):
+            super().__init__(**kwargs)
+            self.add_vision_id = add_vision_id
+
+    class Qwen35Handler(BaseHandler):
+        def __init__(self, enable_thinking=True, add_vision_id=True, **kwargs):
+            super().__init__(**kwargs)
+            self.enable_thinking = enable_thinking
+            self.add_vision_id = add_vision_id
+
+    class Gemma4Handler(BaseHandler):
+        def __init__(self, enable_thinking=True, **kwargs):
+            super().__init__(**kwargs)
+            self.enable_thinking = enable_thinking
+
+    # Qwen2.5-VL and Gemma-3 inherit the base constructor without these flags.
+    class LegacyHandler(BaseHandler):
+        pass
+
+    handlers = {
+        "qwen3vl": Qwen3Handler, "qwen35": Qwen35Handler,
+        "gemma4": Gemma4Handler, "qwen25vl": LegacyHandler,
+        "gemma3": LegacyHandler,
+    }
+    ns = types.SimpleNamespace(**{
+        inference.CHAT_FAMILY_HANDLERS[key]: cls for key, cls in handlers.items()
+    })
+    monkeypatch.setattr(inference, "LLAMA_CPP_AVAILABLE", True)
+    monkeypatch.setattr(inference, "llama_chat_format", ns, raising=False)
+    monkeypatch.setattr(inference, "Llama", _RecordingLlama, raising=False)
+    model, mmproj = _model_files(tmp_path)
+    eng = Qwen3VLEngine()
+    eng.load_model(model, mmproj, chat_family=family)
+
+    handler = eng.model.kwargs["chat_handler"]
+    assert isinstance(handler, handlers[family])
+    assert handler.clip_model_path == str(mmproj)
+    if family in ("qwen3vl", "qwen35"):
+        assert handler.add_vision_id is False
+    if family in ("qwen35", "gemma4"):
+        assert handler.enable_thinking is False
+
+
+def test_construct_chat_handler_uses_inherited_explicit_flags():
+    class Base:
+        def __init__(self, clip_model_path, verbose=False,
+                     enable_thinking=True, **kwargs):
+            assert kwargs == {}
+            self.enable_thinking = enable_thinking
+
+    class Handler(Base):
+        pass
+
+    handler = inference._construct_chat_handler(Handler, Path("mmproj.gguf"), False)
+    assert handler.enable_thinking is False
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("raw, expected", [
+    ("<|channel>thought\nplanning\n<channel|>A dog.", "photo of A dog. indoors"),
+    ("<|channel>thought\nplanning\n<channel|>", ""),
+    ("<|channel>thought\nstill planning", ""),
+])
+def test_gguf_image_cleans_gemma_thought_channels(tmp_path, streaming, raw, expected):
+    image = tmp_path / "dog.png"
+    Image.new("RGB", (16, 16), "red").save(image)
+    eng = _make_engine(
+        response={"choices": [{"message": {"content": raw}}]},
+        stream_chunks=[{"choices": [{"delta": {"content": raw}}]}],
+    )
+    assert eng.caption_image(
+        image, "Describe.", prefix="photo of", suffix="indoors",
+        stream_callback=(lambda text: None) if streaming else None,
+    ) == expected
+
+
 def test_construct_chat_handler_surfaces_a_real_typeerror():
     """A TypeError from the constructor *body* must not be swallowed.
 

@@ -25,6 +25,14 @@ cancel leaves nothing running. The Qwen3-VL handler switch was A/B'd over 7
 images (OCR, chart-reading and fine-detail cases) with no caption regression.
 
 ### Fixed (review findings on the engine work)
+- **Model loading rejected flags forwarded through `**kwargs`.** Optional
+  captioning flags now require an explicit keyword parameter in the resolved
+  handler signature, including inherited constructors. Qwen3-VL and Gemma
+  handlers no longer forward unsupported options to their strict base class.
+- **Gemma thought channels survived caption cleanup.** Both complete and
+  unclosed `<|channel>thought` blocks are recognized using Gemma's actual
+  `<channel|>` closing token. Regression tests cover both image backends,
+  streaming GGUF output, affixes, and protection of existing caption files.
 - **A reasoning-only response came back as the caption.** `clean_caption`
   falls back to the original text when cleaning empties it, which protects a
   prefix-only caption like `"Caption:"`. A response that is *nothing but* a

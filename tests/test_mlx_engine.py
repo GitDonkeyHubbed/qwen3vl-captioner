@@ -302,6 +302,24 @@ def _make_clip(tmp_path):
     return clip
 
 
+@pytest.mark.parametrize("raw, expected", [
+    ("<|channel>thought\nplanning\n<channel|>A dog.", "photo of A dog. indoors"),
+    ("<|channel>thought\nplanning\n<channel|>", ""),
+    ("<|channel>thought\nstill planning", ""),
+])
+def test_mlx_image_cleans_gemma_thought_channels(tmp_path, monkeypatch, raw, expected):
+    _install_fake_mlx_vlm(
+        monkeypatch,
+        lambda *args, **kwargs: iter([types.SimpleNamespace(text=raw)]),
+        lambda *args, **kwargs: "formatted",
+    )
+    image = tmp_path / "dog.png"
+    Image.new("RGB", (16, 16), "red").save(image)
+    assert _loaded_engine().caption_image(
+        image, "Describe.", prefix="photo of", suffix="indoors",
+    ) == expected
+
+
 def test_caption_video_stages_frames_and_matches_num_images(tmp_path, monkeypatch):
     captured = {}
 

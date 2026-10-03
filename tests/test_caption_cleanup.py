@@ -140,6 +140,19 @@ def test_strip_reasoning_removes_a_gemma_thought_channel():
     assert strip_reasoning(raw) == "A dog on a beach."
 
 
+@pytest.mark.parametrize("raw, expected", [
+    ("<|channel>thought\nplanning\n<channel|>A dog.", "A dog."),
+    (" \n<|channel>thought\nplanning\n<channel|>\nCaption: A dog.", "A dog."),
+    ("<|channel>thought\nplanning\n<channel|>", ""),
+    ("<|channel>thought\nstill planning", ""),
+    ("A thoughtful dog.", "A thoughtful dog."),
+    ("A sign reading <|channel>thought.", "A sign reading <|channel>thought."),
+    ("<|channel>thoughtful dog", "<|channel>thoughtful dog"),
+])
+def test_clean_caption_actual_gemma_channels(raw, expected):
+    assert clean_caption(raw) == expected
+
+
 def test_strip_reasoning_leaves_ordinary_captions_alone():
     assert strip_reasoning("A cat on a mat.") == "A cat on a mat."
     # An angle bracket that is not a reasoning tag must survive untouched.
@@ -235,6 +248,8 @@ def test_affixes_on_an_empty_caption_stay_empty(prefix, suffix):
     "<think>examining the image</think>",
     "<think>budget ran out mid-thought",
     "<|channel|>think\nweighing it up<|channel|>",
+    "<|channel>thought\nweighing it up<channel|>",
+    "<|channel>thought\nweighing it up",
     "",
     "   ",
 ])

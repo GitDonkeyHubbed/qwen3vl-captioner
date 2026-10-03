@@ -137,14 +137,16 @@ _STRIP_PREFIXES = [
 # The handlers are constructed with thinking disabled, but a model can still
 # open one on its own, and a stray trace must never reach a .txt sidecar.
 _THINK_BLOCK = re.compile(
-    r"\A\s*(?:<think>|<\|channel\|>\s*think).*?(?:</think>|<\|/?channel\|>)\s*",
+    r"\A\s*(?:<think>.*?</think>"
+    r"|<\|channel>thought\b.*?<channel\|>"
+    r"|<\|channel\|>\s*think\b.*?<\|/?channel\|>)\s*",
     re.DOTALL | re.IGNORECASE,
 )
 
 # The same opening markers with no closing tag anywhere: the model started
 # reasoning and hit its token limit still inside the block.
 _UNCLOSED_THINK = re.compile(
-    r"\A\s*(?:<think>|<\|channel\|>\s*think)",
+    r"\A\s*(?:<think>|<\|channel>thought\b|<\|channel\|>\s*think\b)",
     re.IGNORECASE,
 )
 
