@@ -11,6 +11,7 @@ import base64
 import inspect
 import io
 import math
+import re
 import time
 from pathlib import Path
 from typing import Callable, Optional
@@ -60,6 +61,43 @@ CHAT_FAMILY_HANDLERS = {
     "gemma4": "Gemma4ChatHandler",
     "gemma3": "Gemma3ChatHandler",
 }
+
+
+class _Gemma4E4BTemplate:
+    """Adapt the pinned handler's generation suffix to E4B's chat template.
+
+    E4B does not support the thinking toggle. Its embedded GGUF template
+    ends at the model turn, but the pinned Gemma4 handler appends an empty
+    thought channel when thinking is disabled. Starting after that channel
+    can make E4B emit unmarked planning prose. Keep the handler's media and
+    conversation rendering and remove only that exact generation prefill.
+    """
+
+    _PREFILL = "<|channel>thought\n<channel|>"
+
+    def __init__(self, template):
+        self.template = template
+
+    def render(self, **context):
+        text = self.template.render(**context)
+        if context.get("add_generation_prompt") and text.endswith(
+            "<|turn>model\n" + self._PREFILL
+        ):
+            return text[:-len(self._PREFILL)]
+        return text
+
+
+def _configure_gemma4_template(handler, metadata, model_path):
+    # Prefer the model's identity over a renamed filename. Only use the
+    # filename on older/custom GGUFs without a name in their metadata.
+    if metadata.get("general.architecture", "gemma4") != "gemma4":
+        return
+    name = metadata.get("general.name") or model_path.name
+    if not re.search(r"(?<![a-z0-9])e4b(?![a-z0-9])", name, re.IGNORECASE):
+        return
+    template = getattr(handler, "chat_template", None)
+    if template is not None:
+        handler.chat_template = _Gemma4E4BTemplate(template)
 
 
 def is_image_file(path: Path) -> bool:
@@ -439,6 +477,11 @@ class Qwen3VLEngine:
             chat_handler=self.chat_handler,
             verbose=verbose,
         )
+
+        if family == "gemma4":
+            _configure_gemma4_template(
+                self.chat_handler, getattr(self.model, "metadata", {}), model_path
+            )
 
         self.model_path = model_path
         self.mmproj_path = mmproj_path

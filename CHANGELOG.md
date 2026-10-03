@@ -25,6 +25,10 @@ cancel leaves nothing running. The Qwen3-VL handler switch was A/B'd over 7
 images (OCR, chart-reading and fine-detail cases) with no caption regression.
 
 ### Fixed (review findings on the engine work)
+- **Gemma-4 E4B generated planning prose with thinking disabled.** The pinned
+  native handler adds an empty thought-channel prefix that E4B's embedded
+  model template does not use. E4B generation now stops the prompt at the
+  model turn, preserving media, conversation history, and other model sizes.
 - **Model loading rejected flags forwarded through `**kwargs`.** Optional
   captioning flags now require an explicit keyword parameter in the resolved
   handler signature, including inherited constructors. Qwen3-VL and Gemma

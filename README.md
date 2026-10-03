@@ -91,7 +91,7 @@ the V1.5.0 release, and the video items stay engine-only until part 2:
 - **Every Gemma-4 quant finds its vision encoder.** Six of the eleven
   published builds use the `_K_P` "pure" naming, which the pairing logic did
   not recognise — so they downloaded without an encoder.
-- Test suite grew to **632 tests** on this branch (371 in V1.4.4).
+- Test suite grew to **644 tests** on this branch (371 in V1.4.4).
 
 See [CHANGELOG.md](CHANGELOG.md) for the complete list.
 
