@@ -227,8 +227,11 @@ class MlxVlmEngine:
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
+        # mlx-vlm 0.6.x otherwise prefills an open <think> for Qwen3.5.
+        # That opening is outside the generated text, beyond clean_caption.
         formatted_prompt = apply_chat_template(
-            self.processor, self.config, messages, num_images=1
+            self.processor, self.config, messages, num_images=1,
+            enable_thinking=False,
         )
 
         start_time = time.perf_counter()
@@ -334,6 +337,7 @@ class MlxVlmEngine:
             formatted_prompt = apply_chat_template(
                 self.processor, self.config, messages,
                 num_images=len(frame_paths),
+                enable_thinking=False,
             )
 
             start_time = time.perf_counter()

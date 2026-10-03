@@ -15,6 +15,7 @@ import re
 import time
 from pathlib import Path
 from typing import Callable, Optional
+from uuid import uuid4
 
 from PIL import Image
 
@@ -63,24 +64,76 @@ CHAT_FAMILY_HANDLERS = {
 }
 
 
-class _Gemma4E4BTemplate:
-    """Adapt the pinned handler's generation suffix to E4B's chat template.
+class _Gemma4Template:
+    """Adapt the pinned handler's image markers and E4B generation suffix.
+
+    MTMD inserts the image boundaries and embeddings itself. The pinned
+    template also emits a literal ``<|image|>`` before each image URL, which
+    otherwise survives URL replacement as an extra hard token. Tag actual
+    image URLs while rendering so only their template prefix is removed;
+    text containing the same token remains untouched.
 
     E4B does not support the thinking toggle. Its embedded GGUF template
     ends at the model turn, but the pinned Gemma4 handler appends an empty
     thought channel when thinking is disabled. Starting after that channel
-    can make E4B emit unmarked planning prose. Keep the handler's media and
-    conversation rendering and remove only that exact generation prefill.
+    can make E4B emit unmarked planning prose.
     """
 
     _PREFILL = "<|channel>thought\n<channel|>"
+    _IMAGE_PLACEHOLDER = "<|image|>"
 
-    def __init__(self, template):
+    def __init__(self, template, strip_thought_prefill=False):
         self.template = template
+        self.strip_thought_prefill = strip_thought_prefill
 
     def render(self, **context):
+        prefix = f"__vl_captioner_{uuid4().hex}_"
+        text_marker = prefix + "literal_image__"
+        image_urls = []
+
+        def protect_text(value):
+            if isinstance(value, str):
+                return value.replace(self._IMAGE_PLACEHOLDER, text_marker)
+            return value
+
+        # Work on copies: MTMD subsequently reads the original messages to
+        # decode their URLs. Protect literal tokens in text too, so a future
+        # template that emits only the URL cannot mistake adjacent user text
+        # for the old template's image prefix.
+        messages = []
+        for message in context.get("messages", []):
+            copy = dict(message)
+            content = message.get("content")
+            if isinstance(content, (list, tuple)):
+                parts = []
+                for part in content:
+                    item = dict(part)
+                    if item.get("type") == "image_url":
+                        image = item["image_url"]
+                        url = image if isinstance(image, str) else image["url"]
+                        marker = prefix + f"image_{len(image_urls)}__"
+                        image_urls.append((marker, url))
+                        item["image_url"] = (
+                            marker if isinstance(image, str) else {**image, "url": marker}
+                        )
+                    elif item.get("type") == "text":
+                        item["text"] = protect_text(item["text"])
+                    parts.append(item)
+                copy["content"] = parts
+            else:
+                copy["content"] = protect_text(content)
+            messages.append(copy)
+        if image_urls:
+            context = {**context, "messages": messages}
+
         text = self.template.render(**context)
-        if context.get("add_generation_prompt") and text.endswith(
+        for marker, url in image_urls:
+            text = text.replace(self._IMAGE_PLACEHOLDER + marker, marker)
+            text = text.replace(marker, url)
+        if image_urls:
+            text = text.replace(text_marker, self._IMAGE_PLACEHOLDER)
+
+        if self.strip_thought_prefill and context.get("add_generation_prompt") and text.endswith(
             "<|turn>model\n" + self._PREFILL
         ):
             return text[:-len(self._PREFILL)]
@@ -93,11 +146,10 @@ def _configure_gemma4_template(handler, metadata, model_path):
     if metadata.get("general.architecture", "gemma4") != "gemma4":
         return
     name = metadata.get("general.name") or model_path.name
-    if not re.search(r"(?<![a-z0-9])e4b(?![a-z0-9])", name, re.IGNORECASE):
-        return
+    is_e4b = bool(re.search(r"(?<![a-z0-9])e4b(?![a-z0-9])", name, re.IGNORECASE))
     template = getattr(handler, "chat_template", None)
     if template is not None:
-        handler.chat_template = _Gemma4E4BTemplate(template)
+        handler.chat_template = _Gemma4Template(template, strip_thought_prefill=is_e4b)
 
 
 def is_image_file(path: Path) -> bool:

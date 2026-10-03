@@ -25,6 +25,21 @@ cancel leaves nothing running. The Qwen3-VL handler switch was A/B'd over 7
 images (OCR, chart-reading and fine-detail cases) with no caption regression.
 
 ### Fixed (review findings on the engine work)
+- **Long model names clipped the download and browse buttons.** The model
+  selector now fits the sidebar while keeping both buttons accessible.
+- **Gemma images carried an extra image placeholder token.** The pinned
+  handler's literal `<|image|>` prefix is removed only from actual image
+  parts before MTMD inserts the vision embeddings and their boundaries.
+  Literal tokens in caption prompts and conversation history stay intact;
+  the E4B-only generation suffix correction is retained.
+- **A recoverable corrupt frame truncated the sequential video sample.**
+  Counting, sampling, and thumbnails now retry failed grabs and reach valid
+  frames after damaged packets. Both sampling passes count readable frames
+  consistently, and cancellation is polled during failures. A burst of 32
+  consecutive failures ends the scan so EOF cannot cause an endless loop.
+- **MLX Qwen3.5 captions could include reasoning on supported 0.6.x installs.**
+  Image and video prompts explicitly disable thinking, closing the reasoning
+  prefill before generation instead of relying on a newer dependency default.
 - **Gemma-4 E4B generated planning prose with thinking disabled.** The pinned
   native handler adds an empty thought-channel prefix that E4B's embedded
   model template does not use. E4B generation now stops the prompt at the

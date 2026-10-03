@@ -1,5 +1,6 @@
-"""Keep E4B generation prompts consistent with its embedded GGUF template."""
+"""Keep Gemma4 media input and E4B generation prompts consistent with MTMD."""
 
+from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
@@ -13,7 +14,7 @@ THOUGHT_PREFILL = "<|channel>thought\n<channel|>"
 
 @pytest.fixture
 def load_engine(monkeypatch, tmp_path):
-    def load(metadata=None, filename="Gemma-4-E4B.gguf", family="gemma4"):
+    def load(metadata=None, filename="Gemma-4-E4B.gguf", family="gemma4", template=None):
         class Template:
             text = "image-and-history" + MODEL_TURN + THOUGHT_PREFILL
 
@@ -21,7 +22,7 @@ def load_engine(monkeypatch, tmp_path):
                 self.context = context
                 return self.text
 
-        template = Template()
+        template = template or Template()
 
         class Handler:
             def __init__(self, clip_model_path, verbose=False):
@@ -82,7 +83,7 @@ def test_prompt_adaptation_is_limited_to_gemma4_e4b(
     engine, original = load_engine(metadata, filename, family)
     rendered = engine.chat_handler.chat_template.render(add_generation_prompt=True)
     assert rendered == ("image-and-history" + MODEL_TURN if adapt else original.text)
-    if not adapt:
+    if family != "gemma4" or metadata.get("general.architecture") == "gemma3":
         assert engine.chat_handler.chat_template is original
 
 
@@ -96,3 +97,124 @@ def test_prompt_adapter_preserves_other_template_output(load_engine, text, gener
     engine, original = load_engine()
     original.text = text
     assert engine.chat_handler.chat_template.render(add_generation_prompt=generation) == text
+
+
+class ImageTemplate:
+    """Render the pinned handler's image branch without loading native llama.
+
+    Gemma4ChatHandler emits ``'<|image|>' + url_val`` in its content loop.
+    A fixed future wheel can emit just ``url_val``; MTMD adds the boundaries.
+    """
+
+    def __init__(self, image_prefix="<|image|>"):
+        self.image_prefix = image_prefix
+
+    def render(self, **context):
+        text = ""
+        for message in context["messages"]:
+            role = "model" if message["role"] == "assistant" else message["role"]
+            text += "<|turn>" + role + "\n"
+            content = message["content"]
+            if isinstance(content, str):
+                text += content.strip()
+            else:
+                for item in content:
+                    if item["type"] == "text":
+                        text += item["text"].strip()
+                    elif item["type"] == "image_url":
+                        image = item["image_url"]
+                        url = image if isinstance(image, str) else image["url"]
+                        text += self.image_prefix + url
+                    elif item["type"] == "audio_url":
+                        text += "<|audio|>" + item["audio_url"]
+            text += "<turn|>\n"
+        if context.get("add_generation_prompt"):
+            text += MODEL_TURN + THOUGHT_PREFILL
+        return text
+
+
+@pytest.mark.parametrize("name,strip_thought", [
+    ("Gemma-4-E4B", True),
+    ("Gemma-4-E2B", False),
+    ("Gemma-4-31B", False),
+    ("Gemma-4-26B-A4B", False),
+])
+@pytest.mark.parametrize("mapping_url", [False, True])
+def test_all_gemma4_images_omit_hard_placeholder(
+    load_engine, name, strip_thought, mapping_url,
+):
+    uri = "data:image/jpeg;base64,abc"
+    image_url = {"url": uri, "detail": "high"} if mapping_url else uri
+    messages = [{"role": "user", "content": [
+        {"type": "text", "text": "Describe this image."},
+        {"type": "image_url", "image_url": image_url},
+    ]}]
+    original_messages = deepcopy(messages)
+    engine, _ = load_engine(
+        metadata={"general.name": name}, template=ImageTemplate(),
+    )
+
+    rendered = engine.chat_handler.chat_template.render(
+        messages=messages, add_generation_prompt=True,
+    )
+
+    suffix = MODEL_TURN + ("" if strip_thought else THOUGHT_PREFILL)
+    assert rendered == "<|turn>user\nDescribe this image." + uri + "<turn|>\n" + suffix
+    assert messages == original_messages
+    # This is the pinned MTMD handler's next step. The native tokenizer will
+    # insert BOI + embeddings + EOI at this marker, so no hard image token
+    # should accompany it.
+    mtmd_text = rendered.replace(uri, "<__media__>")
+    assert "<|image|>" not in mtmd_text
+    assert mtmd_text.count("<__media__>") == 1
+
+
+@pytest.mark.parametrize("image_prefix", ["<|image|>", ""])
+def test_video_frames_and_history_preserve_literal_image_tokens(load_engine, image_prefix):
+    first_uri = "data:image/jpeg;base64,first"
+    second_uri = "data:image/jpeg;base64,second"
+    messages = [
+        {"role": "user", "content": "Keep the literal <|image|> in the history."},
+        {"role": "assistant", "content": "The token is <|image|>."},
+        {"role": "user", "content": [
+            {"type": "text", "text": "Frame 1, literal token <|image|>"},
+            {"type": "image_url", "image_url": {"url": first_uri}},
+            {"type": "text", "text": "Frame 2 "},
+            {"type": "image_url", "image_url": second_uri},
+            {"type": "text", "text": "Repeated frame "},
+            {"type": "image_url", "image_url": first_uri},
+            {"type": "audio_url", "audio_url": "data:audio/wav;base64,audio"},
+        ]},
+    ]
+    original_messages = deepcopy(messages)
+    engine, _ = load_engine(template=ImageTemplate(image_prefix=image_prefix))
+
+    rendered = engine.chat_handler.chat_template.render(
+        messages=messages, add_generation_prompt=True,
+    )
+
+    assert rendered == (
+        "<|turn>user\nKeep the literal <|image|> in the history.<turn|>\n"
+        "<|turn>model\nThe token is <|image|>.<turn|>\n"
+        "<|turn>user\nFrame 1, literal token <|image|>" + first_uri
+        + "Frame 2" + second_uri + "Repeated frame" + first_uri
+        + "<|audio|>data:audio/wav;base64,audio<turn|>\n" + MODEL_TURN
+    )
+    assert messages == original_messages
+
+
+def test_media_urls_in_text_do_not_lose_literal_prefixes(load_engine):
+    uri = "data:image/jpeg;base64,abc"
+    messages = [{"role": "user", "content": [
+        {"type": "text", "text": "Literal: <|image|>" + uri + "\n"},
+        {"type": "image_url", "image_url": uri},
+    ]}]
+    engine, _ = load_engine(template=ImageTemplate())
+
+    rendered = engine.chat_handler.chat_template.render(
+        messages=messages, add_generation_prompt=True,
+    )
+
+    assert rendered == (
+        "<|turn>user\nLiteral: <|image|>" + uri + uri + "<turn|>\n" + MODEL_TURN
+    )

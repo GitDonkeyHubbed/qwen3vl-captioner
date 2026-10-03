@@ -320,6 +320,59 @@ def test_mlx_image_cleans_gemma_thought_channels(tmp_path, monkeypatch, raw, exp
     ) == expected
 
 
+@pytest.mark.parametrize("media_type", ["image", "video"])
+@pytest.mark.parametrize("model_type", ["qwen3_5", "qwen3_vl"])
+def test_mlx_captions_disable_template_thinking(
+    tmp_path, monkeypatch, media_type, model_type
+):
+    from jinja2 import Template
+
+    # Generation suffix from the registered monyschuk Qwen3.5 MLX template.
+    # mlx-vlm 0.6.x forwards options without supplying enable_thinking=False;
+    # an undefined option opens reasoning in the prompt, outside the output.
+    qwen35_suffix = Template(
+        "{{ '<|im_start|>assistant\\n' }}"
+        "{% if enable_thinking is defined and enable_thinking is false %}"
+        "{{ '<think>\\n\\n</think>\\n\\n' }}"
+        "{% else %}{{ '<think>\\n' }}{% endif %}"
+    )
+    captured = {}
+
+    def fake_apply_chat_template(processor, config, messages, num_images, **kwargs):
+        captured["num_images"] = num_images
+        if config["model_type"] == "qwen3_5":
+            return qwen35_suffix.render(**kwargs)
+        # Non-reasoning templates accept the option and ignore it.
+        return "<|im_start|>assistant\n"
+
+    def fake_stream_generate(model, processor, prompt, **kwargs):
+        captured["images"] = kwargs["image"]
+        if prompt.endswith("<think>\n"):
+            # The opening marker was prefilled, so it is not a generated token.
+            yield types.SimpleNamespace(text="I need to inspect this. </think>\n\n")
+        yield types.SimpleNamespace(text="Caption: A dog runs.")
+
+    _install_fake_mlx_vlm(monkeypatch, fake_stream_generate, fake_apply_chat_template)
+    monkeypatch.setattr(engine.video, "sample_frames", lambda *a, **k: _solid_frames(2))
+    eng = _loaded_engine()
+    eng.config = {"model_type": model_type}
+    tokens = []
+    if media_type == "image":
+        source = tmp_path / "dog.png"
+        Image.new("RGB", (16, 16), "red").save(source)
+        caption = eng.caption_image(source, "Describe.", stream_callback=tokens.append)
+        expected_images = 1
+    else:
+        caption = eng.caption_video(
+            _make_clip(tmp_path), "Describe.", stream_callback=tokens.append
+        )
+        expected_images = 2
+
+    assert caption == "A dog runs."
+    assert tokens == ["Caption: A dog runs."]
+    assert captured["num_images"] == len(captured["images"]) == expected_images
+
+
 def test_caption_video_stages_frames_and_matches_num_images(tmp_path, monkeypatch):
     captured = {}
 
@@ -328,9 +381,10 @@ def test_caption_video_stages_frames_and_matches_num_images(tmp_path, monkeypatc
         engine.video, "sample_frames", lambda path, n, cancel_check=None, max_dim=None: _solid_frames(3)
     )
 
-    def fake_apply_chat_template(processor, config, messages, num_images):
+    def fake_apply_chat_template(processor, config, messages, num_images, **kwargs):
         captured["messages"] = messages
         captured["num_images"] = num_images
+        captured["enable_thinking"] = kwargs["enable_thinking"]
         return "formatted"
 
     def fake_stream_generate(model, processor, prompt, **kwargs):
@@ -368,6 +422,7 @@ def test_caption_video_stages_frames_and_matches_num_images(tmp_path, monkeypatc
     ]
     # num_images must equal the number of images actually passed.
     assert captured["num_images"] == len(paths) == 3
+    assert captured["enable_thinking"] is False
     assert captured["existed_during_call"] == [True, True, True]
     # The temp dir (and every staged frame) is gone after the call.
     assert all(not Path(p).exists() for p in paths)
@@ -393,7 +448,7 @@ def test_caption_video_downscales_staged_frames(tmp_path, monkeypatch):
     _install_fake_mlx_vlm(
         monkeypatch,
         fake_stream_generate,
-        lambda processor, config, messages, num_images: "formatted",
+        lambda processor, config, messages, num_images, **kwargs: "formatted",
     )
 
     _loaded_engine().caption_video(_make_clip(tmp_path), "Describe.")
@@ -423,7 +478,7 @@ def test_caption_video_stages_frames_in_temporal_order(tmp_path, monkeypatch):
     _install_fake_mlx_vlm(
         monkeypatch,
         fake_stream_generate,
-        lambda processor, config, messages, num_images: "formatted",
+        lambda processor, config, messages, num_images, **kwargs: "formatted",
     )
 
     caption = _loaded_engine().caption_video(_make_clip(tmp_path), "Describe.")
@@ -454,7 +509,7 @@ def test_caption_video_keeps_frames_alive_through_streaming(tmp_path, monkeypatc
     _install_fake_mlx_vlm(
         monkeypatch,
         fake_stream_generate,
-        lambda processor, config, messages, num_images: "formatted",
+        lambda processor, config, messages, num_images, **kwargs: "formatted",
     )
 
     caption = _loaded_engine().caption_video(_make_clip(tmp_path), "Describe.")
@@ -483,7 +538,7 @@ def test_caption_video_cancel_mid_stream_returns_partial(tmp_path, monkeypatch):
     _install_fake_mlx_vlm(
         monkeypatch,
         fake_stream_generate,
-        lambda processor, config, messages, num_images: "formatted",
+        lambda processor, config, messages, num_images, **kwargs: "formatted",
     )
 
     seen = []
@@ -514,7 +569,7 @@ def test_caption_video_cleans_up_temp_frames_on_error(tmp_path, monkeypatch):
     _install_fake_mlx_vlm(
         monkeypatch,
         fake_stream_generate,
-        lambda processor, config, messages, num_images: "formatted",
+        lambda processor, config, messages, num_images, **kwargs: "formatted",
     )
 
     with pytest.raises(RuntimeError, match="out of memory"):
@@ -539,7 +594,7 @@ def test_caption_video_clamps_num_frames(tmp_path, monkeypatch, requested, expec
     _install_fake_mlx_vlm(
         monkeypatch,
         lambda *args, **kwargs: iter([types.SimpleNamespace(text="ok")]),
-        lambda processor, config, messages, num_images: "formatted",
+        lambda processor, config, messages, num_images, **kwargs: "formatted",
     )
 
     _loaded_engine().caption_video(
@@ -556,7 +611,7 @@ def test_caption_video_applies_prefix_suffix(tmp_path, monkeypatch):
     _install_fake_mlx_vlm(
         monkeypatch,
         lambda *args, **kwargs: iter([types.SimpleNamespace(text="A cat runs.")]),
-        lambda processor, config, messages, num_images: "formatted",
+        lambda processor, config, messages, num_images, **kwargs: "formatted",
     )
 
     caption = _loaded_engine().caption_video(

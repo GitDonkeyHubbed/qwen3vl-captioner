@@ -567,6 +567,12 @@ class SettingsPanel(QFrame):
         model_row.setSpacing(6)
 
         self.model_combo = QComboBox()
+        # Long registry/local filenames must not widen the scroll contents
+        # and push the fixed download/browse buttons outside the sidebar.
+        self.model_combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.model_combo.setMinimumContentsLength(12)
         # Populated via populate_models() — registry quants plus any local
         # GGUF files the user added (issue #7). Each item carries
         # ("registry", key) or ("local", path) as item data.

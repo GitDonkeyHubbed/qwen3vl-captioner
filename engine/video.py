@@ -25,6 +25,12 @@ from engine.base import VideoCancelled, clamp_image_dim
 # but makes the behaviour untestable with a small fixture.
 CANCEL_POLL_INTERVAL = 64
 
+# A failed grab can consume a corrupt packet and still leave valid frames
+# ahead. OpenCV reports the same False at EOF, so retry only a bounded burst
+# of failures rather than trusting the header or spinning on an exhausted
+# capture. Longer unrecoverable runs end the scan.
+MAX_CONSECUTIVE_GRAB_FAILURES = 32
+
 
 # Supported video file extensions
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
@@ -210,11 +216,31 @@ def _midpoint_indices(total: int, num_frames: int) -> list[int]:
     return indices
 
 
-def _count_frames(cv2, video_path: Path, cancel_check=None) -> int:
-    """Count decodable frames with a grab-only pass (no decode cost).
+def _grab_next(cap, cancel_check=None) -> bool:
+    """Grab the next readable frame, allowing a bounded run of bad packets.
 
-    Cheap per frame, but unbounded in their number — a two-hour clip is a
-    long time to ignore a cancel, so the loop checks periodically.
+    FFmpeg-backed captures can return False for one damaged MJPEG frame and
+    recover on the next call. Neither False nor an unchanged frame-position
+    property distinguishes that from EOF. A successful grab resets the retry
+    budget; the callers count only these successes so both sequential passes
+    use the same index space even when some packets cannot be decoded.
+    """
+    for _ in range(MAX_CONSECUTIVE_GRAB_FAILURES):
+        if cap.grab():
+            return True
+        # Failed grabs do not advance the successful-frame counter used by
+        # the normal periodic polls. Check each failure so damage cannot
+        # leave cancellation waiting until a good frame appears.
+        _check_cancelled(cancel_check)
+    return False
+
+
+def _count_frames(cv2, video_path: Path, cancel_check=None) -> int:
+    """Count readable frames with a grab-only pass (no image-copy cost).
+
+    Some backends decode during grab(), but no RGB/PIL images are materialized
+    here. The frame count is unbounded, so the loop checks cancel periodically
+    and retries recoverable grab failures without counting them as frames.
     """
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
@@ -222,7 +248,7 @@ def _count_frames(cv2, video_path: Path, cancel_check=None) -> int:
         return 0
     try:
         total = 0
-        while cap.grab():
+        while _grab_next(cap, cancel_check):
             total += 1
             if total % CANCEL_POLL_INTERVAL == 0:
                 _check_cancelled(cancel_check)
@@ -237,9 +263,10 @@ def _sample_sequential(
 ) -> list[Image.Image]:
     """Two-pass sampler for files whose frame count or seeking is unusable.
 
-    Counts frames with grab() (which skips decoding), then re-reads from the
-    start and decodes only at the midpoint indices — so the sample spans the
-    whole clip and returns the requested number of frames. The previous
+    Counts readable frames with grab(), then re-reads from the start and
+    retrieves images only at the midpoint indices — so the sample spans the
+    whole clip and returns the requested number of frames. Failed grabs are
+    retried and do not advance either pass's index. The previous
     rolling-halving approach kept only the frames it happened to survive with,
     which both under-delivered and skewed coverage toward the start.
 
@@ -263,7 +290,7 @@ def _sample_sequential(
         while idx <= wanted[-1]:
             if idx % CANCEL_POLL_INTERVAL == 0:
                 _check_cancelled(cancel_check)
-            if not cap.grab():
+            if not _grab_next(cap, cancel_check):
                 break
             if idx in targets:
                 ok, frame = cap.retrieve()
@@ -419,9 +446,10 @@ def first_frame(video_path: str | Path) -> Image.Image:
             if ok and frame is not None:
                 return _to_pil(cv2, frame)
             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-        # grab() advances even when a frame won't decode, so this scan can
-        # step past corrupt leading frames (a plain read() loop cannot)
-        while cap.grab():
+        # A failed grab may have consumed a corrupt leading packet rather
+        # than reached EOF. The same bounded retries as the sampler let the
+        # scan reach the first readable frame.
+        while _grab_next(cap):
             ok, frame = cap.retrieve()
             if ok and frame is not None:
                 return _to_pil(cv2, frame)

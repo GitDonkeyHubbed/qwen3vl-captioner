@@ -19,6 +19,7 @@ exercised here too by poisoning ``sys.modules``.
 """
 
 import contextlib
+import struct
 import sys
 import warnings
 from pathlib import Path
@@ -800,3 +801,198 @@ def test_an_unreadable_position_counts_as_a_failed_seek():
         _FakeCv2(), MutePosCap(), [0, 500], None, None
     )
     assert frames == [] and seek_refused is True
+
+
+def _write_damaged_mjpeg(path, damaged_indices):
+    """Damage independent JPEG frames without changing the AVI's frame count."""
+    w, h = FRAME_SIZE
+    writer = cv2.VideoWriter(
+        str(path), cv2.VideoWriter_fourcc(*"MJPG"), 15.0, (w, h)
+    )
+    if not writer.isOpened():
+        pytest.skip("cv2.VideoWriter cannot encode MJPG on this platform")
+    try:
+        for i in range(TOTAL_FRAMES):
+            frame = np.zeros((h, w, 3), dtype=np.uint8)
+            frame[:, :, 0] = i * 8
+            writer.write(frame)
+    finally:
+        writer.release()
+
+    payload = bytearray(path.read_bytes())
+    movi = payload.find(b"movi")
+    assert movi >= 0, "fixture has no AVI video data"
+    offset = movi + 4
+    chunks = []
+    while offset < len(payload) - 8:
+        tag = payload[offset:offset + 4]
+        size = struct.unpack_from("<I", payload, offset + 4)[0]
+        if tag in (b"00dc", b"00db"):
+            chunks.append((offset + 8, size))
+        offset += 8 + size + (size & 1)
+    assert len(chunks) == TOTAL_FRAMES
+    for i in damaged_indices:
+        offset, size = chunks[i]
+        payload[offset:offset + size] = bytes(size)
+    path.write_bytes(payload)
+    return path
+
+
+@pytest.mark.parametrize("damaged", [(10,), (0, 1, 2, 3, 4)])
+def test_count_frames_continues_after_corrupt_mjpeg(tmp_path, damaged):
+    path = _write_damaged_mjpeg(tmp_path / "damaged.avi", damaged)
+    assert video._count_frames(cv2, path) == TOTAL_FRAMES - len(damaged)
+
+
+@pytest.mark.parametrize("damaged", [(10,), (0, 1, 2, 3, 4)])
+@pytest.mark.parametrize("capture_kind", ["honest", "unknown", "overstated", "unseekable"])
+def test_corrupt_mjpeg_keeps_full_clip_coverage(
+    tmp_path, monkeypatch, damaged, capture_kind
+):
+    path = _write_damaged_mjpeg(tmp_path / "damaged.avi", damaged)
+    if capture_kind == "unknown":
+        _break_capture(monkeypatch, frame_count=0.0)
+    elif capture_kind == "overstated":
+        _break_capture(monkeypatch, frame_count=50.0)
+    elif capture_kind == "unseekable":
+        _break_capture(monkeypatch, seekable=False)
+
+    with _quiet():
+        frames = sample_frames(path, num_frames=8, max_dim=32)
+
+    valid = [i for i in range(TOTAL_FRAMES) if i not in damaged]
+    expected = [valid[i] for i in video._midpoint_indices(len(valid), 8)]
+    assert len(frames) == 8
+    assert [_frame_index(f) for f in frames] == pytest.approx(expected, abs=1)
+    assert all(max(f.size) <= 32 for f in frames)
+
+
+@pytest.mark.parametrize("damaged", [(10,), (0, 1, 2, 3, 4)])
+def test_corrupt_mjpeg_can_return_every_valid_frame(tmp_path, damaged):
+    path = _write_damaged_mjpeg(tmp_path / "damaged.avi", damaged)
+    with _quiet():
+        frames = sample_frames(path, num_frames=100)
+    valid = [i for i in range(TOTAL_FRAMES) if i not in damaged]
+    assert len(frames) == len(valid)
+    assert [_frame_index(f) for f in frames] == pytest.approx(valid, abs=1)
+
+
+@pytest.mark.parametrize("capture_kind", ["honest", "unknown", "unseekable"])
+def test_first_frame_skips_corrupt_mjpeg_prefix(tmp_path, monkeypatch, capture_kind):
+    path = _write_damaged_mjpeg(tmp_path / "damaged.avi", (0, 1, 2, 3, 4))
+    if capture_kind == "unknown":
+        _break_capture(monkeypatch, frame_count=0.0)
+    elif capture_kind == "unseekable":
+        _break_capture(monkeypatch, seekable=False)
+    assert _frame_index(first_frame(path)) == pytest.approx(5, abs=1)
+
+
+def test_count_frames_cancelled_on_failed_grab(monkeypatch):
+    class FailedCapture:
+        released = False
+        grabs = 0
+
+        def isOpened(self):
+            return True
+
+        def grab(self):
+            self.grabs += 1
+            return False
+
+        def release(self):
+            self.released = True
+
+    cap = FailedCapture()
+    monkeypatch.setattr(cv2, "VideoCapture", lambda source: cap)
+    with pytest.raises(VideoCancelled):
+        video._count_frames(cv2, Path("damaged.avi"), cancel_check=lambda: True)
+    assert cap.grabs == 1
+    assert cap.released
+
+
+def test_count_frames_stops_after_bounded_failures(monkeypatch):
+    class FailedCapture:
+        grabs = 0
+        released = False
+
+        def isOpened(self):
+            return True
+
+        def grab(self):
+            self.grabs += 1
+            assert self.grabs <= 4, "failed grabs must not loop indefinitely"
+            return False
+
+        def release(self):
+            self.released = True
+
+    cap = FailedCapture()
+    monkeypatch.setattr(cv2, "VideoCapture", lambda source: cap)
+    monkeypatch.setattr(video, "MAX_CONSECUTIVE_GRAB_FAILURES", 4, raising=False)
+    assert video._count_frames(cv2, Path("damaged.avi")) == 0
+    assert cap.grabs == 4
+    assert cap.released
+
+
+def test_count_frames_resets_failure_streak_on_success(monkeypatch):
+    class IntermittentCapture:
+        results = iter([False] * 3 + [True] + [False] * 3 + [True] + [False] * 4)
+        released = False
+
+        def isOpened(self):
+            return True
+
+        def grab(self):
+            return next(self.results)
+
+        def release(self):
+            self.released = True
+
+    cap = IntermittentCapture()
+    monkeypatch.setattr(cv2, "VideoCapture", lambda source: cap)
+    monkeypatch.setattr(video, "MAX_CONSECUTIVE_GRAB_FAILURES", 4, raising=False)
+    assert video._count_frames(cv2, Path("damaged.avi")) == 2
+    assert cap.released
+
+
+def test_sequential_decode_cancelled_during_failed_grab(monkeypatch):
+    class FailedCapture:
+        failed = False
+        released = False
+
+        def isOpened(self):
+            return True
+
+        def grab(self):
+            self.failed = True
+            return False
+
+        def retrieve(self):
+            raise AssertionError("no image should be retrieved after a failed grab")
+
+        def release(self):
+            self.released = True
+
+    cap = FailedCapture()
+    # Isolate the second pass: cancel arrives only after its first failed grab.
+    monkeypatch.setattr(video, "_count_frames", lambda *args: 8)
+    monkeypatch.setattr(cv2, "VideoCapture", lambda source: cap)
+    with pytest.raises(VideoCancelled):
+        video._sample_sequential(
+            cv2, Path("damaged.avi"), 4, cancel_check=lambda: cap.failed
+        )
+    assert cap.released
+
+
+@pytest.mark.parametrize("sampler", [sample_frames, first_frame])
+def test_recovered_corrupt_mjpeg_releases_all_captures(tmp_path, monkeypatch, sampler):
+    path = _write_damaged_mjpeg(tmp_path / "damaged.avi", (0, 1, 2, 3, 4))
+    stats = _lying_header_capture(monkeypatch, header=50, real=TOTAL_FRAMES)
+    with _quiet():
+        result = sampler(path)
+    if sampler is sample_frames:
+        assert len(result) == 8
+    else:
+        assert _frame_index(result) == pytest.approx(5, abs=1)
+    assert stats.max_live == 1
+    assert stats.live == 0
