@@ -107,6 +107,31 @@ def _stream_with_sampling(
     return stream_generate(*args, temperature=temperature, top_p=top_p, **kwargs)
 
 
+def _apply_chat_template(apply_chat_template, processor, config, messages, num_images):
+    """Format a chat prompt, disabling thinking when this mlx-vlm allows it.
+
+    mlx-vlm 0.6.x otherwise prefills an open ``<think>`` for Qwen3.5. That
+    opening is outside the generated text, beyond ``clean_caption``. Qwen3-VL
+    templates do not read the flag. ``apply_chat_template`` before mlx-vlm
+    0.1.15 has no ``**kwargs``, and later builds forward extra keywords into
+    ``processor.apply_chat_template``, which can reject them. Only a TypeError
+    that reports ``enable_thinking`` as an unsupported keyword is retried
+    without the flag; any other TypeError is a real error.
+    """
+    try:
+        return apply_chat_template(
+            processor, config, messages, num_images=num_images,
+            enable_thinking=False,
+        )
+    except TypeError as exc:
+        message = str(exc)
+        if "enable_thinking" not in message or "keyword argument" not in message:
+            raise
+    return apply_chat_template(
+        processor, config, messages, num_images=num_images,
+    )
+
+
 @contextmanager
 def _prepared_image(image_path: Path, max_dim: int = MAX_IMAGE_DIM):
     """Yield a path to an EXIF-corrected, size-clamped copy of an image.
@@ -227,11 +252,9 @@ class MlxVlmEngine:
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
-        # mlx-vlm 0.6.x otherwise prefills an open <think> for Qwen3.5.
-        # That opening is outside the generated text, beyond clean_caption.
-        formatted_prompt = apply_chat_template(
+        formatted_prompt = _apply_chat_template(
+            apply_chat_template,
             self.processor, self.config, messages, num_images=1,
-            enable_thinking=False,
         )
 
         start_time = time.perf_counter()
@@ -334,10 +357,10 @@ class MlxVlmEngine:
             # num_images must equal the image list actually passed below —
             # frames that failed to decode were already dropped by
             # sample_frames, so count frame_paths, never num_frames.
-            formatted_prompt = apply_chat_template(
+            formatted_prompt = _apply_chat_template(
+                apply_chat_template,
                 self.processor, self.config, messages,
                 num_images=len(frame_paths),
-                enable_thinking=False,
             )
 
             start_time = time.perf_counter()

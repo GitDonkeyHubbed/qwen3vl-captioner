@@ -23,6 +23,7 @@ from engine.base import (
 from engine.mlx_engine import (
     MLX_SUPPORTED,
     MlxVlmEngine,
+    _apply_chat_template,
     _load_make_sampler,
     _stream_with_sampling,
     is_mlx_model_dir,
@@ -371,6 +372,84 @@ def test_mlx_captions_disable_template_thinking(
     assert caption == "A dog runs."
     assert tokens == ["Caption: A dog runs."]
     assert captured["num_images"] == len(captured["images"]) == expected_images
+
+
+@pytest.mark.parametrize("media_type", ["image", "video"])
+@pytest.mark.parametrize("rejection", ["fixed_signature", "forwarded"])
+def test_mlx_captions_drop_enable_thinking_when_unsupported(
+    tmp_path, monkeypatch, media_type, rejection
+):
+    """A build that rejects enable_thinking must still caption.
+
+    Early mlx-vlm takes a fixed signature. Later builds accept **kwargs and
+    forward them into a processor whose apply_chat_template does not.
+    """
+    calls = []
+
+    if rejection == "fixed_signature":
+        def fake_apply_chat_template(processor, config, messages, num_images=1):
+            calls.append("plain")
+            return "formatted"
+    else:
+        def fake_apply_chat_template(
+            processor, config, messages, num_images=1, **kwargs
+        ):
+            calls.append(dict(kwargs))
+            if "enable_thinking" in kwargs:
+                raise TypeError(
+                    "processor.apply_chat_template() got an unexpected "
+                    "keyword argument 'enable_thinking'"
+                )
+            return "formatted"
+
+    def fake_stream_generate(model, processor, prompt, **kwargs):
+        return iter([types.SimpleNamespace(text="A dog runs.")])
+
+    _install_fake_mlx_vlm(
+        monkeypatch, fake_stream_generate, fake_apply_chat_template
+    )
+    monkeypatch.setattr(
+        engine.video, "sample_frames", lambda *a, **k: _solid_frames(2)
+    )
+    eng = _loaded_engine()
+    if media_type == "image":
+        source = tmp_path / "dog.png"
+        Image.new("RGB", (16, 16), "red").save(source)
+        caption = eng.caption_image(source, "Describe.")
+    else:
+        caption = eng.caption_video(_make_clip(tmp_path), "Describe.")
+
+    assert caption == "A dog runs."
+    if rejection == "fixed_signature":
+        assert calls == ["plain"]
+    else:
+        assert calls == [{"enable_thinking": False}, {}]
+
+
+def test_mlx_caption_propagates_unrelated_template_typeerror(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_apply_chat_template(processor, config, messages, num_images=1, **kwargs):
+        calls.append(kwargs.get("enable_thinking", "absent"))
+        raise TypeError("config missing model_type")
+
+    _install_fake_mlx_vlm(
+        monkeypatch,
+        lambda *a, **k: iter([]),
+        fake_apply_chat_template,
+    )
+    image = tmp_path / "dog.png"
+    Image.new("RGB", (16, 16), "red").save(image)
+    with pytest.raises(TypeError, match="model_type"):
+        _loaded_engine().caption_image(image, "Describe.")
+    assert calls == [False]
+
+
+def test_apply_chat_template_keeps_enable_thinking_when_accepted():
+    def fake_apply_chat_template(processor, config, messages, num_images=1, **kwargs):
+        return kwargs["enable_thinking"]
+
+    assert _apply_chat_template(fake_apply_chat_template, None, {}, [], 1) is False
 
 
 def test_caption_video_stages_frames_and_matches_num_images(tmp_path, monkeypatch):
