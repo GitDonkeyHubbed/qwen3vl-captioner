@@ -18,7 +18,7 @@ from PIL import Image
 
 import engine
 from engine import inference
-from engine.base import DEFAULT_SYSTEM_PROMPT, VideoCancelled
+from engine.base import DEFAULT_SYSTEM_PROMPT, VIDEO_FRAME_MAX_DIM, VideoCancelled
 from engine.inference import MAX_VIDEO_FRAMES, Qwen3VLEngine, infer_chat_family
 
 
@@ -61,6 +61,7 @@ def _install_fake_video(monkeypatch, frame_size=(64, 48)):
         seen["video_path"] = video_path
         seen["num_frames"] = num_frames
         seen["cancel_check"] = cancel_check
+        seen["max_dim"] = max_dim
         if cancel_check and cancel_check():
             # Mirrors the real extractor, which raises rather than returning
             # a short sample when cancelled mid-scan.
@@ -239,6 +240,67 @@ def test_context_budget_counts_prompt_tokens(monkeypatch, tmp_path):
     )
     assert caption == "a cat walks by"
     assert len(eng.model.calls) == 1
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_caption_video_temperature_zero_is_greedy(monkeypatch, tmp_path, streaming):
+    """temperature=0 must force greedy sampling, not a nucleus of the user's top_p.
+
+    Both branches of _generate rewrite top_p to 1.0 when temperature is 0.
+    Leaving top_p at a small value (the settings panel can be 0.1) makes a
+    "greedy" caption sample from almost nothing and come back empty.
+    """
+    _install_fake_video(monkeypatch)
+    eng = _make_engine(response=_CANNED_RESPONSE, stream_chunks=_STREAM_CHUNKS)
+
+    eng.caption_video(
+        _video_file(tmp_path), "p", num_frames=2,
+        temperature=0, top_p=0.1,
+        stream_callback=(lambda _text: None) if streaming else None,
+    )
+
+    call = eng.model.calls[0]
+    assert call["stream"] is streaming
+    assert call["temperature"] == 0
+    assert call["top_p"] == 1.0
+
+
+def test_streaming_ignores_chunks_with_no_choice(monkeypatch, tmp_path):
+    """A finish chunk with an empty or null choice must not drop the caption.
+
+    llama.cpp emits those around the end of a stream. Indexing choices[0]
+    without the empty-list guard raises and throws away every token already
+    produced.
+    """
+    _install_fake_video(monkeypatch)
+    eng = _make_engine(stream_chunks=[
+        {"choices": [{"delta": {"content": "A dog"}}]},
+        {"choices": []},
+        {"choices": [None]},
+        {},
+        {"choices": [{"delta": {"content": " runs."}}]},
+    ])
+
+    caption = eng.caption_video(
+        _video_file(tmp_path), "p", num_frames=2,
+        stream_callback=lambda _text: None,
+    )
+
+    assert caption == "A dog runs."
+
+
+def test_caption_video_asks_the_sampler_to_clamp(monkeypatch, tmp_path):
+    """Frames must be clamped while they are decoded, not only afterwards.
+
+    sample_frames used to return native-resolution frames and the engine
+    downscaled the finished list, so 16 frames of 4K stayed alive together.
+    """
+    seen = _install_fake_video(monkeypatch)
+    eng = _make_engine(response=_CANNED_RESPONSE)
+
+    eng.caption_video(_video_file(tmp_path), "p", num_frames=2)
+
+    assert seen["max_dim"] == VIDEO_FRAME_MAX_DIM
 
 
 def test_streaming_concatenates_tokens(monkeypatch, tmp_path):

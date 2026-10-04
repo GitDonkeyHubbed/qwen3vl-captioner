@@ -255,6 +255,41 @@ def test_bos_survives_repeated_media_requests_without_duplicating_fresh_bos(load
     assert detokenizations == [([2], True)] * 3
 
 
+def test_bos_is_not_invented_without_a_live_token_ledger(load_engine):
+    """A missing model, or a wheel with no n_tokens, must not crash or add BOS.
+
+    MTMD inserts BOS itself while the ledger is empty. Restoring one when
+    there is nothing to ask would duplicate it, and calling detokenize on a
+    model that was just unloaded would raise in the middle of a caption.
+    """
+    class BosTemplate(ImageTemplate):
+        def render(self, **context):
+            return context["bos_token"] + super().render(**context)
+
+    engine, _ = load_engine(template=BosTemplate())
+    messages = [{"role": "user", "content": "hello"}]
+
+    def rendered():
+        return engine.chat_handler.chat_template.render(
+            bos_token="", messages=messages,
+        )
+
+    plain = "<|turn>user\nhello<turn|>\n"
+
+    engine.model = None
+    assert rendered() == plain
+
+    def refuse_detokenize(*_args, **_kwargs):
+        raise AssertionError("detokenize called without a reused ledger")
+
+    engine.model = SimpleNamespace(n_tokens=0, detokenize=refuse_detokenize)
+    assert rendered() == plain
+
+    # Older wheels simply have no n_tokens attribute.
+    engine.model = SimpleNamespace(detokenize=refuse_detokenize)
+    assert rendered() == plain
+
+
 def test_correct_future_bos_is_forwarded_unchanged(load_engine):
     engine, original = load_engine(metadata={"general.name": "Gemma-4-12B"})
     engine.model.n_tokens = 100

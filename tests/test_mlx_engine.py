@@ -17,6 +17,7 @@ from PIL import Image
 import engine.video
 from engine.base import (
     DEFAULT_SYSTEM_PROMPT,
+    VIDEO_FRAME_MAX_DIM,
     VideoCancelled,
     frame_video_prompt,
 )
@@ -371,6 +372,155 @@ def test_mlx_captions_disable_template_thinking(
     assert caption == "A dog runs."
     assert tokens == ["Caption: A dog runs."]
     assert captured["num_images"] == len(captured["images"]) == expected_images
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("<|channel>thought\nplanning\n<channel|>A dog.", "photo of A dog. indoors"),
+    ("<|channel>thought\nplanning\n<channel|>", ""),
+    ("<|channel>thought\nstill planning", ""),
+])
+def test_caption_video_cleans_gemma_thought_channels(tmp_path, monkeypatch, raw, expected):
+    """Video is a separate path from caption_image and must clean the same way.
+
+    A reasoning-only clip with a prefix configured used to become a truthy
+    stock string ("photo of  indoors") and land in the sidecar.
+    """
+    monkeypatch.setattr(
+        engine.video, "sample_frames",
+        lambda path, n, cancel_check=None, max_dim=None: _solid_frames(2),
+    )
+    _install_fake_mlx_vlm(
+        monkeypatch,
+        lambda *args, **kwargs: iter([types.SimpleNamespace(text=raw)]),
+        lambda *args, **kwargs: "formatted",
+    )
+
+    caption = _loaded_engine().caption_video(
+        _make_clip(tmp_path), "Describe.", prefix="photo of", suffix="indoors",
+    )
+
+    assert caption == expected
+
+
+def test_caption_video_omits_an_empty_system_turn(tmp_path, monkeypatch):
+    """An empty system prompt must not become a system message.
+
+    mlx-vlm templates an empty system turn into the prompt; the image path
+    already skips it, and the video path copies that branch separately.
+    """
+    captured = {}
+    monkeypatch.setattr(
+        engine.video, "sample_frames",
+        lambda path, n, cancel_check=None, max_dim=None: _solid_frames(2),
+    )
+
+    def fake_apply(processor, config, messages, num_images, **kwargs):
+        captured["messages"] = messages
+        return "formatted"
+
+    _install_fake_mlx_vlm(
+        monkeypatch,
+        lambda *args, **kwargs: iter([types.SimpleNamespace(text="ok")]),
+        fake_apply,
+    )
+
+    _loaded_engine().caption_video(
+        _make_clip(tmp_path), "Describe.", system_prompt="",
+    )
+
+    assert captured["messages"] == [
+        {"role": "user", "content": frame_video_prompt("Describe.", 2)},
+    ]
+
+
+def test_caption_video_temperature_zero_opens_the_nucleus(tmp_path, monkeypatch):
+    """temperature=0 keeps top_p at 1.0 so greedy decoding is actually greedy.
+
+    Force the legacy kwargs path so this asserts the values caption_video
+    computed, independent of whether mlx-lm's sampler API is installed.
+    """
+    captured = {}
+    monkeypatch.setattr(engine.mlx_engine, "_load_make_sampler", lambda: None)
+    monkeypatch.setattr(
+        engine.video, "sample_frames",
+        lambda path, n, cancel_check=None, max_dim=None: _solid_frames(2),
+    )
+
+    def fake_stream_generate(model, processor, prompt, **kwargs):
+        captured["kwargs"] = kwargs
+        return iter([types.SimpleNamespace(text="ok")])
+
+    _install_fake_mlx_vlm(
+        monkeypatch, fake_stream_generate,
+        lambda *args, **kwargs: "formatted",
+    )
+
+    _loaded_engine().caption_video(
+        _make_clip(tmp_path), "Describe.", temperature=0, top_p=0.1,
+    )
+
+    assert captured["kwargs"]["temperature"] == 0.0
+    assert captured["kwargs"]["top_p"] == 1.0
+    assert "sampler" not in captured["kwargs"]
+
+
+def test_caption_video_cancel_between_staged_frames_cleans_up(tmp_path, monkeypatch):
+    """Cancel after the first PNG is written must not generate, and must delete it.
+
+    The always-true cancel check returns before any frame is saved, so it
+    never proves the finally still runs once files exist.
+    """
+    monkeypatch.setattr(
+        engine.video, "sample_frames",
+        lambda path, n, cancel_check=None, max_dim=None: _solid_frames(3),
+    )
+    started = []
+    saved = []
+    real_save = Image.Image.save
+
+    def tracking_save(self, fp, format=None, **params):
+        real_save(self, fp, format=format, **params)
+        saved.append(Path(fp))
+
+    monkeypatch.setattr(Image.Image, "save", tracking_save)
+
+    def fake_stream_generate(model, processor, prompt, **kwargs):
+        started.append(1)
+        return iter([types.SimpleNamespace(text="nope")])
+
+    _install_fake_mlx_vlm(
+        monkeypatch, fake_stream_generate,
+        lambda *args, **kwargs: "formatted",
+    )
+
+    caption = _loaded_engine().caption_video(
+        _make_clip(tmp_path), "p",
+        cancel_check=lambda: len(saved) >= 1,
+    )
+
+    assert caption == ""
+    assert started == []
+    assert len(saved) == 1
+    assert all(not path.exists() for path in saved)
+
+
+def test_caption_video_asks_the_sampler_to_clamp(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake_sample_frames(path, num_frames, cancel_check=None, max_dim=None):
+        seen["max_dim"] = max_dim
+        return _solid_frames(2)
+
+    monkeypatch.setattr(engine.video, "sample_frames", fake_sample_frames)
+    _install_fake_mlx_vlm(
+        monkeypatch,
+        lambda *args, **kwargs: iter([types.SimpleNamespace(text="ok")]),
+        lambda *args, **kwargs: "formatted",
+    )
+
+    _loaded_engine().caption_video(_make_clip(tmp_path), "Describe.")
+
+    assert seen["max_dim"] == VIDEO_FRAME_MAX_DIM
 
 
 def test_caption_video_stages_frames_and_matches_num_images(tmp_path, monkeypatch):
