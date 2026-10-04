@@ -170,6 +170,20 @@ def _break_capture(monkeypatch, *, frame_count=None, seekable=True,
     monkeypatch.setattr(cv2, "VideoCapture", BrokenCapture)
 
 
+def test_zero_frame_count_resamples_without_a_warning(video_path, monkeypatch):
+    """A header of 0 is how VFR/webm files report themselves. It is not a fault.
+
+    The over-reporting and unseekable paths warn because those files lied or
+    refused a seek. Warning here would blame a healthy clip on every caption.
+    """
+    _break_capture(monkeypatch, frame_count=0.0)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", RuntimeWarning)
+        frames = sample_frames(video_path, num_frames=4)
+    assert len(frames) == 4
+    assert [w for w in caught if issubclass(w.category, RuntimeWarning)] == []
+
+
 def test_sample_frames_sequential_fallback(video_path, monkeypatch):
     """A capture reporting frame count 0 must trigger the sequential pass.
 

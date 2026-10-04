@@ -942,6 +942,144 @@ def test_registry_selection_never_substitutes_a_foreign_gguf(win, tmp_path, monk
     assert win._find_model_file() is None
 
 
+@pytest.mark.parametrize("label,family", [
+    ("HauhauCS Gemma-4 E4B Uncensored — Q4_K_M (4.97 GB)", "gemma4"),
+    ("HauhauCS Qwen3.5 9B Uncensored — Q4_K_M (5.24 GB)", "qwen35"),
+])
+def test_registry_load_forwards_that_entrys_chat_family(
+    win, tmp_path, monkeypatch, label, family,
+):
+    """The registry family has to reach the worker, not stop at the dropdown.
+
+    Filename inference happens to agree for these two files. The explicit
+    family is what wins when they disagree, so a load that drops the kwarg
+    (or always sends the qwen3vl default) would caption Gemma with a Qwen
+    template and still look fine in a filename-only test.
+    """
+    from gui.model_download_manager import MODEL_REGISTRY
+
+    info = MODEL_REGISTRY[label]
+    (tmp_path / info["filename"]).write_bytes(b"gguf")
+    (tmp_path / info["mmproj_filename"]).write_bytes(b"mmproj")
+    calls = []
+
+    def record(model_path, mmproj_path, chat_family=None):
+        calls.append((model_path, mmproj_path, chat_family))
+
+    monkeypatch.setattr(win, "_start_model_load", record)
+    monkeypatch.setattr(win, "_model_search_dirs", lambda: [tmp_path])
+    monkeypatch.setattr(
+        win._settings_panel, "get_selected_model", lambda: ("registry", label),
+    )
+
+    win._load_model()
+
+    assert len(calls) == 1
+    model_path, mmproj_path, chat_family = calls[0]
+    assert model_path.name == info["filename"]
+    assert mmproj_path.name == info["mmproj_filename"]
+    assert chat_family == family
+
+
+def test_local_gguf_load_does_not_stamp_a_registry_family(win, tmp_path, monkeypatch):
+    """A browsed file is whatever its name says, not the dropdown's family.
+
+    An explicit chat_family overrides filename inference. Stamping the
+    registry family onto a local Qwen file would load it with Gemma's template.
+    """
+    model = tmp_path / "Qwen3-VL-8B-Instruct-Q4_K_M.gguf"
+    model.write_bytes(b"gguf")
+    (tmp_path / "Qwen3-VL-8B-Instruct.mmproj-f16.gguf").write_bytes(b"mmproj")
+    calls = []
+
+    def record(model_path, mmproj_path, chat_family=None):
+        calls.append((model_path, mmproj_path, chat_family))
+
+    monkeypatch.setattr(win, "_start_model_load", record)
+    monkeypatch.setattr(
+        win._settings_panel, "get_selected_model",
+        lambda: ("local", str(model)),
+    )
+
+    win._load_model()
+
+    assert len(calls) == 1
+    assert calls[0][0] == model
+    assert calls[0][1].name == "Qwen3-VL-8B-Instruct.mmproj-f16.gguf"
+    assert calls[0][2] is None
+
+
+def test_mlx_load_never_forwards_chat_family(win, tmp_path, monkeypatch):
+    """MLX load_model has no chat_family parameter. Passing one TypeErrors.
+
+    The GGUF branch grew that kwarg. The MLX branch returns earlier and must
+    keep omitting it even if a registry entry starts carrying a family.
+    """
+    from gui.model_download_manager import MLX_MODEL_REGISTRY, get_model_info
+
+    label = "Qwen3-VL 8B ABL v2 MLX — 4bit (5.4 GB)"
+    info = MLX_MODEL_REGISTRY[label]
+    folder = tmp_path / info["folder"]
+    folder.mkdir()
+    (folder / "config.json").write_text("{}", encoding="utf-8")
+    (folder / "model.safetensors").write_bytes(b"\x00")
+
+    def with_family(text):
+        found = get_model_info(text)
+        if found and found.get("backend") == "mlx":
+            return {**found, "chat_family": "gemma4"}
+        return found
+
+    calls = []
+
+    def record(model_path, mmproj_path, chat_family=None):
+        calls.append((model_path, mmproj_path, chat_family))
+
+    monkeypatch.setattr("gui.model_download_manager.get_model_info", with_family)
+    monkeypatch.setattr(win, "_start_model_load", record)
+    monkeypatch.setattr(win, "_model_search_dirs", lambda: [tmp_path])
+    monkeypatch.setattr(
+        win._settings_panel, "get_selected_model", lambda: ("registry", label),
+    )
+
+    win._load_model()
+
+    assert len(calls) == 1
+    assert calls[0][0] == folder
+    assert calls[0][1] is None
+    assert calls[0][2] is None
+
+
+def test_missing_registry_file_does_not_load_whatever_gguf_is_nearby(
+    win, tmp_path, monkeypatch,
+):
+    """A not-yet-downloaded registry model must not start a load at all.
+
+    The finder already refuses a foreign GGUF. This locks the caller: if that
+    fallback came back, Load would pair it with this entry's encoder and,
+    when the names differ, still might stamp the entry's chat family.
+    """
+    (tmp_path / "SomeOtherModel-Q4_K_M.gguf").write_bytes(b"")
+    calls = []
+    monkeypatch.setattr(
+        win, "_start_model_load",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(win, "_model_search_dirs", lambda: [tmp_path])
+    monkeypatch.setattr(
+        win._settings_panel, "get_selected_model",
+        lambda: ("registry", "HauhauCS Gemma-4 E4B Uncensored — Q4_K_M (4.97 GB)"),
+    )
+    monkeypatch.setattr(
+        QMessageBox, "question",
+        lambda *args, **kwargs: QMessageBox.StandardButton.No,
+    )
+
+    win._load_model()
+
+    assert calls == []
+
+
 def test_unknown_selection_still_falls_back(win, tmp_path, monkeypatch):
     """A dropdown label with no registry entry keeps the old behaviour."""
     other = tmp_path / "SomeOtherModel-Q4_K_M.gguf"

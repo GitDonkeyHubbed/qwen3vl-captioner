@@ -95,7 +95,7 @@ the V1.5.0 release, and the video items stay engine-only until part 2:
   its beginning-of-sequence token after the first image, causing later
   captions to invent shapes or repeat text. The template restores that token
   on reused contexts while retaining a single token on fresh loads and resets.
-- Test suite grew to **684 tests** on this branch (371 in V1.4.4).
+- Test suite grew to **702 tests** on this branch (371 in V1.4.4).
 
 See [CHANGELOG.md](CHANGELOG.md) for the complete list.
 
