@@ -53,6 +53,8 @@ jobs:
       # The app's own requirements.txt, not a copy of its pins, so CI resolves
       # the same ranges a fresh install does (the newest version each allows).
       - name: Install test dependencies
+        # requirements.txt carries opencv-python-headless and numpy, so
+        # tests/test_video.py runs instead of module-skipping.
         run: pip install --quiet -r requirements-dev.txt -r requirements.txt
 
       - name: Run pytest (core logic, headless)

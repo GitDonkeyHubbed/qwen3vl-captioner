@@ -62,11 +62,17 @@ class MmprojMismatchError(RuntimeError):
 _QUANT_RE = re.compile(
     r"^(?:iq\d+(?:_[a-z0-9]+)*|q\d+(?:_[a-z0-9]+)*|f\d+|bf\d+|fp\d+)$", re.I
 )
-_SIZE_TOKEN_RE = re.compile(r"^(\d+(?:\.\d+)?)b$", re.I)
+# "8b", and the "E4B"/"E2B" effective-parameter spelling Gemma 3n and Gemma 4
+# use for their MatFormer submodels. The leading "e" is kept in the token so an
+# E4B never size-matches a dense 4B — they are different models.
+_SIZE_TOKEN_RE = re.compile(r"^(e?\d+(?:\.\d+)?)b$", re.I)
 # The pieces a quant tag leaves behind once "_" has split it: the K/M/S/L/XS/
-# XXS/XL/NL of "Q4_K_M", "IQ2_XXS" or "IQ4_NL", and the digits of "Q8_0".
-# Dropped only straight after a quant token, never elsewhere in a name.
-_QUANT_TAIL_RE = re.compile(r"^(?:\d+|k|s|m|l|xs|xxs|xl|nl)$", re.I)
+# XXS/XL/NL of "Q4_K_M", "IQ2_XXS" or "IQ4_NL", the P of a "pure" quant such as
+# HauhauCS's "Q6_K_P", and the digits of "Q8_0". Without the P, every *_K_P
+# build's identity key ended in a stray "p" and so never matched the encoder
+# published beside it — which is most of the Gemma-4 repo. Dropped only
+# straight after a quant token, never elsewhere in a name.
+_QUANT_TAIL_RE = re.compile(r"^(?:\d+|k|s|m|l|p|xs|xxs|xl|nl)$", re.I)
 # A model-name token carrying its version: "qwen3", "gemma3n", "internvl3".
 _VERSIONED_NAME_RE = re.compile(r"[a-z]+\d[a-z0-9]*")
 

@@ -215,6 +215,25 @@ def test_save_on_an_untouched_empty_box_writes_nothing(win, images):
     assert read_caption(images[1]).exists is False
 
 
+@pytest.mark.parametrize("raw", [
+    "<|channel>thought\nplanning\n<channel|>",
+    "<|channel>thought\nstill planning",
+])
+@pytest.mark.parametrize("existing", [False, True])
+def test_gemma_reasoning_cannot_be_auto_saved(win, images, raw, existing):
+    from engine.base import apply_prefix_suffix, clean_caption
+
+    image = images[0]
+    if existing:
+        caption_path(image).write_text("a good existing caption", encoding="utf-8")
+    caption = apply_prefix_suffix(clean_caption(raw), "photo of", "indoors")
+    assert caption == ""
+    assert win._auto_save_caption(image, caption) is False
+    saved = read_caption(image)
+    assert saved.exists is existing
+    assert saved.text == ("a good existing caption" if existing else "")
+
+
 def test_clearing_an_unsaved_generated_caption_asks_before_deleting_the_file(
     win, images, monkeypatch
 ):
@@ -793,13 +812,17 @@ def test_export_does_not_treat_an_unreadable_sidecar_as_new(win, images, monkeyp
     _unreadable(monkeypatch, images[0])
 
     seen = []
-    monkeypatch.setattr(QMessageBox, "exec", lambda box: seen.append(box.windowTitle()))
+    # macOS ignores QMessageBox window titles; assert the warning's content.
+    monkeypatch.setattr(QMessageBox, "exec", lambda box: seen.append(box.text()))
     monkeypatch.setattr(QMessageBox, "clickedButton", lambda box: box.defaultButton())
     monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: None))
 
     win._export_all_captions()
 
-    assert seen == ["Existing Caption Files Differ"]
+    assert seen == [
+        "1 image(s) already have a .txt caption whose text differs from the "
+        "one held in the app, or that could not be read."
+    ]
     assert read_caption(images[0]).text == "hand written, keep me"
 
 
@@ -810,13 +833,13 @@ def test_batch_counts_an_unreadable_sidecar_as_captioned(win, images, monkeypatc
     monkeypatch.setattr(type(win._engine), "is_loaded", property(lambda self: True))
 
     seen = []
-    monkeypatch.setattr(QMessageBox, "exec", lambda box: seen.append(box.windowTitle()))
+    monkeypatch.setattr(QMessageBox, "exec", lambda box: seen.append(box.text()))
     monkeypatch.setattr(QMessageBox, "clickedButton", lambda box: box.defaultButton())
     monkeypatch.setattr(win, "_process_next_batch_item", lambda: None)
 
     win._batch_caption_all()
 
-    assert seen == ["Existing Captions Found"]
+    assert seen == ["1 of 2 images already have a .txt caption."]
     assert win._batch_queue == [images[1]]
 
 
@@ -852,7 +875,7 @@ def test_batch_start_offers_to_save_a_hand_edit(win, images, monkeypatch):
     asked = []
     _answer(monkeypatch, QMessageBox.StandardButton.Save, asked)
     seen = []
-    monkeypatch.setattr(QMessageBox, "exec", lambda box: seen.append(box.windowTitle()))
+    monkeypatch.setattr(QMessageBox, "exec", lambda box: seen.append(box.text()))
     monkeypatch.setattr(QMessageBox, "clickedButton", lambda box: box.defaultButton())
 
     win._batch_caption_all()
@@ -861,7 +884,7 @@ def test_batch_start_offers_to_save_a_hand_edit(win, images, monkeypatch):
     assert read_caption(images[1]).text == "hand typed, never saved"
     # Asked before counting sidecars, so the saved edit is already-captioned
     # and the default "Skip" keeps it out of the batch.
-    assert seen == ["Existing Captions Found"]
+    assert seen == ["1 of 2 images already have a .txt caption."]
     assert images[1] not in win._batch_queue
     assert win._batch_current_path == images[0]
 

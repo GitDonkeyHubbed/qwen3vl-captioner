@@ -147,3 +147,150 @@ def test_mlx_model_exists(tmp_path):
     assert mlx_model_exists(tmp_path, "m") is False
     (folder / "model.safetensors").write_bytes(b"\x00")
     assert mlx_model_exists(tmp_path, "m") is True
+
+
+# --- chat_family routing and the HauhauCS community families ---------------
+
+_VALID_CHAT_FAMILIES = {"qwen3vl", "qwen35", "gemma4", "gemma3"}
+
+
+def test_every_gguf_entry_has_valid_chat_family():
+    # The engine picks its chat template from this key at load time; a
+    # missing or unknown value would silently produce garbage captions.
+    for entry in MODEL_REGISTRY.values():
+        assert entry["chat_family"] in _VALID_CHAT_FAMILIES
+
+
+def test_get_model_info_always_returns_chat_family_for_gguf():
+    # Callers pass info["chat_family"] straight to engine.load_model with
+    # no .get guard, so every GGUF lookup must carry the key.
+    for name in MODEL_REGISTRY:
+        info = get_model_info(name)
+        assert info["backend"] == "gguf"
+        assert info["chat_family"] in _VALID_CHAT_FAMILIES
+
+
+def test_every_entry_has_positive_size():
+    for entry in list(MODEL_REGISTRY.values()) + list(MLX_MODEL_REGISTRY.values()):
+        assert entry["size_gb"] > 0
+
+
+def test_qwen3vl_families_use_qwen3vl_chat_family():
+    for name, entry in MODEL_REGISTRY.items():
+        if "Qwen3-VL" in name:
+            assert entry["chat_family"] == "qwen3vl"
+
+
+def test_hauhaucs_qwen35_family_resolves():
+    info = get_model_info("HauhauCS Qwen3.5 9B Uncensored — Q4_K_M (5.24 GB)")
+    assert info is not None
+    assert info["backend"] == "gguf"
+    assert info["chat_family"] == "qwen35"
+    assert info["repo_id"] == "HauhauCS/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive"
+    assert info["filename"] == (
+        "Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf"
+    )
+    assert info["mmproj_filename"] == (
+        "mmproj-Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-BF16.gguf"
+    )
+    assert info["recommended"] is False
+
+
+def test_hauhaucs_gemma4_family_resolves():
+    info = get_model_info("HauhauCS Gemma-4 E4B Uncensored — Q4_K_M (4.97 GB)")
+    assert info is not None
+    assert info["backend"] == "gguf"
+    assert info["chat_family"] == "gemma4"
+    assert info["repo_id"] == "HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive"
+    assert info["filename"] == (
+        "Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf"
+    )
+    assert info["mmproj_filename"] == (
+        "mmproj-Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-f16.gguf"
+    )
+    assert info["recommended"] is False
+
+
+def test_hauhaucs_families_offer_expected_quants():
+    # Gemma-4 ships the newer K_P quant series, not the classic Q6_K/Q8_0.
+    qwen35 = [n for n in MODEL_REGISTRY if n.startswith("HauhauCS Qwen3.5")]
+    gemma4 = [n for n in MODEL_REGISTRY if n.startswith("HauhauCS Gemma-4")]
+    assert qwen35 == [
+        "HauhauCS Qwen3.5 9B Uncensored — Q4_K_M (5.24 GB)",
+        "HauhauCS Qwen3.5 9B Uncensored — Q6_K (6.85 GB)",
+        "HauhauCS Qwen3.5 9B Uncensored — Q8_0 (8.87 GB)",
+    ]
+    assert gemma4 == [
+        "HauhauCS Gemma-4 E4B Uncensored — Q4_K_M (4.97 GB)",
+        "HauhauCS Gemma-4 E4B Uncensored — Q6_K_P (5.82 GB)",
+        "HauhauCS Gemma-4 E4B Uncensored — Q8_K_P (7.57 GB)",
+    ]
+
+
+def test_hauhaucs_families_appear_in_dropdown():
+    flat = get_all_model_display_names()
+    assert "HauhauCS Qwen3.5 9B Uncensored — Q4_K_M (5.24 GB)" in flat
+    assert "HauhauCS Gemma-4 E4B Uncensored — Q8_K_P (7.57 GB)" in flat
+
+
+# ── size_gb is binary GiB, matching everything that consumes it ──────────
+
+# Byte counts read from the HuggingFace API for each published file. The
+# registry's size_gb must be these in binary GiB (bytes / 1024**3), because
+# every consumer compares it against a binary figure: the VRAM fit hint in
+# settings_panel against nvml/psutil totals, and the download progress
+# against Content-Length. The HauhauCS families were first added in decimal
+# GB -- the unit a publisher README advertises -- which overstates a model by
+# ~7% and trips the "won't fit" warning earlier than intended.
+#
+# Recorded rather than fetched so the suite stays offline. Adding a family
+# means recording its real byte counts here, which is the point: that is the
+# step that was skipped.
+_PUBLISHED_BYTES = {
+    "HauhauCS Qwen3.5 9B Uncensored — Q4_K_M": 5_627_044_224,
+    "HauhauCS Qwen3.5 9B Uncensored — Q6_K": 7_359_259_008,
+    "HauhauCS Qwen3.5 9B Uncensored — Q8_0": 9_527_501_184,
+    "HauhauCS Gemma-4 E4B Uncensored — Q4_K_M": 5_335_285_728,
+    "HauhauCS Gemma-4 E4B Uncensored — Q6_K_P": 6_249_794_528,
+    "HauhauCS Gemma-4 E4B Uncensored — Q8_K_P": 8_133_226_464,
+    "Qwen3-VL 8B ABL v2 — Q4_K_M": 5_027_785_824,
+    "Qwen3-VL 8B ABL v2 — Q5_K_M": 5_851_114_592,
+    "Qwen3-VL 8B ABL v2 — Q6_K": 6_725_901_408,
+    "Qwen3-VL 8B ABL v2 — Q8_0": 8_709_520_480,
+}
+
+
+def test_registry_sizes_are_binary_gib_not_decimal_gb():
+    """Each recorded entry's size_gb must equal its real size in GiB."""
+    from gui.model_download_manager import MODEL_REGISTRY
+
+    by_prefix = {name.split(" (")[0]: info for name, info in MODEL_REGISTRY.items()}
+    offenders = []
+    for prefix, nbytes in _PUBLISHED_BYTES.items():
+        info = by_prefix.get(prefix)
+        assert info, f"registry entry not found: {prefix}"
+        want = nbytes / 1024 ** 3
+        got = info["size_gb"]
+        if abs(got - want) > 0.02:
+            decimal = nbytes / 1e9
+            hint = " (looks like decimal GB)" if abs(got - decimal) < 0.05 else ""
+            offenders.append(
+                f"{prefix}: registry says {got} GB, "
+                f"{nbytes:,} bytes is {want:.2f} GiB{hint}"
+            )
+    assert not offenders, "\n".join(offenders)
+
+
+def test_every_hauhaucs_entry_has_a_recorded_byte_count():
+    """The families this PR adds must all be covered by the check above."""
+    from gui.model_download_manager import MODEL_REGISTRY
+
+    recorded = set(_PUBLISHED_BYTES)
+    missing = [
+        name for name in MODEL_REGISTRY
+        if name.startswith("HauhauCS") and name.split(" (")[0] not in recorded
+    ]
+    assert not missing, (
+        "add the published byte count for these to _PUBLISHED_BYTES:\n"
+        + "\n".join(missing)
+    )
