@@ -91,7 +91,11 @@ the V1.5.0 release, and the video items stay engine-only until part 2:
 - **Every Gemma-4 quant finds its vision encoder.** Six of the eleven
   published builds use the `_K_P` "pure" naming, which the pairing logic did
   not recognise — so they downloaded without an encoder.
-- Test suite grew to **680 tests** on this branch (371 in V1.4.4).
+- **Gemma-4 captions stay correct across requests.** The native handler lost
+  its beginning-of-sequence token after the first image, causing later
+  captions to invent shapes or repeat text. The template restores that token
+  on reused contexts while retaining a single token on fresh loads and resets.
+- Test suite grew to **684 tests** on this branch (371 in V1.4.4).
 
 See [CHANGELOG.md](CHANGELOG.md) for the complete list.
 

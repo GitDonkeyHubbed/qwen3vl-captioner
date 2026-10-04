@@ -13,6 +13,7 @@ import io
 import math
 import re
 import time
+import weakref
 from pathlib import Path
 from typing import Callable, Optional
 from uuid import uuid4
@@ -65,7 +66,7 @@ CHAT_FAMILY_HANDLERS = {
 
 
 class _Gemma4Template:
-    """Adapt the pinned handler's image markers and E4B generation suffix.
+    """Adapt the handler's BOS, image markers and E4B generation suffix.
 
     MTMD inserts the image boundaries and embeddings itself. The pinned
     template also emits a literal ``<|image|>`` before each image URL, which
@@ -77,16 +78,28 @@ class _Gemma4Template:
     ends at the model turn, but the pinned Gemma4 handler appends an empty
     thought channel when thinking is disabled. Starting after that channel
     can make E4B emit unmarked planning prose.
+
+    The handler detokenizes BOS without special=True, yielding an empty
+    string. MTMD automatically adds BOS only while the token ledger is empty,
+    so later captions lose it. Restore the literal token only when MTMD will
+    not add it, preserving a single BOS on fresh and reused contexts.
     """
 
     _PREFILL = "<|channel>thought\n<channel|>"
     _IMAGE_PLACEHOLDER = "<|image|>"
 
-    def __init__(self, template, strip_thought_prefill=False):
+    def __init__(self, template, strip_thought_prefill=False, model_provider=None):
         self.template = template
         self.strip_thought_prefill = strip_thought_prefill
+        self.model_provider = model_provider
 
     def render(self, **context):
+        if context.get("bos_token") == "" and self.model_provider is not None:
+            model = self.model_provider()
+            if model is not None and getattr(model, "n_tokens", 0) > 0:
+                bos = model.detokenize([model.token_bos()], special=True).decode("utf-8")
+                context = {**context, "bos_token": bos}
+
         prefix = f"__vl_captioner_{uuid4().hex}_"
         text_marker = prefix + "literal_image__"
         image_urls = []
@@ -140,7 +153,7 @@ class _Gemma4Template:
         return text
 
 
-def _configure_gemma4_template(handler, metadata, model_path):
+def _configure_gemma4_template(handler, metadata, model_path, model_provider=None):
     # Prefer the model's identity over a renamed filename. Only use the
     # filename on older/custom GGUFs without a name in their metadata.
     if metadata.get("general.architecture", "gemma4") != "gemma4":
@@ -149,7 +162,9 @@ def _configure_gemma4_template(handler, metadata, model_path):
     is_e4b = bool(re.search(r"(?<![a-z0-9])e4b(?![a-z0-9])", name, re.IGNORECASE))
     template = getattr(handler, "chat_template", None)
     if template is not None:
-        handler.chat_template = _Gemma4Template(template, strip_thought_prefill=is_e4b)
+        handler.chat_template = _Gemma4Template(
+            template, strip_thought_prefill=is_e4b, model_provider=model_provider,
+        )
 
 
 def is_image_file(path: Path) -> bool:
@@ -531,8 +546,13 @@ class Qwen3VLEngine:
         )
 
         if family == "gemma4":
+            # The model owns its handler. A strong reference from the template
+            # back to the model would keep native GPU allocations alive after
+            # unload, so resolve the current model through a weak engine ref.
+            engine_ref = weakref.ref(self)
             _configure_gemma4_template(
-                self.chat_handler, getattr(self.model, "metadata", {}), model_path
+                self.chat_handler, getattr(self.model, "metadata", {}), model_path,
+                model_provider=lambda: getattr(engine_ref(), "model", None),
             )
 
         self.model_path = model_path

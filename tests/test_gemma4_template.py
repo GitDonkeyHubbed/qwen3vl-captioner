@@ -1,7 +1,9 @@
 """Keep Gemma4 media input and E4B generation prompts consistent with MTMD."""
 
 from copy import deepcopy
+import gc
 from types import SimpleNamespace
+import weakref
 
 import pytest
 
@@ -218,3 +220,58 @@ def test_media_urls_in_text_do_not_lose_literal_prefixes(load_engine):
     assert rendered == (
         "<|turn>user\nLiteral: <|image|>" + uri + uri + "<turn|>\n" + MODEL_TURN
     )
+
+
+@pytest.mark.parametrize("name", ["Gemma-4-E4B", "Gemma-4-12B"])
+def test_bos_survives_repeated_media_requests_without_duplicating_fresh_bos(load_engine, name):
+    class BosTemplate(ImageTemplate):
+        def render(self, **context):
+            return context["bos_token"] + super().render(**context)
+
+    engine, _ = load_engine(metadata={"general.name": name}, template=BosTemplate())
+    engine.model.token_bos = lambda: 2
+    detokenizations = []
+
+    def detokenize(tokens, special=False):
+        detokenizations.append((tokens, special))
+        return b"<bos>" if special else b""
+
+    engine.model.detokenize = detokenize
+    for n_tokens, uris in [(0, ["first"]), (100, ["second"]), (200, ["frame1", "frame2"]),
+                           (0, ["after-reset"]), (100, ["last"])]:
+        engine.model.n_tokens = n_tokens
+        messages = [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": uri}} for uri in uris
+        ]}]
+        context = dict(bos_token="", messages=messages)
+
+        rendered = engine.chat_handler.chat_template.render(**context)
+
+        # MTMD supplies automatic BOS only on the fresh/reset ledger. Every
+        # reused ledger needs the literal special token in its template.
+        literal_bos = "<bos>" if n_tokens else ""
+        assert rendered == literal_bos + "<|turn>user\n" + "".join(uris) + "<turn|>\n"
+        assert context["bos_token"] == ""
+    assert detokenizations == [([2], True)] * 3
+
+
+def test_correct_future_bos_is_forwarded_unchanged(load_engine):
+    engine, original = load_engine(metadata={"general.name": "Gemma-4-12B"})
+    engine.model.n_tokens = 100
+    context = dict(bos_token="<bos>", add_generation_prompt=True)
+
+    engine.chat_handler.chat_template.render(**context)
+
+    assert original.context == context
+
+
+def test_template_does_not_keep_engine_or_unloaded_model_alive(load_engine):
+    engine, _ = load_engine()
+    adapter = engine.chat_handler.chat_template
+    engine.unload()
+    engine_ref = weakref.ref(engine)
+    del engine
+    gc.collect()
+
+    assert engine_ref() is None
+    assert adapter.model_provider() is None
