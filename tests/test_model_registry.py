@@ -143,7 +143,14 @@ def test_mlx_model_exists(tmp_path):
     folder = tmp_path / "m"
     folder.mkdir()
     (folder / "config.json").write_text("{}", encoding="utf-8")
-    # config.json alone is not enough — needs safetensors too.
+    # config.json alone is not enough — needs weights and a tokenizer.
     assert mlx_model_exists(tmp_path, "m") is False
     (folder / "model.safetensors").write_bytes(b"\x00")
+    assert mlx_model_exists(tmp_path, "m") is False
+    (folder / "tokenizer.json").write_text("{}", encoding="utf-8")
     assert mlx_model_exists(tmp_path, "m") is True
+    # A sharded download is incomplete until every part named in the file is
+    # present, even though one *.safetensors file already exists.
+    (folder / "model-00001-of-00002.safetensors").write_bytes(b"\x00")
+    (folder / "model.safetensors").unlink()
+    assert mlx_model_exists(tmp_path, "m") is False

@@ -10,7 +10,9 @@ Only available on macOS arm64 with mlx-vlm installed (setup.sh installs
 it automatically on Apple Silicon).
 """
 
+import json
 import platform
+import re
 import sys
 import tempfile
 import time
@@ -42,14 +44,94 @@ else:
     MLX_VLM_IMPORT_ERROR = "MLX requires an Apple Silicon Mac"
 
 
+# "model-00001-of-00002.safetensors" — the total is in the name, so a folder
+# can be recognised as incomplete before model.safetensors.index.json arrives.
+_SHARD_OF_RE = re.compile(
+    r"^(?P<stem>.+)-(?P<idx>\d+)-of-(?P<total>\d+)\.safetensors$",
+    re.IGNORECASE,
+)
+
+
+def _safe_weight_filename(name: str) -> bool:
+    """True when *name* is a single path segment (no directory escape)."""
+    return bool(name) and name == Path(name).name and ".." not in name
+
+
+def _index_weight_files(path: Path) -> set[str] | None:
+    """Shard filenames named by model.safetensors.index.json.
+
+    None when the folder has no index yet. An empty set means the index is
+    present but unusable, so the folder must not count as complete.
+    """
+    index = path / "model.safetensors.index.json"
+    if not index.is_file():
+        return None
+    try:
+        data = json.loads(index.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return set()
+    weight_map = data.get("weight_map") if isinstance(data, dict) else None
+    if not isinstance(weight_map, dict) or not weight_map:
+        return set()
+    names: set[str] = set()
+    for value in weight_map.values():
+        if not isinstance(value, str) or not _safe_weight_filename(value):
+            return set()
+        names.add(value)
+    return names
+
+
+def _sharded_weights_complete(path: Path) -> bool | None:
+    """Whether every ``*-of-N`` shard set in *path* is whole.
+
+    None when the folder has no such filenames (a single-file model).
+    """
+    groups: dict[tuple[str, int], set[int]] = {}
+    for shard in path.glob("*.safetensors"):
+        match = _SHARD_OF_RE.match(shard.name)
+        if match is None:
+            continue
+        total = int(match.group("total"))
+        idx = int(match.group("idx"))
+        key = (match.group("stem"), total)
+        if total < 1 or idx < 1 or idx > total:
+            groups.setdefault(key, set()).add(0)
+        else:
+            groups.setdefault(key, set()).add(idx)
+    if not groups:
+        return None
+    return all(idxs == set(range(1, total + 1)) for (_, total), idxs in groups.items())
+
+
 def is_mlx_model_dir(path: Path) -> bool:
-    """An MLX model is a directory containing config.json + safetensors."""
+    """True when *path* is a complete MLX model folder.
+
+    config.json plus any one ``*.safetensors`` file used to be enough. In the
+    repos this app downloads, that first shard is written before the rest of
+    the weights and before ``tokenizer.json``, so a dropped connection left a
+    folder Download treated as already finished. Load then failed on the
+    missing files, and the only recovery was to delete the partial and start
+    the multi-GB download over.
+    """
     path = Path(path)
-    return (
-        path.is_dir()
-        and (path / "config.json").is_file()
-        and any(path.glob("*.safetensors"))
-    )
+    if not path.is_dir() or not (path / "config.json").is_file():
+        return False
+    if not (
+        (path / "tokenizer.json").is_file()
+        or (path / "tokenizer.model").is_file()
+    ):
+        return False
+
+    named = _index_weight_files(path)
+    if named is not None:
+        # An empty set is an unusable index (corrupt, empty, or a shard name
+        # that leaves the folder). all([]) is True, which would accept it.
+        return bool(named) and all((path / name).is_file() for name in named)
+
+    sharded = _sharded_weights_complete(path)
+    if sharded is not None:
+        return sharded
+    return any(shard.is_file() for shard in path.glob("*.safetensors"))
 
 
 def _load_make_sampler():
@@ -167,8 +249,8 @@ class MlxVlmEngine:
         model_path = Path(model_path)
         if not is_mlx_model_dir(model_path):
             raise FileNotFoundError(
-                f"Not an MLX model folder (needs config.json + safetensors): "
-                f"{model_path}"
+                "Not a complete MLX model folder (needs config.json, "
+                f"tokenizer, and every weight shard): {model_path}"
             )
 
         if self._is_loaded:

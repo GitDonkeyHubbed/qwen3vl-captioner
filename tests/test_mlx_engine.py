@@ -1,7 +1,8 @@
 """Tests for MLX model-folder detection (engine.mlx_engine).
 
-An MLX model is a directory holding ``config.json`` plus at least one
-``*.safetensors`` shard (the vision tower is embedded — no mmproj file).
+A complete MLX model folder holds ``config.json``, a tokenizer, and every
+weight shard (the vision tower is embedded — no mmproj file). One shard of
+a multi-file model is not enough.
 """
 
 import sys
@@ -20,6 +21,7 @@ from engine.mlx_engine import (
 def _make_mlx_folder(path):
     path.mkdir()
     (path / "config.json").write_text("{}", encoding="utf-8")
+    (path / "tokenizer.json").write_text("{}", encoding="utf-8")
     (path / "model.safetensors").write_bytes(b"\x00")
 
 
@@ -56,6 +58,53 @@ def test_is_mlx_model_dir_false_without_safetensors(tmp_path):
     folder = tmp_path / "model"
     folder.mkdir()
     (folder / "config.json").write_text("{}", encoding="utf-8")
+    (folder / "tokenizer.json").write_text("{}", encoding="utf-8")
+    assert is_mlx_model_dir(folder) is False
+
+
+def test_is_mlx_model_dir_false_without_tokenizer(tmp_path):
+    folder = tmp_path / "model"
+    folder.mkdir()
+    (folder / "config.json").write_text("{}", encoding="utf-8")
+    (folder / "model.safetensors").write_bytes(b"\x00")
+    assert is_mlx_model_dir(folder) is False
+
+
+def test_is_mlx_model_dir_false_when_a_shard_is_missing(tmp_path):
+    # The first multi-GB shard lands before the rest. That used to look
+    # complete, so Download refused to resume.
+    folder = tmp_path / "model"
+    folder.mkdir()
+    (folder / "config.json").write_text("{}", encoding="utf-8")
+    (folder / "tokenizer.json").write_text("{}", encoding="utf-8")
+    (folder / "model-00001-of-00002.safetensors").write_bytes(b"\x00")
+    assert is_mlx_model_dir(folder) is False
+    (folder / "model-00002-of-00002.safetensors").write_bytes(b"\x00")
+    assert is_mlx_model_dir(folder) is True
+
+
+def test_is_mlx_model_dir_index_requires_every_listed_shard(tmp_path):
+    folder = tmp_path / "model"
+    _make_mlx_folder(folder)
+    (folder / "model.safetensors").unlink()
+    (folder / "model-00001-of-00002.safetensors").write_bytes(b"\x00")
+    (folder / "model.safetensors.index.json").write_text(
+        '{"weight_map": {"a": "model-00001-of-00002.safetensors", '
+        '"b": "model-00002-of-00002.safetensors"}}',
+        encoding="utf-8",
+    )
+    assert is_mlx_model_dir(folder) is False
+    (folder / "model-00002-of-00002.safetensors").write_bytes(b"\x00")
+    assert is_mlx_model_dir(folder) is True
+
+
+def test_is_mlx_model_dir_rejects_an_index_that_escapes_the_folder(tmp_path):
+    folder = tmp_path / "model"
+    _make_mlx_folder(folder)
+    (folder / "model.safetensors.index.json").write_text(
+        '{"weight_map": {"a": "../outside.safetensors"}}',
+        encoding="utf-8",
+    )
     assert is_mlx_model_dir(folder) is False
 
 

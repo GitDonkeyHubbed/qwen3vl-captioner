@@ -22,6 +22,8 @@ from typing import Optional, Dict, Any, List
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
+from engine.mlx_engine import is_mlx_model_dir
+
 # Opt into HuggingFace's high-performance Xet transfer (Rust-based, via the
 # hf_xet client that ships with huggingface_hub >= 1.0). This accelerates the
 # library-driven downloads — mmproj via hf_hub_download and MLX folders via
@@ -343,13 +345,13 @@ def model_file_exists(model_dir: Path, filename: str) -> bool:
 
 
 def mlx_model_exists(model_dir: Path, folder: str) -> bool:
-    """Check whether an MLX model folder is present and complete-looking."""
-    path = model_dir / folder
-    return (
-        path.is_dir()
-        and (path / "config.json").is_file()
-        and any(path.glob("*.safetensors"))
-    )
+    """True when *folder* under *model_dir* is a complete MLX model.
+
+    Same rule as :func:`engine.mlx_engine.is_mlx_model_dir`. A partial
+    download must not count, or Download reports "Already Downloaded" and
+    never resumes the missing shards.
+    """
+    return is_mlx_model_dir(Path(model_dir) / folder)
 
 
 # ---------------------------------------------------------------------------
@@ -511,12 +513,10 @@ class ModelDownloadWorker(QObject):
         from huggingface_hub import HfApi, hf_hub_download
 
         dest = Path(self.target_dir) / self.snapshot_folder
-        # Don't delete an already-complete folder if the user cancels a re-verify
-        already_complete = (
-            dest.is_dir()
-            and (dest / "config.json").is_file()
-            and any(dest.glob("*.safetensors"))
-        )
+        # Don't delete a finished model if the user cancels a re-download.
+        # Completeness matches the Download "already downloaded" check, so a
+        # partial folder is not treated as the whole model.
+        already_complete = is_mlx_model_dir(dest)
 
         def _discard_partial():
             if not already_complete:
