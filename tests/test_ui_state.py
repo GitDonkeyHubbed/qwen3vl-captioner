@@ -24,6 +24,7 @@ from gui.file_browser import (  # noqa: E402
 )
 from gui.settings_panel import (  # noqa: E402
     CAPTION_LENGTHS,
+    TARGET_PRESETS,
     SettingsPanel,
     _build_prompt_pony,
     _build_prompt_sd,
@@ -137,6 +138,119 @@ def test_case_only_stem_collisions_are_detected(tmp_path, a, b):
 
 def test_distinct_stems_do_not_collide(tmp_path):
     assert _stem_key(tmp_path / "one.jpg") != _stem_key(tmp_path / "two.jpg")
+
+
+def _finish_panel(panel):
+    panel._thumb_pool.waitForDone(5000)
+    panel.deleteLater()
+
+
+def test_extension_collision_warns_only_when_a_new_file_joins(qapp, tmp_path):
+    """photo.jpg and photo.png share one sidecar. A later unrelated import
+    must not repeat the warning — that fired on every drop."""
+    photo_jpg = tmp_path / "photo.jpg"
+    photo_png = tmp_path / "photo.png"
+    other = tmp_path / "other.jpg"
+    for path in (photo_jpg, photo_png, other):
+        path.write_bytes(b"")
+
+    panel = FileBrowserPanel()
+    warnings = []
+    panel.stem_collision_detected.connect(warnings.append)
+
+    panel.add_images([photo_jpg])
+    assert warnings == []
+
+    panel.add_images([photo_png])
+    assert len(warnings) == 1
+    assert "photo.jpg" in warnings[0]
+    assert "photo.png" in warnings[0]
+
+    panel.add_images([other])
+    assert len(warnings) == 1
+    _finish_panel(panel)
+
+
+def test_duplicate_import_is_not_added_twice(qapp, tmp_path):
+    photo = tmp_path / "photo.jpg"
+    photo.write_bytes(b"")
+    panel = FileBrowserPanel()
+    imported = []
+    panel.images_imported.connect(imported.append)
+
+    panel.add_images([photo, photo])
+    panel.add_images([photo])
+
+    assert panel.get_all_paths() == [photo]
+    assert panel.count_label.text() == "1"
+    assert imported == [[photo]]
+    _finish_panel(panel)
+
+
+def test_non_utf8_sidecar_warns_and_still_counts_as_captioned(qapp, tmp_path):
+    """A legacy sidecar must stay visible. Treating the decode error as
+    'missing' is what let a batch overwrite it."""
+    legacy = tmp_path / "photo.jpg"
+    plain = tmp_path / "plain.jpg"
+    legacy.write_bytes(b"")
+    plain.write_bytes(b"")
+    legacy.with_suffix(".txt").write_bytes(b"caf\xe9 view")
+    plain.with_suffix(".txt").write_text("plain", encoding="utf-8")
+
+    panel = FileBrowserPanel()
+    warnings = []
+    panel.caption_decode_warning.connect(warnings.append)
+    panel.add_images([legacy, plain])
+
+    assert len(warnings) == 1
+    assert "photo.jpg" in warnings[0]
+    assert "plain.jpg" not in warnings[0]
+    assert panel.get_item_status(legacy) == "done"
+    assert panel.get_item_status(plain) == "done"
+    _finish_panel(panel)
+
+
+def test_refer_as_name_uses_the_typed_name_or_the_subject(qapp):
+    """A blank name used to leave the literal '{name}' in the prompt, or
+    drop the instruction entirely."""
+    panel = SettingsPanel()
+    panel._extra_checkboxes["referAsName"].setChecked(True)
+
+    panel.name_input.setText("  Ada  ")
+    named = panel.get_prompt()
+    assert "Ada" in named
+    assert "the subject" not in named
+    assert "{name}" not in named
+
+    panel.name_input.setText("   ")
+    blank = panel.get_prompt()
+    assert "the subject" in blank
+    assert "{name}" not in blank
+    panel.deleteLater()
+
+
+def test_unused_name_does_not_leak_into_the_prompt(qapp):
+    """The name field is only for the Refer-as option. A preset builder
+    inserts name_value whenever it is non-empty, so get_prompt must not
+    pass the field through while that option is off."""
+    panel = SettingsPanel()
+    panel._apply_preset(TARGET_PRESETS[0])
+    assert panel._extra_checkboxes["referAsName"].isChecked() is False
+    panel.name_input.setText("Ada Lovelace")
+    assert "Ada Lovelace" not in panel.get_prompt()
+    panel.deleteLater()
+
+
+def test_custom_edit_bypasses_the_preset_builder(qapp):
+    """Edit mode returns the box text. Leaving the builder in charge would
+    silently replace the prompt the user just typed."""
+    panel = SettingsPanel()
+    panel._apply_preset(TARGET_PRESETS[0])
+    panel._toggle_custom_edit()
+    panel.prompt_text.setPlainText("  exactly this prompt  ")
+
+    assert panel.get_prompt() == "exactly this prompt"
+    panel.deleteLater()
 
 
 # ── Busy state ──────────────────────────────────────────────────────────

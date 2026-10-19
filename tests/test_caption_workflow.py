@@ -896,6 +896,34 @@ def test_aborted_batch_clears_queued_and_processing_badges(win, images):
     assert win._batch_active is False
 
 
+def test_deferred_batch_captions_the_pinned_image(win, images, monkeypatch):
+    """The 100 ms gap between items used to caption whatever was selected
+    when the timer fired, not the image that had been popped off the queue."""
+    seen = []
+    monkeypatch.setattr(win, "_generate_caption", lambda path=None: seen.append(path))
+    win._batch_active = True
+    win._batch_current_path = images[0]
+    win._current_image = images[1]
+
+    win._start_deferred_batch_caption()
+
+    assert seen == [images[0]]
+
+
+def test_cancelled_batch_does_not_start_a_deferred_caption(win, images, monkeypatch):
+    """Cancel during the gap clears _batch_active. The queued timer must not
+    start an orphan generation on the last-selected image."""
+    seen = []
+    monkeypatch.setattr(win, "_generate_caption", lambda path=None: seen.append(path))
+    win._batch_active = False
+    win._batch_current_path = images[0]
+    win._current_image = images[0]
+
+    win._start_deferred_batch_caption()
+
+    assert seen == []
+
+
 # ── Model resolution ────────────────────────────────────────────────────
 
 def test_registry_selection_never_substitutes_a_foreign_gguf(win, tmp_path, monkeypatch):
