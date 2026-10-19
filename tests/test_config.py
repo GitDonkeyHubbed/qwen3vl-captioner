@@ -7,6 +7,9 @@ Each test is isolated to a temp config file via an autouse fixture, so the
 developer's real ~/.vlcaptioner/config.json is never read or written.
 """
 
+import os
+import stat
+
 import pytest
 
 from gui import config as cfg
@@ -114,3 +117,35 @@ def test_last_import_dir_round_trip():
 def test_last_import_dir_rejects_non_string():
     cfg.save_config({"last_import_dir": ["not", "a", "string"]})
     assert cfg.get_last_import_dir() == ""
+
+
+def test_loaded_lists_are_not_the_shared_default():
+    """A shallow copy of the defaults would let one caller append a path onto
+    the module-level list, so the next load with no file would invent a model."""
+    loaded = cfg.load_config()
+    loaded["custom_models"].append("/m/poison.gguf")
+    assert cfg.load_config()["custom_models"] == []
+    assert cfg._DEFAULTS["custom_models"] == []
+
+
+def test_non_list_custom_models_are_replaced_not_iterated(_isolated_config):
+    """A corrupt string would otherwise be walked character by character, or
+    crash on .append, the next time a model is remembered."""
+    cfg.save_config({"custom_models": "/m/not-a-list.gguf"})
+    assert cfg.get_custom_models() == []
+    cfg.add_custom_model("/m/b.gguf")
+    assert cfg.get_custom_models() == ["/m/b.gguf"]
+
+
+def test_config_file_and_directory_are_owner_only(_isolated_config):
+    """The file can hold an HF token. Group/other bits would let another
+    local user read it; the directory is tightened the same way."""
+    if os.name == "nt":
+        pytest.skip("POSIX permission bits")
+    assert cfg.save_config({"hf_token": "hf_secret"}) is True
+    file_mode = stat.S_IMODE(_isolated_config.stat().st_mode)
+    dir_mode = stat.S_IMODE(_isolated_config.parent.stat().st_mode)
+    assert file_mode & 0o077 == 0
+    assert file_mode & 0o600 == 0o600
+    assert dir_mode & 0o077 == 0
+    assert not _isolated_config.with_suffix(".json.tmp").exists()

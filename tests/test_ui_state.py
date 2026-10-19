@@ -24,9 +24,17 @@ from gui.file_browser import (  # noqa: E402
 )
 from gui.settings_panel import (  # noqa: E402
     CAPTION_LENGTHS,
+    EXTRA_OPTIONS,
+    TARGET_PRESETS,
     SettingsPanel,
+    _build_prompt_chroma,
+    _build_prompt_flux1,
+    _build_prompt_flux2,
+    _build_prompt_generic,
     _build_prompt_pony,
+    _build_prompt_qwen,
     _build_prompt_sd,
+    _build_prompt_zimage,
 )
 
 
@@ -54,6 +62,85 @@ def test_caption_length_changes_the_tag_count(builder):
 def test_unknown_length_key_falls_back_to_medium():
     out = _build_prompt_sd("Nonsense", "", {}, "")
     assert "15-30 tags" in out
+
+
+def test_descriptive_length_is_not_the_medium_fallback():
+    """The longest tag setting has its own count. A missing dict entry would
+    silently fall back to Medium and every "Descriptive" caption would be short."""
+    out = _build_prompt_sd(
+        "Descriptive (Longest)", "", {"excludeResolution": True}, ""
+    )
+    assert "50+ tags" in out
+    assert "15-30 tags" not in out
+    assert "Do not include resolution tags." in out
+
+
+def test_pony_does_not_inherit_the_sd_resolution_exclusion():
+    opts = {"excludeResolution": True}
+    assert "Do not include resolution tags." in _build_prompt_sd("Short", "", opts, "")
+    pony = _build_prompt_pony("Short", "", opts, "")
+    assert "resolution" not in pony.lower()
+    assert "5-15 tags" in pony
+
+
+_PROSE_BUILDERS = [
+    (_build_prompt_flux1, "Note if a watermark is present."),
+    (_build_prompt_flux2, "Note if a watermark is present."),
+    (_build_prompt_zimage, "Note if a watermark is present."),
+    (_build_prompt_chroma, "Note if a watermark is present."),
+    (
+        _build_prompt_qwen,
+        "Include information about whether there is a watermark or not.",
+    ),
+]
+
+
+@pytest.mark.parametrize("builder, watermark", _PROSE_BUILDERS)
+def test_prose_presets_follow_the_length_sentence(builder, watermark):
+    """Tag presets key off the length name. Prose presets append the sentence.
+    Swapping those produced either a tag count inside a paragraph or no
+    length guidance at all."""
+    sentence = CAPTION_LENGTHS["Descriptive (Longest)"]
+    out = builder(
+        "Descriptive (Longest)",
+        sentence,
+        {"includeWatermark": True, "keepPG": False},
+        "",
+    )
+    assert sentence in out
+    assert watermark in out
+    assert "50+ tags" not in out
+    assert "15-30 tags" not in out
+    assert "Keep the description SFW." not in out
+    assert "Keep it PG." not in out
+
+    blank = builder("Descriptive (Longest)", "", {}, "")
+    assert sentence not in blank
+    assert watermark not in blank
+
+
+def test_generic_prompt_skips_a_nameless_refer_and_disabled_options():
+    exclude_text = next(
+        full for key, _short, full in EXTRA_OPTIONS if key == "excludeText"
+    )
+    out = _build_prompt_generic(
+        "Medium",
+        CAPTION_LENGTHS["Medium"],
+        {"excludeText": True, "referAsName": True, "keepPG": False},
+        "",
+        "Describe the image.",
+    )
+    assert out.startswith("Describe the image.")
+    assert CAPTION_LENGTHS["Medium"] in out
+    assert exclude_text in out
+    assert "refer to them as" not in out
+    assert "Do NOT include anything sexual" not in out
+
+    named = _build_prompt_generic(
+        "Medium", "", {"referAsName": True}, "Ada", "Describe."
+    )
+    assert "refer to them as Ada" in named
+    assert CAPTION_LENGTHS["Medium"] not in named
 
 
 # ── Folder import robustness ────────────────────────────────────────────
@@ -137,6 +224,152 @@ def test_case_only_stem_collisions_are_detected(tmp_path, a, b):
 
 def test_distinct_stems_do_not_collide(tmp_path):
     assert _stem_key(tmp_path / "one.jpg") != _stem_key(tmp_path / "two.jpg")
+
+
+def test_scan_skips_directories_and_non_images(tmp_path):
+    """A folder named photo.jpg is not an image. Dropping the is_file() check
+    would hand that directory to the decoder and abort the import."""
+    (tmp_path / "photo.jpg").mkdir()
+    (tmp_path / "notes.txt").write_text("x", encoding="utf-8")
+    (tmp_path / "real.png").write_bytes(b"")
+    assert [p.name for p in scan_directory(tmp_path)] == ["real.png"]
+
+
+def test_import_directory_ignores_a_file(qapp, tmp_path):
+    panel = FileBrowserPanel()
+    errors = []
+    panel.import_failed.connect(errors.append)
+    image = tmp_path / "a.jpg"
+    image.write_bytes(b"")
+    panel.import_directory(image)
+    assert panel.get_all_paths() == []
+    assert errors == []
+    panel.deleteLater()
+
+
+def test_drop_reports_an_unreadable_directory_and_keeps_the_file(
+    qapp, tmp_path, monkeypatch
+):
+    """An OSError inside a Qt drop handler aborts the process. The readable
+    file in the same drop still has to land."""
+    panel = FileBrowserPanel()
+    errors = []
+    panel.import_failed.connect(errors.append)
+    good = tmp_path / "good.jpg"
+    good.write_bytes(b"")
+    folder = tmp_path / "locked"
+    folder.mkdir()
+
+    def scan(path):
+        if path == folder:
+            raise PermissionError("Operation not permitted")
+        return scan_directory(path)
+
+    monkeypatch.setattr("gui.file_browser.scan_directory", scan)
+
+    class _Url:
+        def __init__(self, path):
+            self._path = path
+
+        def isLocalFile(self):
+            return True
+
+        def toLocalFile(self):
+            return str(self._path)
+
+    class _Mime:
+        def hasUrls(self):
+            return True
+
+        def urls(self):
+            return [_Url(folder), _Url(good)]
+
+    class _Event:
+        def mimeData(self):
+            return _Mime()
+
+        def acceptProposedAction(self):
+            self.accepted = True
+
+        def ignore(self):
+            self.ignored = True
+
+    panel.dropEvent(_Event())
+    assert len(errors) == 1
+    assert "locked" in errors[0]
+    assert "Operation not permitted" in errors[0]
+    assert panel.get_all_paths() == [good]
+    panel._thumb_pool.waitForDone(5000)
+    panel.deleteLater()
+
+
+def test_search_filter_matches_case_insensitively(qapp, tmp_path):
+    panel = FileBrowserPanel()
+    panel.resize(320, 480)
+    panel.show()
+    photo = tmp_path / "Photo_01.JPG"
+    notes = tmp_path / "notes.png"
+    photo.write_bytes(b"")
+    notes.write_bytes(b"")
+    panel.add_images([photo, notes])
+
+    panel._filter_items("photo_01")
+    assert panel._items[str(photo)].isHidden() is False
+    assert panel._items[str(notes)].isHidden() is True
+
+    panel._filter_items("")
+    assert panel._items[str(photo)].isHidden() is False
+    assert panel._items[str(notes)].isHidden() is False
+
+    panel._filter_items("NOPE")
+    assert panel._items[str(photo)].isHidden() is True
+    assert panel._items[str(notes)].isHidden() is True
+
+    panel._thumb_pool.waitForDone(5000)
+    panel.deleteLater()
+
+
+def test_temperature_is_tenths_of_the_slider(qapp):
+    """The slider runs 1..20. Returning the raw step would caption at
+    temperature 6 instead of 0.6."""
+    panel = SettingsPanel()
+    assert panel.get_temperature() == 0.6
+    assert panel.temp_value.text() == "0.6"
+    panel.temp_slider.setValue(1)
+    assert panel.get_temperature() == 0.1
+    assert panel.temp_value.text() == "0.1"
+    panel.temp_slider.setValue(20)
+    assert panel.get_temperature() == 2.0
+    assert panel.temp_value.text() == "2.0"
+    assert panel.get_max_tokens() == 256
+    panel.max_tokens_slider.setValue(16)
+    assert panel.get_max_tokens() == 16
+    panel.deleteLater()
+
+
+def test_switching_presets_restores_the_users_own_affixes(qapp):
+    """The stash is taken once, on the way into the first preset. Copying it
+    again when moving preset to preset would restore the previous preset's
+    tokens instead of what the user typed."""
+    sd = next(preset for preset in TARGET_PRESETS if preset["id"] == "sd")
+    pony = next(preset for preset in TARGET_PRESETS if preset["id"] == "pony")
+    panel = SettingsPanel()
+    panel.prefix_input.setText("mine")
+    panel.suffix_input.setText("end")
+
+    panel._apply_preset(sd)
+    assert panel.prefix_input.text() == sd["prefix"]
+    assert panel.suffix_input.text() == sd["suffix"]
+
+    panel._apply_preset(pony)
+    assert panel.prefix_input.text() == pony["prefix"]
+    assert panel.suffix_input.text() == pony["suffix"]
+
+    panel._apply_preset(pony)  # toggle the active preset off
+    assert panel.get_prefix() == "mine"
+    assert panel.get_suffix() == "end"
+    assert panel.prompt_text.isReadOnly() is False
+    panel.deleteLater()
 
 
 # ── Busy state ──────────────────────────────────────────────────────────
