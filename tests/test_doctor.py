@@ -32,7 +32,14 @@ def _pillow(monkeypatch, installed):
 
 @pytest.mark.parametrize(
     ("installed", "flagged"),
-    [("12.2.0", True), ("12.3.0", False), ("12.10.1", False)],
+    [
+        ("12.2.0", True),
+        ("12.2", True),  # missing patch is still 12.2.0, not "unreadable, so OK"
+        ("12.2.0.post1", True),  # a PEP 440 suffix must not hide the old release
+        ("12.3.0", False),
+        ("12.10.1", False),  # numeric: 12.10 is newer than 12.3
+        ("13.0", False),
+    ],
 )
 def test_doctor_flags_a_pillow_below_the_security_floor(
     monkeypatch, capsys, installed, flagged

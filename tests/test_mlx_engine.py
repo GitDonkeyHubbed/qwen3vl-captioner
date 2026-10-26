@@ -8,10 +8,13 @@ import sys
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
+from engine.base import MAX_IMAGE_DIM
 from engine.mlx_engine import (
     MLX_SUPPORTED,
     _load_make_sampler,
+    _prepared_image,
     _stream_with_sampling,
     is_mlx_model_dir,
 )
@@ -254,3 +257,55 @@ def test_stream_with_sampling_propagates_make_sampler_error():
             make_sampler=fake_make_sampler,
         )
     assert legacy_called["hit"] is False
+
+
+def test_prepared_image_applies_exif_and_deletes_the_temp(tmp_path):
+    """MLX used to encode the source path, so a phone JPEG stayed sideways.
+
+    The temp copy is the only file the model may see, and it must not outlive
+    the caption. Leaving it behind fills the temp dir over a batch.
+    """
+    path = tmp_path / "rotated.jpg"
+    image = Image.new("RGB", (100, 60), "red")
+    exif = Image.Exif()
+    exif[274] = 6  # 90° CW; displayed size is 60x100
+    image.save(path, "JPEG", exif=exif.tobytes())
+    original = path.read_bytes()
+
+    with _prepared_image(path) as prepared:
+        assert prepared != path
+        with Image.open(prepared) as out:
+            out.load()
+            assert out.size == (60, 100)
+        held = prepared
+
+    assert not held.exists()
+    assert path.read_bytes() == original
+
+
+def test_prepared_image_clamps_the_longest_side(tmp_path):
+    """Skipping the shared clamp encodes a multi-megapixel photo at native size."""
+    path = tmp_path / "big.jpg"
+    Image.new("RGB", (1400, 700), "blue").save(path, "JPEG")
+
+    with _prepared_image(path) as prepared:
+        with Image.open(prepared) as out:
+            out.load()
+            assert max(out.size) == MAX_IMAGE_DIM
+            assert out.size == (1280, 640)
+        held = prepared
+
+    assert not held.exists()
+
+
+def test_prepared_image_deletes_the_temp_when_captioning_raises(tmp_path):
+    path = tmp_path / "small.png"
+    Image.new("RGB", (20, 10), "white").save(path)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with _prepared_image(path) as prepared:
+            held = prepared
+            assert held.exists()
+            raise RuntimeError("boom")
+
+    assert not held.exists()
