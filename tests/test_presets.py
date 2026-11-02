@@ -278,6 +278,29 @@ def test_deselecting_restores_the_users_own_prompt(qapp, preset_id, option, bann
     panel.deleteLater()
 
 
+def test_custom_edit_without_changes_still_restores_the_users_prompt(qapp):
+    panel = SettingsPanel()
+    panel.prompt_text.setPlainText("Describe this image.")
+
+    panel._apply_preset(_preset("moss"))
+    panel._toggle_custom_edit()           # Edit, but change nothing
+    panel._apply_preset(_preset("moss"))  # toggles the preset off
+    assert panel.prompt_text.toPlainText() == "Describe this image."
+    panel.deleteLater()
+
+
+def test_custom_edit_with_changes_keeps_the_users_new_prompt(qapp):
+    panel = SettingsPanel()
+    panel.prompt_text.setPlainText("Describe this image.")
+
+    panel._apply_preset(_preset("moss"))
+    panel._toggle_custom_edit()
+    panel.prompt_text.setPlainText("My own MOSS prompt.")
+    panel._apply_preset(_preset("moss"))  # toggles the preset off
+    assert panel.prompt_text.toPlainText() == "My own MOSS prompt."
+    panel.deleteLater()
+
+
 @pytest.mark.parametrize("preset_id", ["krea2", "moss"])
 def test_new_presets_lock_the_prompt_and_leave_user_affixes_alone(qapp, preset_id):
     panel = SettingsPanel()

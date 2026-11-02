@@ -685,6 +685,9 @@ class SettingsPanel(QFrame):
         # the preset's built prompt as the generic base prompt, and options the
         # preset had dropped get appended to a prompt that forbids them.
         self._user_prompt_before_preset: Optional[str] = None
+        # The last prompt the preset put in the box, to tell an untouched
+        # custom-edit box from one the user actually rewrote.
+        self._last_preset_preview: Optional[str] = None
         # Options the active preset unchecked because it doesn't support them,
         # re-checked when a preset that supports them is chosen or the preset
         # is deselected, so trying e.g. MOSS-Image doesn't silently clear them.
@@ -1309,10 +1312,15 @@ class SettingsPanel(QFrame):
         self._user_suffix_before_preset = None
 
         # Restore the user's pre-preset prompt text, unless they switched to
-        # custom edit and typed their own prompt into the box.
-        if not self._custom_edit_mode and self._user_prompt_before_preset is not None:
+        # custom edit and actually changed the preset's prompt in the box.
+        edited = (
+            self._custom_edit_mode
+            and self.prompt_text.toPlainText() != self._last_preset_preview
+        )
+        if not edited and self._user_prompt_before_preset is not None:
             self.prompt_text.setPlainText(self._user_prompt_before_preset)
         self._user_prompt_before_preset = None
+        self._last_preset_preview = None
 
         # Restore editable prompt
         self.prompt_text.setReadOnly(False)
@@ -1562,6 +1570,7 @@ class SettingsPanel(QFrame):
             self.prompt_text.blockSignals(True)
             self.prompt_text.setPlainText(built)
             self.prompt_text.blockSignals(False)
+            self._last_preset_preview = built
 
     # ─── Public Getters ───────────────────────────────────
 

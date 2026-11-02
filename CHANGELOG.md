@@ -40,7 +40,7 @@ git tags (`V1.x.x`).
 
 ### Tests
 
-- 36 new tests in `tests/test_presets.py` check the contract every preset
+- 38 new tests in `tests/test_presets.py` check the contract every preset
   keeps, both new builders, option restoring and prompt restoring.
 
 ## [1.4.4] — 2026-09-29
