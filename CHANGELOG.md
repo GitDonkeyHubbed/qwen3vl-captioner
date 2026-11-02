@@ -4,6 +4,45 @@ All notable changes to this project are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versions correspond to
 git tags (`V1.x.x`).
 
+## [Unreleased]
+
+### Added — Krea 2 and MOSS-Image presets (#52)
+
+- **Krea 2.** Asks for one dense, objective prose paragraph: medium and main
+  subject first, each subject with its own attributes, then setting, colours,
+  lighting and framing, with visible text quoted. That matches Krea's
+  prompting guide and the long natural-language captions the base model was
+  trained on. No quality or score words, so the Aesthetic quality option is
+  disabled for this preset, and no prefix or suffix. Refer as {name} keeps
+  the subject's class ("Alice, a woman"), as Krea's LoRA guidance asks.
+  Descriptive (Longest) asks the model to stay under about 350 words, to
+  fit the 512-token default of Krea 2's text encoder; at the default Max
+  Tokens of 256 the caption stops sooner, so raise it for that length.
+- **MOSS-Image.** Follows OpenMOSS's captioning guide: English prose
+  describing only what is visible, visible text other than watermarks copied
+  exactly (not translated or romanized), and watermarks never mentioned.
+  The Watermark, Camera / tech details, Aesthetic quality and SFW / NSFW
+  rating options are disabled for this preset, since the guide allows only
+  what is visible.
+  Short / Medium / Long map to the guide's one-sentence / one-paragraph /
+  detailed captions, and only the detailed lengths describe text layout.
+  The output is plain prose for a `.txt` sidecar, not the guide's JSON.
+- Both presets ask for one line with no line breaks, because kohya-style
+  trainers read only the first line of a caption file by default, and tell
+  the model not to mention text at all when the image has none.
+- **Options a preset disables come back.** Choosing a preset that does not
+  support a checked option unchecks it, as before, but it is now re-checked
+  when you switch to a preset that supports it or deselect the preset.
+  Trying MOSS-Image no longer silently clears Watermark detection.
+- **Deselecting a preset restores your own prompt.** It used to leave the
+  preset's built prompt in the box as the base for the generic prompt, with
+  the length sentence and option sentences appended a second time.
+
+### Tests
+
+- 36 new tests in `tests/test_presets.py` check the contract every preset
+  keeps, both new builders, option restoring and prompt restoring.
+
 ## [1.4.4] — 2026-09-29
 
 The first release since 1.4.3, and it carries considerably more than a patch

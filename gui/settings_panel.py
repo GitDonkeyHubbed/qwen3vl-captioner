@@ -353,6 +353,142 @@ def _build_prompt_qwen(length_key: str, length_instr: str, extra_opts: Dict[str,
     return " ".join(parts)
 
 
+# Length guidance for Krea 2. Its own table rather than CAPTION_LENGTHS: the
+# shared longest sentence asks for mood and technical details, which this
+# preset tells the model to leave out.
+_KREA2_LENGTHS = {
+    "Short": "Keep it to one or two sentences: the medium, the main subject, and what it is doing.",
+    "Medium": "Write about 3-5 sentences.",
+    "Long": "Write a long, detailed paragraph.",
+    # Krea 2's text encoder reads 512 tokens by default; trainers truncate the rest.
+    "Descriptive (Longest)": "Describe every visible element in detail (subjects, materials, textures, counts, positions, colors, lighting, and framing), staying under about 350 words.",
+}
+
+
+def _build_prompt_krea2(length_key: str, length_instr: str, extra_opts: Dict[str, bool], name_value: str) -> str:
+    """Krea 2: Dense natural-language paragraph, visible text quoted."""
+    parts = [
+        "Write a dense, objective natural-language caption of this image for Krea 2 training.",
+        "Use flowing prose — NOT tags, and no quality or score words.",
+        "Start with the medium and the main subject (for example \"A photo of...\" or \"An illustration of...\"), then describe each subject together with its own appearance, clothing, pose, and action, followed by the setting, colors, lighting, and framing.",
+        "Describe the spatial relationships between objects precisely. Avoid storytelling or mood.",
+    ]
+    active = _get_active_options(extra_opts)
+    nl_extras = []
+    if active.get("includeLighting"):
+        nl_extras.append("precise lighting details")
+    if active.get("includeCameraAngle"):
+        nl_extras.append("exact camera angle")
+    if active.get("includeTechnicalDetails"):
+        nl_extras.append("technical camera parameters")
+    if active.get("includeComposition"):
+        nl_extras.append("composition style")
+    if active.get("includeDOF"):
+        nl_extras.append("focal depth")
+    if active.get("includeLightSource"):
+        nl_extras.append("light sources")
+    # No includeAestheticQuality branch: the preset drops that option, because
+    # Krea 2 captions carry no quality words.
+    if nl_extras:
+        parts.append(f"Include objective details about: {', '.join(nl_extras)}.")
+    if active.get("keepPG"):
+        parts.append("Keep the description SFW.")
+    if active.get("includeUncensored"):
+        parts.append("Describe all anatomical details, including genitalia, sexual acts, and nudity, with explicit and anatomically correct terminology. Do not use euphemisms.")
+    if active.get("excludeStaticAttributes"):
+        parts.append("Do not describe unchangeable physical attributes.")
+    if active.get("excludeText"):
+        parts.append("Ignore text in the image.")
+    else:
+        # Krea 2's prompting guide puts text to be rendered in quotes.
+        parts.append("Transcribe any visible text exactly, inside double quotes and on one line; if there is no text, do not mention text at all.")
+    if active.get("excludeResolution"):
+        parts.append("Ignore resolution.")
+    if active.get("includeWatermark"):
+        parts.append("Note if a watermark is present.")
+    if active.get("includeArtifacts"):
+        parts.append("Note any image artifacts.")
+    if active.get("includeSafety"):
+        parts.append("State the NSFW/SFW rating.")
+    if active.get("noAmbiguity"):
+        parts.append("Use precise, clinical language.")
+    if name_value and name_value != "the subject":
+        # Krea's LoRA guidance: a trigger word is fine as long as the caption
+        # still names the subject's class. ("the subject" is get_prompt's
+        # fallback for a blank name field, not a trigger word.)
+        parts.append(f"Refer to the subject as {name_value}, followed by what it is (for example a woman, a dog, or a car).")
+    elif name_value:
+        parts.append(f"Refer to the subject as {name_value}.")
+    # Most trainers read only the first line of a caption file.
+    parts.append("Write a single paragraph with no line breaks, lists, or Markdown.")
+    parts.append(_KREA2_LENGTHS.get(length_key, _KREA2_LENGTHS["Medium"]))
+    return " ".join(parts)
+
+
+# Length guidance for MOSS-Image, mirroring the short / medium / long caption
+# granularities in OpenMOSS's captioning guide.
+_MOSS_LENGTHS = {
+    "Short": "Write one sentence summarizing the main subject, action, or relationship.",
+    "Medium": "Write one concise paragraph of about 3-4 sentences, keeping only the most important details.",
+    "Long": "Write a detailed paragraph.",
+    "Descriptive (Longest)": "Write an exhaustive paragraph covering every visible detail.",
+}
+
+
+def _build_prompt_moss(length_key: str, length_instr: str, extra_opts: Dict[str, bool], name_value: str) -> str:
+    """MOSS-Image: English prose per OpenMOSS's captioning guide, no watermarks."""
+    detailed = length_key in ("Long", "Descriptive (Longest)")
+    parts = [
+        "Write an accurate English caption of this image for MOSS-Image training.",
+        "Describe only what is visible: the composition, key subjects, their actions, the setting, colors, lighting, and artistic style or medium.",
+        "Use plain descriptive prose — no tags, JSON, or Markdown.",
+        "Never mention watermarks.",
+    ]
+    active = _get_active_options(extra_opts)
+    nl_extras = []
+    if active.get("includeLighting"):
+        nl_extras.append("precise lighting details")
+    if active.get("includeCameraAngle"):
+        nl_extras.append("exact camera angle")
+    if active.get("includeComposition"):
+        nl_extras.append("composition style")
+    if active.get("includeDOF"):
+        nl_extras.append("focal depth")
+    if active.get("includeLightSource"):
+        nl_extras.append("light sources")
+    # No includeTechnicalDetails or includeAestheticQuality branch (nor an
+    # includeSafety one below): the preset drops them, because the guide
+    # allows only what is visible in the image.
+    if nl_extras:
+        parts.append(f"Include objective details about: {', '.join(nl_extras)}.")
+    if active.get("keepPG"):
+        parts.append("Keep the description SFW.")
+    if active.get("includeUncensored"):
+        parts.append("Describe all anatomical details, including genitalia, sexual acts, and nudity, with explicit and anatomically correct terminology. Do not use euphemisms.")
+    if active.get("excludeStaticAttributes"):
+        parts.append("Do not describe unchangeable physical attributes.")
+    if active.get("excludeText"):
+        parts.append("Ignore text in the image.")
+    elif detailed:
+        parts.append("Copy any visible text other than watermarks exactly as written, inside double quotes and on one line — do not translate, paraphrase, or romanize it — and describe its position and layout. If there is no text, do not mention text at all.")
+    else:
+        parts.append("Quote any prominent text other than watermarks exactly as written, inside double quotes — do not translate or romanize it. If there is no text, do not mention text at all.")
+    if active.get("excludeResolution"):
+        parts.append("Ignore resolution.")
+    # No includeWatermark branch: the preset drops that option, because the
+    # MOSS-Image guide says never to describe watermarks in a caption.
+    if active.get("includeArtifacts"):
+        parts.append("Note any image artifacts.")
+    if active.get("noAmbiguity"):
+        parts.append("Use precise, clinical language.")
+    if name_value:
+        parts.append(f"Refer to the subject as {name_value}.")
+    # Most trainers read only the first line of a caption file.
+    parts.append("Use no line breaks.")
+    parts.append(_MOSS_LENGTHS.get(length_key, _MOSS_LENGTHS["Medium"]))
+    return " ".join(parts)
+
+
 def _build_prompt_generic(length_key: str, length_instr: str, extra_opts: Dict[str, bool], name_value: str, base_prompt: str) -> str:
     """Generic fallback: original concatenation behavior when no preset is selected."""
     parts = [base_prompt]
@@ -486,6 +622,35 @@ TARGET_PRESETS = [
         "supported_options": _ALL_OPTION_KEYS,
         "allowed_lengths": _ALL_LENGTH_KEYS,
     },
+    {
+        "id": "krea2",
+        "name": "Krea 2",
+        "icon": "🌀",
+        "template": "Dense natural-language caption for Krea 2 training:",
+        "prefix": "",
+        "suffix": "",
+        "prompt_builder": _build_prompt_krea2,
+        # Krea 2 captions carry no quality words.
+        "supported_options": _ALL_OPTION_KEYS - {"includeAestheticQuality"},
+        "allowed_lengths": _ALL_LENGTH_KEYS,
+    },
+    {
+        "id": "moss",
+        "name": "MOSS-Image",
+        "icon": "🌿",
+        "template": "Plain English caption for MOSS-Image training:",
+        "prefix": "",
+        "suffix": "",
+        "prompt_builder": _build_prompt_moss,
+        # MOSS-Image's captioning guide: never describe watermarks, and include
+        # only what is visible (no guessed camera settings, quality or
+        # SFW/NSFW ratings).
+        "supported_options": _ALL_OPTION_KEYS - {
+            "includeWatermark", "includeTechnicalDetails",
+            "includeAestheticQuality", "includeSafety",
+        },
+        "allowed_lengths": _ALL_LENGTH_KEYS,
+    },
 ]
 
 
@@ -516,6 +681,14 @@ class SettingsPanel(QFrame):
         # tokens (e.g. Pony's "score_9, ...") baked into the input fields.
         self._user_prefix_before_preset: Optional[str] = None
         self._user_suffix_before_preset: Optional[str] = None
+        # Likewise the user's own prompt text: without it, deselecting leaves
+        # the preset's built prompt as the generic base prompt, and options the
+        # preset had dropped get appended to a prompt that forbids them.
+        self._user_prompt_before_preset: Optional[str] = None
+        # Options the active preset unchecked because it doesn't support them,
+        # re-checked when a preset that supports them is chosen or the preset
+        # is deselected, so trying e.g. MOSS-Image doesn't silently clear them.
+        self._options_unchecked_by_preset: set[str] = set()
         self._preset_buttons: Dict[str, QPushButton] = {}
         self._extra_checkboxes: Dict[str, QCheckBox] = {}
         self._show_extra_options = True
@@ -1049,6 +1222,7 @@ class SettingsPanel(QFrame):
         if old_id is None:
             self._user_prefix_before_preset = self.prefix_input.text()
             self._user_suffix_before_preset = self.suffix_input.text()
+            self._user_prompt_before_preset = self.prompt_text.toPlainText()
 
         # Apply prefix, suffix
         self.prefix_input.setText(preset["prefix"])
@@ -1070,7 +1244,12 @@ class SettingsPanel(QFrame):
             is_supported = key in supported
             cb.setEnabled(is_supported)
             if not is_supported:
+                if cb.isChecked():
+                    self._options_unchecked_by_preset.add(key)
                 cb.setChecked(False)  # Uncheck unsupported options
+            elif key in self._options_unchecked_by_preset:
+                self._options_unchecked_by_preset.discard(key)
+                cb.setChecked(True)
 
         # Filter caption length dropdown to only meaningful options for this preset
         allowed = preset.get("allowed_lengths", _ALL_LENGTH_KEYS)
@@ -1107,9 +1286,13 @@ class SettingsPanel(QFrame):
             btn.style().polish(btn)
         self._active_preset_id = None
 
-        # Re-enable all checkboxes and restore full caption length dropdown
-        for cb in self._extra_checkboxes.values():
+        # Re-enable all checkboxes, re-check any the preset unchecked, and
+        # restore full caption length dropdown
+        for key, cb in self._extra_checkboxes.items():
             cb.setEnabled(True)
+            if key in self._options_unchecked_by_preset:
+                cb.setChecked(True)
+        self._options_unchecked_by_preset.clear()
         prev_selection = self.caption_length_combo.currentText()
         self.caption_length_combo.blockSignals(True)
         self.caption_length_combo.clear()
@@ -1124,6 +1307,12 @@ class SettingsPanel(QFrame):
         self.suffix_input.setText(self._user_suffix_before_preset or "")
         self._user_prefix_before_preset = None
         self._user_suffix_before_preset = None
+
+        # Restore the user's pre-preset prompt text, unless they switched to
+        # custom edit and typed their own prompt into the box.
+        if not self._custom_edit_mode and self._user_prompt_before_preset is not None:
+            self.prompt_text.setPlainText(self._user_prompt_before_preset)
+        self._user_prompt_before_preset = None
 
         # Restore editable prompt
         self.prompt_text.setReadOnly(False)
