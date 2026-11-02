@@ -333,3 +333,172 @@ def test_new_presets_lock_the_prompt_and_leave_user_affixes_alone(qapp, preset_i
     assert panel.get_prefix() == "photo of"
     assert panel.get_suffix() == "by me"
     panel.deleteLater()
+
+
+def test_switching_presets_keeps_the_stash_from_the_first_entry(qapp):
+    # The stash is written only when entering preset mode. A later preset
+    # must not replace it with the previous preset's prompt or affixes, or
+    # deselect restores Pony's tokens and a built prompt instead of the
+    # user's. One apply-and-deselect does not catch that.
+    panel = SettingsPanel()
+    panel._toggle_custom_edit()
+    panel.prompt_text.setPlainText("Describe this image.")
+    panel.prefix_input.setText("photo of")
+    panel.suffix_input.setText("by me")
+
+    panel._apply_preset(_preset("pony"))
+    assert "score_9" in panel.get_prefix()
+    panel._apply_preset(_preset("krea2"))
+    assert panel.get_prefix() == ""
+    assert panel.get_suffix() == ""
+    assert "score_9" not in panel.get_prompt()
+    assert "Krea 2" in panel.get_prompt()
+
+    panel._apply_preset(_preset("moss"))
+    panel._apply_preset(_preset("moss"))  # toggles the preset off
+    assert panel.prompt_text.toPlainText() == "Describe this image."
+    assert panel._custom_edit_mode is True
+    assert panel.custom_edit_btn.text() == "↻ Reset"
+    assert panel.get_prompt() == "Describe this image."
+    assert panel.get_prefix() == "photo of"
+    assert panel.get_suffix() == "by me"
+    panel.deleteLater()
+
+
+def test_switching_presets_discards_a_custom_edit_of_the_previous_one(qapp):
+    # Switching presets turns custom-edit mode off. Leaving it on would send
+    # the MOSS rewrite while Krea 2 is the active preset.
+    panel = SettingsPanel()
+    panel._apply_preset(_preset("moss"))
+    panel._toggle_custom_edit()
+    panel.prompt_text.setPlainText("My own MOSS prompt.")
+
+    panel._apply_preset(_preset("krea2"))
+    assert panel._custom_edit_mode is False
+    assert panel.prompt_text.isReadOnly() is True
+    prompt = panel.get_prompt()
+    assert "My own MOSS prompt." not in prompt
+    assert "Krea 2" in prompt
+    assert panel.prompt_text.toPlainText() == prompt
+    panel.deleteLater()
+
+
+def test_krea2_keeps_the_options_moss_drops():
+    # Widening either exclusion set, or copying MOSS's watermark/camera/rating
+    # omissions into the Krea 2 builder, must fail. Passing the options
+    # straight to the builder also catches a branch the supported-set filter
+    # would have hidden.
+    assert _preset("krea2")["supported_options"] == (
+        _ALL_OPTION_KEYS - {"includeAestheticQuality"}
+    )
+    assert _preset("moss")["supported_options"] == _ALL_OPTION_KEYS - {
+        "includeWatermark",
+        "includeTechnicalDetails",
+        "includeAestheticQuality",
+        "includeSafety",
+    }
+    prompt = _build_prompt_krea2("Medium", "", {
+        "includeWatermark": True,
+        "includeTechnicalDetails": True,
+        "includeSafety": True,
+        "includeAestheticQuality": True,
+    }, "")
+    assert "Note if a watermark is present." in prompt
+    assert "technical camera parameters" in prompt
+    assert "NSFW/SFW rating" in prompt
+    assert "image quality" not in prompt
+
+
+def test_refer_as_reaches_krea2_and_moss_only_while_checked(qapp):
+    panel = SettingsPanel()
+    panel.name_input.setText("Alice")
+    panel._apply_preset(_preset("krea2"))
+    assert "Alice" not in panel.get_prompt()
+
+    panel._extra_checkboxes["referAsName"].setChecked(True)
+    panel.name_input.setText("  Alice  ")
+    krea = panel.get_prompt()
+    assert "Refer to the subject as Alice, followed by what it is" in krea
+    assert panel.prompt_text.toPlainText() == krea
+
+    panel._apply_preset(_preset("moss"))
+    moss = panel.get_prompt()
+    assert "Refer to the subject as Alice." in moss
+    assert "followed by what it is" not in moss
+    assert panel.prompt_text.toPlainText() == moss
+
+    panel.name_input.setText("   ")
+    blank = panel.get_prompt()
+    assert "Refer to the subject as the subject." in blank
+    assert "followed by what it is" not in blank
+    assert panel.prompt_text.toPlainText() == blank
+    panel.deleteLater()
+
+
+def test_caption_length_on_the_panel_reaches_krea2_and_moss(qapp):
+    panel = SettingsPanel()
+    panel.caption_length_combo.setCurrentText("Descriptive (Longest)")
+    panel._apply_preset(_preset("krea2"))
+    shown = panel.prompt_text.toPlainText()
+    assert shown == panel.get_prompt()
+    assert "350 words" in shown
+    assert CAPTION_LENGTHS["Descriptive (Longest)"] not in shown
+
+    panel._apply_preset(_preset("moss"))
+    shown = panel.get_prompt()
+    assert "exhaustive paragraph" in shown
+    assert "position and layout" in shown
+    assert "350 words" not in shown
+    assert panel.prompt_text.toPlainText() == shown
+
+    panel.caption_length_combo.setCurrentText("Short")
+    shown = panel.get_prompt()
+    assert "one sentence" in shown
+    assert "position and layout" not in shown
+    assert panel.prompt_text.toPlainText() == shown
+    panel.deleteLater()
+
+
+def test_toggling_watermark_updates_the_krea2_preview(qapp):
+    panel = SettingsPanel()
+    panel._apply_preset(_preset("krea2"))
+    watermark = panel._extra_checkboxes["includeWatermark"]
+
+    watermark.setChecked(True)
+    assert "Note if a watermark is present." in panel.get_prompt()
+    assert panel.prompt_text.toPlainText() == panel.get_prompt()
+
+    watermark.setChecked(False)
+    assert "watermark" not in panel.get_prompt().lower()
+    assert panel.prompt_text.toPlainText() == panel.get_prompt()
+    panel.deleteLater()
+
+
+def test_leaving_krea2_for_pony_filters_the_length_dropdown(qapp):
+    # Krea 2 offers Descriptive; Pony does not. The dropdown has to be rebuilt
+    # and the tag count has to follow whatever length remains.
+    panel = SettingsPanel()
+    panel.caption_length_combo.setCurrentText("Descriptive (Longest)")
+    panel._apply_preset(_preset("krea2"))
+    assert panel.caption_length_combo.currentText() == "Descriptive (Longest)"
+    assert "350 words" in panel.get_prompt()
+
+    panel._apply_preset(_preset("pony"))
+    shown = [
+        panel.caption_length_combo.itemText(i)
+        for i in range(panel.caption_length_combo.count())
+    ]
+    assert shown == _preset("pony")["allowed_lengths"]
+    length = panel.caption_length_combo.currentText()
+    hints = {
+        "Short": "5-15 tags",
+        "Medium": "15-30 tags",
+        "Long": "30-50 tags",
+        "Descriptive (Longest)": "50+ tags",
+    }
+    assert hints[length] in panel.get_prompt()
+    for other, phrase in hints.items():
+        if other != length:
+            assert phrase not in panel.get_prompt()
+    assert "350 words" not in panel.get_prompt()
+    panel.deleteLater()
