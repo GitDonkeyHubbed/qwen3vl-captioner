@@ -333,3 +333,244 @@ def test_new_presets_lock_the_prompt_and_leave_user_affixes_alone(qapp, preset_i
     assert panel.get_prefix() == "photo of"
     assert panel.get_suffix() == "by me"
     panel.deleteLater()
+
+
+def test_switching_presets_does_not_overwrite_the_stashed_prompt(qapp):
+    """Pony → Krea must not stash Pony's tokens or drop a pre-preset custom edit.
+
+    The stash is taken only on the first entry into preset mode. Overwriting it
+    on the second click restores the outgoing preset's prompt and prefix, and
+    leaves custom edit off, so get_prompt() appends length text to a prompt
+    that was supposed to be sent verbatim.
+    """
+    panel = SettingsPanel()
+    panel._toggle_custom_edit()
+    panel.prompt_text.setPlainText("Return only the dominant color.")
+    panel.prefix_input.setText("photo of")
+    panel.suffix_input.setText("by me")
+
+    panel._apply_preset(_preset("pony"))
+    assert panel._custom_edit_mode is False
+    assert panel.get_prefix() == "score_9, score_8_up, score_7_up,"
+    assert panel.get_suffix() == ", rating_safe"
+    assert "dominant color" not in panel.get_prompt()
+
+    panel._apply_preset(_preset("krea2"))
+    assert panel._custom_edit_mode is False
+    assert panel.custom_edit_btn.text() == "✏ Edit"
+    assert panel.prompt_text.isReadOnly() is True
+    assert panel.prompt_text.toPlainText() == panel.get_prompt()
+    assert "Krea 2" in panel.get_prompt()
+    assert "dominant color" not in panel.get_prompt()
+    assert "score_9" not in panel.get_prompt()
+    assert panel.get_prefix() == ""
+
+    panel._apply_preset(_preset("krea2"))  # toggles the preset off
+    assert panel._custom_edit_mode is True
+    assert panel.custom_edit_btn.text() == "↻ Reset"
+    assert panel.get_prompt() == "Return only the dominant color."
+    assert panel.get_prefix() == "photo of"
+    assert panel.get_suffix() == "by me"
+    panel.deleteLater()
+
+
+def test_a_custom_rewrite_does_not_become_the_next_presets_prompt(qapp):
+    panel = SettingsPanel()
+    panel.prompt_text.setPlainText("Describe this image.")
+    panel._apply_preset(_preset("moss"))
+    panel._toggle_custom_edit()
+    panel.prompt_text.setPlainText("My MOSS rewrite.")
+
+    panel._apply_preset(_preset("krea2"))
+    assert panel._custom_edit_mode is False
+    assert panel.custom_edit_btn.text() == "✏ Edit"
+    assert panel.prompt_text.toPlainText() == panel.get_prompt()
+    assert "Krea 2" in panel.get_prompt()
+    assert "My MOSS rewrite." not in panel.get_prompt()
+
+    panel._apply_preset(_preset("krea2"))  # toggles the preset off
+    assert panel.prompt_text.toPlainText() == "Describe this image."
+    assert panel._custom_edit_mode is False
+    prompt = panel.get_prompt()
+    assert prompt.startswith("Describe this image.")
+    assert "Provide a moderately detailed description in 2-4 sentences." in prompt
+    assert "My MOSS rewrite." not in prompt
+    assert "Never mention watermarks" not in prompt
+    panel.deleteLater()
+
+
+def test_a_rewrite_is_not_sent_verbatim_just_because_custom_edit_was_on(qapp):
+    """Editing the preset's own preview wins over the pre-preset custom-edit flag.
+
+    Restoring that flag anyway would send the rewrite with no length sentence.
+    Restoring the old verbatim prompt would throw the rewrite away.
+    """
+    panel = SettingsPanel()
+    panel._toggle_custom_edit()
+    panel.prompt_text.setPlainText("Return only the dominant color.")
+    panel._apply_preset(_preset("moss"))
+    panel._toggle_custom_edit()
+    panel.prompt_text.setPlainText("Only the dominant color, nothing else.")
+
+    panel._apply_preset(_preset("moss"))  # toggles the preset off
+    assert panel.prompt_text.toPlainText() == "Only the dominant color, nothing else."
+    assert panel._custom_edit_mode is False
+    assert panel.custom_edit_btn.text() == "✏ Edit"
+    prompt = panel.get_prompt()
+    assert prompt.startswith("Only the dominant color, nothing else.")
+    assert prompt != "Only the dominant color, nothing else."
+    assert "Provide a moderately detailed description in 2-4 sentences." in prompt
+    assert "Return only the dominant color." not in prompt
+    panel.deleteLater()
+
+
+def test_an_empty_custom_prompt_is_restored_on_deselect(qapp):
+    panel = SettingsPanel()
+    panel._toggle_custom_edit()
+    panel.prompt_text.setPlainText("")
+    assert panel.get_prompt() == ""
+
+    panel._apply_preset(_preset("moss"))
+    assert "MOSS-Image" in panel.get_prompt()
+    panel._apply_preset(_preset("moss"))  # toggles the preset off
+    assert panel.prompt_text.toPlainText() == ""
+    assert panel._custom_edit_mode is True
+    assert panel.get_prompt() == ""
+    panel.deleteLater()
+
+
+def test_rechecked_options_change_the_caption_not_just_the_checkbox(qapp):
+    panel = SettingsPanel()
+    for key in (
+        "includeWatermark",
+        "includeSafety",
+        "includeTechnicalDetails",
+        "includeAestheticQuality",
+    ):
+        panel._extra_checkboxes[key].setChecked(True)
+
+    panel._apply_preset(_preset("krea2"))
+    prompt = panel.get_prompt()
+    assert "Note if a watermark is present." in prompt
+    assert "State the NSFW/SFW rating." in prompt
+    assert "technical camera parameters" in prompt
+    assert "image quality" not in prompt
+    assert "subjective aesthetic" not in prompt
+
+    panel._apply_preset(_preset("moss"))
+    prompt = panel.get_prompt()
+    assert panel._extra_checkboxes["includeWatermark"].isChecked() is False
+    assert panel._extra_checkboxes["includeAestheticQuality"].isChecked() is False
+    assert "Note if a watermark is present." not in prompt
+    assert "technical camera parameters" not in prompt
+    assert "NSFW/SFW rating" not in prompt
+    assert "image quality" not in prompt
+    assert prompt.count("watermark") == 2
+
+    panel._apply_preset(_preset("krea2"))
+    prompt = panel.get_prompt()
+    assert panel._extra_checkboxes["includeWatermark"].isChecked() is True
+    assert panel._extra_checkboxes["includeSafety"].isChecked() is True
+    assert panel._extra_checkboxes["includeTechnicalDetails"].isChecked() is True
+    assert panel._extra_checkboxes["includeAestheticQuality"].isChecked() is False
+    assert "Note if a watermark is present." in prompt
+    assert "State the NSFW/SFW rating." in prompt
+    assert "technical camera parameters" in prompt
+    assert "image quality" not in prompt
+    panel.deleteLater()
+
+
+@pytest.mark.parametrize(
+    "preset_id,key,phrase",
+    [
+        ("krea2", "includeCameraAngle", "exact camera angle"),
+        ("krea2", "includeComposition", "composition style"),
+        ("krea2", "includeDOF", "focal depth"),
+        ("krea2", "includeLightSource", "light sources"),
+        ("krea2", "includeUncensored", "Do not use euphemisms."),
+        ("krea2", "excludeStaticAttributes", "Do not describe unchangeable physical attributes."),
+        ("krea2", "excludeResolution", "Ignore resolution."),
+        ("krea2", "includeArtifacts", "Note any image artifacts."),
+        ("krea2", "noAmbiguity", "Use precise, clinical language."),
+        ("moss", "includeLighting", "precise lighting details"),
+        ("moss", "includeCameraAngle", "exact camera angle"),
+        ("moss", "includeComposition", "composition style"),
+        ("moss", "includeDOF", "focal depth"),
+        ("moss", "includeLightSource", "light sources"),
+        ("moss", "keepPG", "Keep the description SFW."),
+        ("moss", "includeUncensored", "Do not use euphemisms."),
+        ("moss", "excludeStaticAttributes", "Do not describe unchangeable physical attributes."),
+        ("moss", "excludeResolution", "Ignore resolution."),
+        ("moss", "includeArtifacts", "Note any image artifacts."),
+        ("moss", "noAmbiguity", "Use precise, clinical language."),
+    ],
+)
+def test_option_sentence_is_present_only_when_that_option_is_on(preset_id, key, phrase):
+    assert phrase in _build(preset_id, "Medium", {key: True})
+    assert phrase not in _build(preset_id, "Medium", {})
+
+
+def test_refer_as_blank_is_the_subject_and_does_not_leak_when_off(qapp):
+    panel = SettingsPanel()
+    refer = panel._extra_checkboxes["referAsName"]
+    refer.setChecked(True)
+    panel.name_input.setText("   ")
+
+    panel._apply_preset(_preset("krea2"))
+    prompt = panel.get_prompt()
+    assert "Refer to the subject as the subject." in prompt
+    assert "followed by what it is" not in prompt
+
+    panel.name_input.setText(" Alice ")
+    prompt = panel.get_prompt()
+    assert "Refer to the subject as Alice, followed by what it is" in prompt
+
+    refer.setChecked(False)
+    assert "Alice" not in panel.get_prompt()
+
+    refer.setChecked(True)
+    panel._apply_preset(_preset("moss"))
+    prompt = panel.get_prompt()
+    assert "Refer to the subject as Alice." in prompt
+    assert "followed by what it is" not in prompt
+
+    panel.name_input.setText("\t")
+    prompt = panel.get_prompt()
+    assert "Refer to the subject as the subject." in prompt
+    assert "Alice" not in prompt
+    panel.deleteLater()
+
+
+def test_descriptive_length_returns_after_a_tag_preset_and_survives_the_switch(qapp):
+    panel = SettingsPanel()
+    panel.caption_length_combo.setCurrentText("Descriptive (Longest)")
+
+    panel._apply_preset(_preset("sd"))
+    labels = [
+        panel.caption_length_combo.itemText(i)
+        for i in range(panel.caption_length_combo.count())
+    ]
+    assert labels == ["Short", "Medium", "Long"]
+    assert panel.caption_length_combo.currentText() == "Short"
+    assert "5-15 tags" in panel.get_prompt()
+    assert "50+ tags" not in panel.get_prompt()
+
+    panel._apply_preset(_preset("krea2"))
+    labels = [
+        panel.caption_length_combo.itemText(i)
+        for i in range(panel.caption_length_combo.count())
+    ]
+    assert labels == list(CAPTION_LENGTHS)
+    assert panel.caption_length_combo.currentText() == "Short"
+    assert "one or two sentences" in panel.get_prompt()
+    panel.caption_length_combo.setCurrentText("Descriptive (Longest)")
+    assert "350 words" in panel.get_prompt()
+    assert "one or two sentences" not in panel.get_prompt()
+
+    panel._apply_preset(_preset("moss"))
+    assert panel.caption_length_combo.currentText() == "Descriptive (Longest)"
+    prompt = panel.get_prompt()
+    assert "exhaustive paragraph" in prompt
+    assert "position and layout" in prompt
+    assert "350 words" not in prompt
+    panel.deleteLater()
