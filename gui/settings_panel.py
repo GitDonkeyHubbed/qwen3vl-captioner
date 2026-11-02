@@ -1322,9 +1322,13 @@ class SettingsPanel(QFrame):
         restored = not edited and self._user_prompt_before_preset is not None
         if restored:
             self.prompt_text.setPlainText(self._user_prompt_before_preset)
-        # A prompt the user had in custom edit was sent verbatim; restore that
-        # mode with it, or get_prompt() would append length/option sentences.
-        restore_custom_edit = restored and self._user_custom_edit_before_preset
+        # A prompt typed in custom edit is sent verbatim. Stay in that mode for
+        # an edited preset prompt, and go back to it with a restored prompt the
+        # user had in custom edit, or get_prompt() would append length/option
+        # sentences to it.
+        restore_custom_edit = edited or (
+            restored and self._user_custom_edit_before_preset
+        )
         self._user_prompt_before_preset = None
         self._user_custom_edit_before_preset = False
         self._last_preset_preview = None

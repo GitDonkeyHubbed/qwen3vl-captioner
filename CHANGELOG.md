@@ -37,7 +37,8 @@ git tags (`V1.x.x`).
 - **Deselecting a preset restores your own prompt**, and custom-edit mode
   if your prompt was in it. It used to leave the preset's built prompt in the
   box as the base for the generic prompt, with the length sentence and option
-  sentences appended a second time.
+  sentences appended a second time. If you edited the preset's prompt in
+  custom edit first, your edit stays and is still sent exactly as typed.
 
 ### Tests
 

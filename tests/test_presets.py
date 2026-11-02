@@ -312,6 +312,9 @@ def test_custom_edit_with_changes_keeps_the_users_new_prompt(qapp):
     panel.prompt_text.setPlainText("My own MOSS prompt.")
     panel._apply_preset(_preset("moss"))  # toggles the preset off
     assert panel.prompt_text.toPlainText() == "My own MOSS prompt."
+    # Still in custom edit, so the edited prompt goes out exactly as typed.
+    assert panel._custom_edit_mode is True
+    assert panel.get_prompt() == "My own MOSS prompt."
     panel.deleteLater()
 
 
