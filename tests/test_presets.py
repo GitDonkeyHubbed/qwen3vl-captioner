@@ -100,8 +100,12 @@ def test_krea2_never_asks_for_mood_or_quality():
     # The shared longest-length sentence asks for mood and technical details,
     # and the Aesthetic quality option asks for quality words; Krea 2's own
     # rules forbid both, so neither may reach its prompt.
+    # Call the builder directly: _build() strips unsupported keys first, so a
+    # copied "image quality" branch would survive the filtered call.
     for length_key in CAPTION_LENGTHS:
-        prompt = _build("krea2", length_key, _all_on())
+        prompt = _build_prompt_krea2(
+            length_key, CAPTION_LENGTHS[length_key], _all_on(), ""
+        )
         assert prompt.count("mood") == 1  # only "Avoid storytelling or mood."
         assert "image quality" not in prompt
         assert CAPTION_LENGTHS[length_key] not in prompt
@@ -118,8 +122,61 @@ def test_krea2_honours_options_and_names_the_subject_with_its_class():
 def test_krea2_blank_name_does_not_become_a_trigger_word():
     # get_prompt falls back to "the subject" when Refer-as is on but the name
     # field is blank; that must not be turned into "<name>, <class>".
+    # The plain refer sentence still has to be there. Dropping the elif
+    # branch avoids the class trigger and also drops the name entirely.
     prompt = _build("krea2", "Long", {}, "the subject")
+    assert "Refer to the subject as the subject." in prompt
     assert "followed by what it is" not in prompt
+
+
+def test_krea2_empty_name_adds_no_refer_sentence():
+    # An empty name (Refer-as off) must not take the class branch. A check of
+    # `name_value != "the subject"` without the truthiness test would.
+    prompt = _build_prompt_krea2("Long", "", {}, "")
+    assert "Refer to the subject" not in prompt
+
+
+# Phrases that are not in the Krea 2 base paragraph. Each must appear only
+# when its option is on, so a dropped branch fails and a phrase hardcoded
+# into the base fails too.
+_KREA2_OPTION_SENTENCES = (
+    ("includeLighting", "precise lighting details"),
+    ("includeCameraAngle", "exact camera angle"),
+    ("includeTechnicalDetails", "technical camera parameters"),
+    ("includeComposition", "composition style"),
+    ("includeDOF", "focal depth"),
+    ("includeLightSource", "light sources"),
+    ("keepPG", "Keep the description SFW."),
+    ("includeUncensored", "Do not use euphemisms."),
+    ("excludeStaticAttributes", "Do not describe unchangeable physical attributes."),
+    ("excludeResolution", "Ignore resolution."),
+    ("includeWatermark", "Note if a watermark is present."),
+    ("includeArtifacts", "Note any image artifacts."),
+    ("includeSafety", "State the NSFW/SFW rating."),
+    ("noAmbiguity", "Use precise, clinical language."),
+)
+
+
+def test_krea2_each_supported_option_adds_its_own_sentence():
+    # excludeText stays off so the quoting rule remains. Aesthetic quality is
+    # included in the dict and must still not leak.
+    on = _build_prompt_krea2("Medium", "", _all_on("excludeText"), "")
+    off = _build_prompt_krea2("Medium", "", {}, "")
+    missing = [
+        f"{key}: {phrase}"
+        for key, phrase in _KREA2_OPTION_SENTENCES
+        if phrase not in on
+    ]
+    leaked = [
+        f"{key}: {phrase}"
+        for key, phrase in _KREA2_OPTION_SENTENCES
+        if phrase in off
+    ]
+    assert missing == []
+    assert leaked == []
+    assert "inside double quotes" in on
+    assert "Ignore text in the image." not in on
+    assert "image quality" not in on
 
 
 # ── MOSS-Image ──────────────────────────────────────────────────────────
@@ -183,6 +240,73 @@ def test_moss_drops_the_transcription_rule_when_text_is_excluded():
     prompt = _build("moss", "Medium", {"excludeText": True})
     assert "Ignore text in the image." in prompt
     assert "double quotes" not in prompt
+
+
+def test_moss_names_the_subject_without_a_class_suffix():
+    # Krea 2 appends the subject's class after a trigger word. MOSS must not
+    # pick up that rule if the two builders are copied into each other.
+    named = _build_prompt_moss("Medium", "", {}, "Alice")
+    assert "Refer to the subject as Alice." in named
+    assert "followed by what it is" not in named
+    blank = _build_prompt_moss("Medium", "", {}, "the subject")
+    assert "Refer to the subject as the subject." in blank
+    assert "Refer to the subject" not in _build_prompt_moss("Medium", "", {}, "")
+
+
+def test_moss_longest_length_describes_text_layout():
+    # detailed = length_key in ("Long", "Descriptive (Longest)"). Long is
+    # already pinned; Descriptive is what a `== "Long"` check would drop.
+    longest = _build("moss", "Descriptive (Longest)", {})
+    assert "position and layout" in longest
+    assert "paraphrase" in longest
+    assert "on one line" in longest
+    medium = _build("moss", "Medium", {})
+    assert "paraphrase" not in medium
+    assert "on one line" not in medium
+
+
+# Same contract as Krea 2, minus the four options the guide disallows.
+_MOSS_OPTION_SENTENCES = (
+    ("includeLighting", "precise lighting details"),
+    ("includeCameraAngle", "exact camera angle"),
+    ("includeComposition", "composition style"),
+    ("includeDOF", "focal depth"),
+    ("includeLightSource", "light sources"),
+    ("keepPG", "Keep the description SFW."),
+    ("includeUncensored", "Do not use euphemisms."),
+    ("excludeStaticAttributes", "Do not describe unchangeable physical attributes."),
+    ("excludeResolution", "Ignore resolution."),
+    ("includeArtifacts", "Note any image artifacts."),
+    ("noAmbiguity", "Use precise, clinical language."),
+)
+
+_MOSS_FORBIDDEN_SENTENCES = (
+    "technical camera parameters",
+    "image quality",
+    "NSFW/SFW rating",
+    "Note if a watermark is present.",
+)
+
+
+def test_moss_each_supported_option_adds_its_own_sentence():
+    on = _build_prompt_moss("Long", "", _all_on("excludeText"), "")
+    off = _build_prompt_moss("Long", "", {}, "")
+    missing = [
+        f"{key}: {phrase}"
+        for key, phrase in _MOSS_OPTION_SENTENCES
+        if phrase not in on
+    ]
+    leaked = [
+        f"{key}: {phrase}"
+        for key, phrase in _MOSS_OPTION_SENTENCES
+        if phrase in off
+    ]
+    assert missing == []
+    assert leaked == []
+    for phrase in _MOSS_FORBIDDEN_SENTENCES:
+        assert phrase not in on
+    assert "position and layout" in on
+    assert "Ignore text in the image." not in on
 
 
 # ── Panel behaviour ─────────────────────────────────────────────────────
@@ -318,4 +442,136 @@ def test_new_presets_lock_the_prompt_and_leave_user_affixes_alone(qapp, preset_i
     assert panel.get_active_preset() is None
     assert panel.get_prefix() == "photo of"
     assert panel.get_suffix() == "by me"
+    panel.deleteLater()
+
+
+def _combo_items(combo):
+    return [combo.itemText(i) for i in range(combo.count())]
+
+
+def test_krea2_and_moss_keep_the_longest_caption_length(qapp):
+    # allowed_lengths is only checked as a subset. Copying Pony's Short /
+    # Medium / Long list would still pass that, and the builder tests never
+    # open the dropdown.
+    panel = SettingsPanel()
+    markers = {"krea2": "350 words", "moss": "exhaustive paragraph"}
+    for preset_id, marker in markers.items():
+        panel._apply_preset(_preset(preset_id))
+        assert _combo_items(panel.caption_length_combo) == list(CAPTION_LENGTHS)
+        panel.caption_length_combo.setCurrentText("Descriptive (Longest)")
+        prompt = panel.get_prompt()
+        assert marker in prompt
+        assert CAPTION_LENGTHS["Descriptive (Longest)"] not in prompt
+        panel._apply_preset(_preset(preset_id))  # toggles the preset off
+    panel.deleteLater()
+
+
+def test_krea2_refer_as_reads_the_name_field(qapp):
+    # The builder tests pass name_value in directly. get_prompt only does
+    # that when Refer-as is checked, and a blank field becomes "the subject".
+    panel = SettingsPanel()
+    panel._apply_preset(_preset("krea2"))
+    panel.name_input.setText("Alice")
+    refer = panel._extra_checkboxes["referAsName"]
+    refer.setChecked(False)
+    assert "Alice" not in panel.get_prompt()
+    refer.setChecked(True)
+    assert (
+        "Refer to the subject as Alice, followed by what it is"
+        in panel.get_prompt()
+    )
+    panel.name_input.setText("   ")
+    prompt = panel.get_prompt()
+    assert "Refer to the subject as the subject." in prompt
+    assert "followed by what it is" not in prompt
+    panel.deleteLater()
+
+
+def test_switching_presets_does_not_overwrite_the_stashed_prompt(qapp):
+    # The stash is taken only on the first preset. Krea 2 and MOSS both have
+    # an empty prefix, so the overwrite only shows up if a preset with its
+    # own prefix (Pony) sits in between.
+    panel = SettingsPanel()
+    panel.prompt_text.setPlainText("Describe this image.")
+    panel.prefix_input.setText("photo of")
+    panel.suffix_input.setText("by me")
+
+    panel._apply_preset(_preset("krea2"))
+    panel._apply_preset(_preset("pony"))
+    assert "score_9" in panel.get_prefix()
+    panel._apply_preset(_preset("moss"))
+    assert panel.get_prefix() == ""
+    assert panel.get_suffix() == ""
+    assert "MOSS-Image" in panel.get_prompt()
+
+    panel._apply_preset(_preset("moss"))  # toggles the preset off
+    assert panel.prompt_text.toPlainText() == "Describe this image."
+    assert panel.get_prefix() == "photo of"
+    assert panel.get_suffix() == "by me"
+    assert "Never mention watermarks" not in panel.get_prompt()
+    assert "Krea 2" not in panel.get_prompt()
+    panel.deleteLater()
+
+
+def test_switching_presets_discards_an_uncommitted_custom_edit(qapp):
+    panel = SettingsPanel()
+    panel.prompt_text.setPlainText("Describe this image.")
+    panel._apply_preset(_preset("moss"))
+    panel._toggle_custom_edit()
+    panel.prompt_text.setPlainText("My moss rewrite.")
+    assert panel.get_prompt() == "My moss rewrite."
+
+    panel._apply_preset(_preset("krea2"))
+    assert panel._custom_edit_mode is False
+    assert panel.prompt_text.isReadOnly() is True
+    built = panel.get_prompt()
+    assert "Krea 2" in built
+    assert "My moss rewrite." not in built
+    assert panel.prompt_text.toPlainText() == built
+
+    panel._apply_preset(_preset("krea2"))  # toggles the preset off
+    assert panel.prompt_text.toPlainText() == "Describe this image."
+    panel.deleteLater()
+
+
+def test_every_option_moss_drops_returns_in_the_next_preset(qapp):
+    # Watermark and Aesthetic quality were already checked. Camera / tech
+    # details and the SFW/NSFW rating are the other two MOSS drops, and a
+    # restored checkbox that never reaches the caption is still a miss.
+    dropped = (
+        "includeWatermark",
+        "includeTechnicalDetails",
+        "includeAestheticQuality",
+        "includeSafety",
+    )
+    panel = SettingsPanel()
+    boxes = {key: panel._extra_checkboxes[key] for key in dropped}
+    for box in boxes.values():
+        box.setChecked(True)
+
+    panel._apply_preset(_preset("moss"))
+    for box in boxes.values():
+        assert box.isEnabled() is False
+        assert box.isChecked() is False
+    moss_prompt = panel.get_prompt()
+    assert "technical camera parameters" not in moss_prompt
+    assert "NSFW/SFW rating" not in moss_prompt
+    assert "Note if a watermark is present." not in moss_prompt
+
+    panel._apply_preset(_preset("krea2"))
+    assert boxes["includeWatermark"].isChecked() is True
+    assert boxes["includeTechnicalDetails"].isChecked() is True
+    assert boxes["includeSafety"].isChecked() is True
+    assert boxes["includeAestheticQuality"].isChecked() is False
+    assert boxes["includeAestheticQuality"].isEnabled() is False
+    krea_prompt = panel.get_prompt()
+    assert "Note if a watermark is present." in krea_prompt
+    assert "technical camera parameters" in krea_prompt
+    assert "State the NSFW/SFW rating." in krea_prompt
+    assert "image quality" not in krea_prompt
+
+    panel._apply_preset(_preset("krea2"))  # toggles the preset off
+    for box in boxes.values():
+        assert box.isEnabled() is True
+        assert box.isChecked() is True
     panel.deleteLater()

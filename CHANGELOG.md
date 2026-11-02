@@ -40,8 +40,10 @@ git tags (`V1.x.x`).
 
 ### Tests
 
-- 38 new tests in `tests/test_presets.py` check the contract every preset
-  keeps, both new builders, option restoring and prompt restoring.
+- 48 tests in `tests/test_presets.py` check the contract every preset
+  keeps, both new builders, option restoring and prompt restoring. The
+  later cases pin option sentences, the longest MOSS layout rule, name
+  handling, and preset switches that must not overwrite the saved prompt.
 
 ## [1.4.4] — 2026-09-29
 
