@@ -118,8 +118,12 @@ def test_krea2_honours_options_and_names_the_subject_with_its_class():
 def test_krea2_blank_name_does_not_become_a_trigger_word():
     # get_prompt falls back to "the subject" when Refer-as is on but the name
     # field is blank; that must not be turned into "<name>, <class>".
+    # Dropping the fallback sentence entirely still satisfies an absence check,
+    # so the generic sentence has to be present and the empty name omitted.
     prompt = _build("krea2", "Long", {}, "the subject")
+    assert "Refer to the subject as the subject." in prompt
     assert "followed by what it is" not in prompt
+    assert "Refer to the subject as" not in _build("krea2", "Long", {}, "")
 
 
 # ── MOSS-Image ──────────────────────────────────────────────────────────
@@ -332,4 +336,192 @@ def test_new_presets_lock_the_prompt_and_leave_user_affixes_alone(qapp, preset_i
     assert panel.get_active_preset() is None
     assert panel.get_prefix() == "photo of"
     assert panel.get_suffix() == "by me"
+    panel.deleteLater()
+
+
+# ── Gaps the single-preset cases do not reach ──────────────────────────
+
+def test_moss_length_table_ignores_the_shared_sentence():
+    # get_prompt() passes CAPTION_LENGTHS[key] as length_instr. Appending it,
+    # the way the older builders do, would put "mood" and "technical details"
+    # into a MOSS caption the guide does not allow. The prompts stay distinct
+    # either way, so the length-changes test does not catch the append.
+    leaked = "LEAKED SHARED LENGTH SENTENCE"
+    for length_key, shared in CAPTION_LENGTHS.items():
+        prompt = _build("moss", length_key, {})
+        assert shared not in prompt
+        assert "mood" not in prompt
+        assert leaked not in _build_prompt_moss(length_key, leaked, {}, "")
+    assert "one sentence" in _build("moss", "Short", {})
+    assert "exhaustive paragraph" in _build("moss", "Descriptive (Longest)", {})
+
+
+def test_krea2_keeps_the_options_moss_must_drop_even_if_they_leak():
+    # supported_options is filtered before the builder in the panel. Passing
+    # the dropped flags straight in is what a checkbox that failed to uncheck
+    # would do. Krea still asks for camera, watermark, and a rating; neither
+    # builder may ask for quality words.
+    leaked_opts = {
+        "includeTechnicalDetails": True,
+        "includeWatermark": True,
+        "includeSafety": True,
+        "includeAestheticQuality": True,
+        "includeUncensored": True,
+    }
+    krea = _build_prompt_krea2("Long", CAPTION_LENGTHS["Long"], leaked_opts, "Alice")
+    moss = _build_prompt_moss(
+        "Descriptive (Longest)", CAPTION_LENGTHS["Descriptive (Longest)"],
+        leaked_opts, "Alice",
+    )
+
+    assert "technical camera parameters" in krea
+    assert "Note if a watermark is present." in krea
+    assert "State the NSFW/SFW rating." in krea
+    assert "Do not use euphemisms." in krea
+    assert "Refer to the subject as Alice, followed by what it is" in krea
+    assert "image quality" not in krea
+    assert CAPTION_LENGTHS["Long"] not in krea
+
+    assert "technical camera parameters" not in moss
+    assert "Note if a watermark is present." not in moss
+    assert "NSFW/SFW rating" not in moss
+    assert "image quality" not in moss
+    assert "Do not use euphemisms." in moss
+    assert "Refer to the subject as Alice." in moss
+    assert "followed by what it is" not in moss
+    assert "mood" not in moss
+    assert CAPTION_LENGTHS["Descriptive (Longest)"] not in moss
+
+
+def test_refer_as_reaches_the_preset_and_a_blank_name_stays_generic(qapp):
+    panel = SettingsPanel()
+    panel._extra_checkboxes["referAsName"].setChecked(True)
+    panel._apply_preset(_preset("krea2"))
+
+    # Blank, and whitespace, both take get_prompt's "the subject" fallback.
+    assert "Refer to the subject as the subject." in panel.get_prompt()
+    assert "followed by what it is" not in panel.get_prompt()
+    panel.name_input.setText("   ")
+    assert "Refer to the subject as the subject." in panel.get_prompt()
+    assert "followed by what it is" not in panel.get_prompt()
+
+    panel.name_input.setText("  Alice  ")
+    assert "Refer to the subject as Alice, followed by what it is" in panel.get_prompt()
+
+    panel._apply_preset(_preset("moss"))
+    prompt = panel.get_prompt()
+    assert "Refer to the subject as Alice." in prompt
+    assert "followed by what it is" not in prompt
+    panel.deleteLater()
+
+
+def test_switching_presets_keeps_the_prompt_from_before_any_preset(qapp):
+    """preset→preset must not stash the outgoing preset's prompt, affixes,
+    or an edit made while that preset was active. Deselect restores the
+    original custom prompt, and an option only the first preset dropped
+    comes back even though the second preset still drops it.
+    """
+    panel = SettingsPanel()
+    panel._toggle_custom_edit()
+    panel.prompt_text.setPlainText("Return only the dominant color.")
+    panel.prefix_input.setText("photo of")
+    panel.suffix_input.setText("by me")
+    technical = panel._extra_checkboxes["includeTechnicalDetails"]
+    watermark = panel._extra_checkboxes["includeWatermark"]
+    safety = panel._extra_checkboxes["includeSafety"]
+    quality = panel._extra_checkboxes["includeAestheticQuality"]
+    lighting = panel._extra_checkboxes["includeLighting"]
+    for box in (technical, watermark, safety, quality, lighting):
+        box.setChecked(True)
+
+    panel._apply_preset(_preset("moss"))
+    assert panel._custom_edit_mode is False
+    moss_prompt = panel.get_prompt()
+    assert "Never mention watermarks." in moss_prompt
+    assert "precise lighting details" in moss_prompt
+    assert "technical camera parameters" not in moss_prompt
+    assert "Note if a watermark is present." not in moss_prompt
+    assert "NSFW/SFW rating" not in moss_prompt
+    assert "image quality" not in moss_prompt
+    assert CAPTION_LENGTHS["Medium"] not in moss_prompt
+    for box in (technical, watermark, safety, quality):
+        assert box.isChecked() is False
+        assert box.isEnabled() is False
+    assert lighting.isChecked() is True
+
+    # Supported, so this uncheck is the user's, not the preset's.
+    lighting.setChecked(False)
+    panel._toggle_custom_edit()
+    panel.prompt_text.setPlainText("temporary edit that is not mine")
+
+    panel._apply_preset(_preset("krea2"))
+    assert panel._custom_edit_mode is False
+    assert "temporary edit" not in panel.prompt_text.toPlainText()
+    krea_prompt = panel.get_prompt()
+    assert panel.prompt_text.toPlainText() == krea_prompt
+    assert "Krea 2" in krea_prompt
+    assert "technical camera parameters" in krea_prompt
+    assert "Note if a watermark is present." in krea_prompt
+    assert "State the NSFW/SFW rating." in krea_prompt
+    assert "precise lighting details" not in krea_prompt
+    assert "image quality" not in krea_prompt
+    assert "Never mention watermarks" not in krea_prompt
+    assert CAPTION_LENGTHS["Medium"] not in krea_prompt
+    assert panel.get_prefix() == ""
+    assert panel.get_suffix() == ""
+    assert (technical.isChecked(), watermark.isChecked(), safety.isChecked()) == (
+        True, True, True,
+    )
+    assert quality.isChecked() is False and quality.isEnabled() is False
+    assert lighting.isChecked() is False and lighting.isEnabled() is True
+    assert [
+        panel.caption_length_combo.itemText(i)
+        for i in range(panel.caption_length_combo.count())
+    ] == list(CAPTION_LENGTHS)
+
+    panel.caption_length_combo.setCurrentText("Descriptive (Longest)")
+    described = panel.get_prompt()
+    assert panel.prompt_text.toPlainText() == described
+    assert "350 words" in described
+    assert "precise lighting details" not in described
+    assert CAPTION_LENGTHS["Descriptive (Longest)"] not in described
+
+    panel._apply_preset(_preset("krea2"))  # toggles the preset off
+    assert panel.prompt_text.toPlainText() == "Return only the dominant color."
+    assert panel._custom_edit_mode is True
+    assert panel.custom_edit_btn.text() == "↻ Reset"
+    assert panel.get_prompt() == "Return only the dominant color."
+    assert panel.get_prefix() == "photo of"
+    assert panel.get_suffix() == "by me"
+    assert quality.isChecked() is True and quality.isEnabled() is True
+    assert lighting.isChecked() is False
+    assert technical.isChecked() is True
+    panel.deleteLater()
+
+
+def test_edited_preset_prompt_is_sent_as_the_generic_base(qapp):
+    """Changing the preset's prompt and then deselecting keeps that text, but
+    custom-edit stays off, so checked options and the length sentence are
+    still appended. Leaving custom-edit on would drop them; restoring the
+    untouched preset prompt would put MOSS's watermark ban back.
+    """
+    panel = SettingsPanel()
+    panel.prompt_text.setPlainText("Describe this image.")
+    panel._extra_checkboxes["includeLighting"].setChecked(True)
+    panel.caption_length_combo.setCurrentText("Short")
+
+    panel._apply_preset(_preset("moss"))
+    panel._toggle_custom_edit()
+    panel.prompt_text.setPlainText("My own MOSS prompt.")
+    panel._apply_preset(_preset("moss"))  # toggles the preset off
+
+    assert panel.prompt_text.toPlainText() == "My own MOSS prompt."
+    assert panel._custom_edit_mode is False
+    assert panel.custom_edit_btn.text() == "✏ Edit"
+    sent = panel.get_prompt()
+    assert sent.startswith("My own MOSS prompt.")
+    assert "Keep the description brief, around 1-2 sentences." in sent
+    assert "Include information about lighting." in sent
+    assert "Never mention watermarks" not in sent
+    assert "MOSS-Image" not in sent
     panel.deleteLater()
