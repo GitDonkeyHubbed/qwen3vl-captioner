@@ -289,6 +289,20 @@ def test_custom_edit_without_changes_still_restores_the_users_prompt(qapp):
     panel.deleteLater()
 
 
+def test_deselecting_restores_custom_edit_mode_with_the_prompt(qapp):
+    panel = SettingsPanel()
+    panel._toggle_custom_edit()  # no preset: the user's text is sent verbatim
+    panel.prompt_text.setPlainText("Return only the dominant color.")
+    assert panel.get_prompt() == "Return only the dominant color."
+
+    panel._apply_preset(_preset("moss"))
+    panel._apply_preset(_preset("moss"))  # toggles the preset off
+    assert panel._custom_edit_mode is True
+    assert panel.custom_edit_btn.text() == "↻ Reset"
+    assert panel.get_prompt() == "Return only the dominant color."
+    panel.deleteLater()
+
+
 def test_custom_edit_with_changes_keeps_the_users_new_prompt(qapp):
     panel = SettingsPanel()
     panel.prompt_text.setPlainText("Describe this image.")
