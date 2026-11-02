@@ -413,6 +413,20 @@ def test_custom_edit_without_changes_still_restores_the_users_prompt(qapp):
     panel.deleteLater()
 
 
+def test_deselecting_restores_custom_edit_mode_with_the_prompt(qapp):
+    panel = SettingsPanel()
+    panel._toggle_custom_edit()  # no preset: the user's text is sent verbatim
+    panel.prompt_text.setPlainText("Return only the dominant color.")
+    assert panel.get_prompt() == "Return only the dominant color."
+
+    panel._apply_preset(_preset("moss"))
+    panel._apply_preset(_preset("moss"))  # toggles the preset off
+    assert panel._custom_edit_mode is True
+    assert panel.custom_edit_btn.text() == "↻ Reset"
+    assert panel.get_prompt() == "Return only the dominant color."
+    panel.deleteLater()
+
+
 def test_custom_edit_with_changes_keeps_the_users_new_prompt(qapp):
     panel = SettingsPanel()
     panel.prompt_text.setPlainText("Describe this image.")
@@ -531,6 +545,28 @@ def test_switching_presets_discards_an_uncommitted_custom_edit(qapp):
 
     panel._apply_preset(_preset("krea2"))  # toggles the preset off
     assert panel.prompt_text.toPlainText() == "Describe this image."
+    panel.deleteLater()
+
+
+def test_switching_presets_keeps_custom_edit_from_before_the_preset(qapp):
+    # The mode is stashed with the prompt, and only on the first preset.
+    # Apply clears it, so a later switch must not save that cleared flag
+    # over the user's original mode. Otherwise deselect sends the prompt
+    # through the generic builder and appends a length sentence.
+    panel = SettingsPanel()
+    panel._toggle_custom_edit()
+    panel.prompt_text.setPlainText("Return only the dominant color.")
+
+    panel._apply_preset(_preset("krea2"))
+    assert panel._custom_edit_mode is False
+    panel._apply_preset(_preset("moss"))
+    assert "MOSS-Image" in panel.get_prompt()
+
+    panel._apply_preset(_preset("moss"))  # toggles the preset off
+    assert panel._custom_edit_mode is True
+    assert panel.custom_edit_btn.text() == "↻ Reset"
+    assert panel.prompt_text.toPlainText() == "Return only the dominant color."
+    assert panel.get_prompt() == "Return only the dominant color."
     panel.deleteLater()
 
 

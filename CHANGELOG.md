@@ -34,16 +34,18 @@ git tags (`V1.x.x`).
   support a checked option unchecks it, as before, but it is now re-checked
   when you switch to a preset that supports it or deselect the preset.
   Trying MOSS-Image no longer silently clears Watermark detection.
-- **Deselecting a preset restores your own prompt.** It used to leave the
-  preset's built prompt in the box as the base for the generic prompt, with
-  the length sentence and option sentences appended a second time.
+- **Deselecting a preset restores your own prompt**, and custom-edit mode
+  if your prompt was in it. It used to leave the preset's built prompt in the
+  box as the base for the generic prompt, with the length sentence and option
+  sentences appended a second time.
 
 ### Tests
 
-- 48 tests in `tests/test_presets.py` check the contract every preset
-  keeps, both new builders, option restoring and prompt restoring. The
-  later cases pin option sentences, the longest MOSS layout rule, name
-  handling, and preset switches that must not overwrite the saved prompt.
+- 50 tests in `tests/test_presets.py` check the contract every preset
+  keeps, both new builders, option restoring and prompt restoring. Later
+  cases pin option sentences, the longest MOSS layout rule, name handling,
+  and preset switches that must not overwrite the saved prompt or the
+  custom-edit mode it was in.
 
 ## [1.4.4] — 2026-09-29
 

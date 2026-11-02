@@ -688,6 +688,7 @@ class SettingsPanel(QFrame):
         # The last prompt the preset put in the box, to tell an untouched
         # custom-edit box from one the user actually rewrote.
         self._last_preset_preview: Optional[str] = None
+        self._user_custom_edit_before_preset = False
         # Options the active preset unchecked because it doesn't support them,
         # re-checked when a preset that supports them is chosen or the preset
         # is deselected, so trying e.g. MOSS-Image doesn't silently clear them.
@@ -1226,6 +1227,7 @@ class SettingsPanel(QFrame):
             self._user_prefix_before_preset = self.prefix_input.text()
             self._user_suffix_before_preset = self.suffix_input.text()
             self._user_prompt_before_preset = self.prompt_text.toPlainText()
+            self._user_custom_edit_before_preset = self._custom_edit_mode
 
         # Apply prefix, suffix
         self.prefix_input.setText(preset["prefix"])
@@ -1317,9 +1319,14 @@ class SettingsPanel(QFrame):
             self._custom_edit_mode
             and self.prompt_text.toPlainText() != self._last_preset_preview
         )
-        if not edited and self._user_prompt_before_preset is not None:
+        restored = not edited and self._user_prompt_before_preset is not None
+        if restored:
             self.prompt_text.setPlainText(self._user_prompt_before_preset)
+        # A prompt the user had in custom edit was sent verbatim; restore that
+        # mode with it, or get_prompt() would append length/option sentences.
+        restore_custom_edit = restored and self._user_custom_edit_before_preset
         self._user_prompt_before_preset = None
+        self._user_custom_edit_before_preset = False
         self._last_preset_preview = None
 
         # Restore editable prompt
@@ -1334,6 +1341,8 @@ class SettingsPanel(QFrame):
             f"font-size: 10px; padding: 2px 8px; border: 1px solid {COLORS['border']}; "
             f"border-radius: 3px; background: transparent; color: {COLORS['text_secondary']};"
         )
+        if restore_custom_edit:
+            self._toggle_custom_edit()  # back on, with the button to match
 
         self.settings_changed.emit()
 
