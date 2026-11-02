@@ -16,10 +16,11 @@ pytest.importorskip("PyQt6")
 
 from PyQt6.QtCore import QCoreApplication, QEvent  # noqa: E402
 from PyQt6.QtTest import QTest  # noqa: E402
-from PyQt6.QtWidgets import QApplication, QMessageBox  # noqa: E402
+from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox  # noqa: E402
 
 from gui.caption_io import CaptionFile, caption_path, read_caption  # noqa: E402
 from gui.main_window import MainWindow  # noqa: E402
+from gui.model_download_manager import MODEL_REGISTRY  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -948,3 +949,265 @@ def test_cancel_confirms_before_killing_a_download(win, monkeypatch):
 
     assert called == [True]  # routed to the path that asks first
     win._download_thread = None
+
+
+# ── Load, unload, and download guards ───────────────────────────────────
+
+
+def test_unload_is_refused_during_the_batch_gap(win, monkeypatch):
+    """Between batch items _is_generating is false, but the engine is still
+    about to be used. Unloading there used to leave a zombie batch."""
+    warned = []
+    monkeypatch.setattr(
+        QMessageBox, "warning", staticmethod(lambda *a, **k: warned.append(a[1])),
+    )
+
+    class _Engine:
+        def __init__(self):
+            self.is_loaded = True
+            self.did_unload = False
+
+        def unload(self):
+            self.did_unload = True
+            self.is_loaded = False
+
+    win._engine = _Engine()
+    win._is_generating = False
+    win._batch_queue = []
+    win._batch_active = True
+    win._unload_model()
+    assert warned == ["Cannot Unload"]
+    assert win._engine.did_unload is False
+
+    warned.clear()
+    win._batch_active = False
+    win._unload_model()
+    assert warned == []
+    assert win._engine.did_unload is True
+
+
+def test_load_does_not_start_a_second_time(win, monkeypatch):
+    started = []
+    monkeypatch.setattr(win, "_load_model_impl", lambda: started.append("impl"))
+
+    win._is_loading = True
+    win._model_load_thread = None
+    win._load_model()
+
+    class _Thread:
+        def isRunning(self):
+            return True
+
+    win._is_loading = False
+    win._model_load_thread = _Thread()
+    win._load_model()
+
+    assert started == []
+    win._model_load_thread = None
+
+
+def test_model_load_error_keeps_the_traceback_out_of_the_message(win, monkeypatch):
+    captured = {}
+
+    class _Box:
+        class Icon:
+            Critical = 0
+
+        def __init__(self, icon, title, text, parent=None):
+            captured["text"] = text
+
+        def setDetailedText(self, text):
+            captured["detail"] = text
+
+        def exec(self):
+            return 0
+
+    monkeypatch.setattr("gui.main_window.QMessageBox", _Box)
+    win._settings_panel.load_model_btn.setEnabled(False)
+    win._on_model_load_error(
+        "weights mismatch\nTraceback (most recent call last):\n  File \"x\""
+    )
+
+    assert "weights mismatch" in captured["text"]
+    assert "Traceback" not in captured["text"]
+    assert captured["detail"].startswith("Traceback")
+    assert win._settings_panel.load_model_btn.isEnabled()
+
+
+def test_a_second_download_does_not_start(win, monkeypatch):
+    class _Thread:
+        def isRunning(self):
+            return True
+
+    worker = object()
+    win._download_thread = _Thread()
+    win._download_worker = worker
+    notes = []
+    win._notify = lambda message, category="info": notes.append(message)
+    started = []
+    monkeypatch.setattr(
+        "gui.model_download_manager.ModelDownloadWorker",
+        lambda *a, **k: started.append(True),
+    )
+
+    win._start_file_download("owner/repo", "m.gguf", win._model_dir, "Model")
+
+    assert started == []
+    assert win._download_worker is worker
+    assert any("already running" in note for note in notes)
+    win._download_thread = None
+
+
+def test_finishing_the_encoder_does_not_queue_another_copy(win, tmp_path, monkeypatch):
+    """The encoder download's own completion must not start a second copy.
+
+    The exact-name re-check cannot see the file yet when this callback runs
+    for that file, so the name of the finished download is what stops the loop.
+    """
+    scheduled = []
+    monkeypatch.setattr(
+        "gui.main_window.QTimer.singleShot",
+        lambda *a, **k: scheduled.append(a),
+    )
+    win._pending_mmproj = ("owner/repo", "enc.mmproj-f16.gguf", tmp_path)
+
+    win._on_download_finished(str(tmp_path / "enc.mmproj-f16.gguf"))
+
+    assert scheduled == []
+
+
+def test_a_failed_download_drops_the_queued_encoder(win, tmp_path, monkeypatch):
+    scheduled = []
+    monkeypatch.setattr(
+        "gui.main_window.QTimer.singleShot",
+        lambda *a, **k: scheduled.append(a),
+    )
+    monkeypatch.setattr(
+        QMessageBox, "critical", staticmethod(lambda *a, **k: None),
+    )
+    win._pending_mmproj = ("owner/repo", "enc.mmproj-f16.gguf", tmp_path)
+
+    win._on_download_error("connection reset")
+
+    assert win._pending_mmproj is None
+    win._on_download_finished(str(tmp_path / "model.gguf"))
+    assert scheduled == []
+
+
+def test_builtin_encoder_is_offered_only_for_a_matching_model(win, tmp_path, monkeypatch):
+    asked = {"question": 0, "dialog": 0}
+    ensured = []
+
+    def question(*_a, **_k):
+        asked["question"] += 1
+        return QMessageBox.StandardButton.Yes
+
+    def dialog(*_a, **_k):
+        asked["dialog"] += 1
+        return "", ""
+
+    def ensure(model_dir, progress_callback=None, model_path=None):
+        ensured.append(model_path.name)
+        return tmp_path / "downloaded-mmproj.gguf"
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(question))
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: None))
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", staticmethod(dialog))
+    monkeypatch.setattr("gui.main_window.ensure_mmproj", ensure)
+    monkeypatch.setattr(
+        win, "_download_mmproj_blocking", lambda title, fn: fn(lambda *_a: None),
+    )
+
+    four = tmp_path / "Qwen3-VL-4B-Instruct.Q4_K_M.gguf"
+    four.write_bytes(b"x")
+    assert win._resolve_missing_mmproj(tmp_path, None, None, four) is None
+    assert asked == {"question": 0, "dialog": 1}
+    assert ensured == []
+    assert win._settings_panel.status_text.text() == "Error: mmproj not found"
+
+    eight = tmp_path / "Qwen3-VL-8B-Instruct-abliterated-v2.Q6_K.gguf"
+    eight.write_bytes(b"x")
+    got = win._resolve_missing_mmproj(tmp_path, None, None, eight)
+    assert got == tmp_path / "downloaded-mmproj.gguf"
+    assert asked == {"question": 1, "dialog": 1}
+    assert ensured == [eight.name]
+
+
+def test_download_sees_a_model_already_stored_in_another_folder(win, tmp_path, monkeypatch):
+    filename = "Qwen3-VL-8B-Instruct-abliterated-v2.Q6_K.gguf"
+    name = next(
+        key for key, info in MODEL_REGISTRY.items() if info["filename"] == filename
+    )
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    (other / filename).write_bytes(b"gguf")
+    monkeypatch.setattr(win, "_model_search_dirs", lambda: [other])
+    dialogs = []
+    monkeypatch.setattr(
+        QMessageBox, "information",
+        staticmethod(lambda *a, **k: dialogs.append(a)),
+    )
+    monkeypatch.setattr(
+        QMessageBox, "question",
+        staticmethod(lambda *a, **k: dialogs.append(("question",))),
+    )
+
+    win._download_model(name)
+
+    assert [item[1] for item in dialogs] == ["Already Downloaded"]
+    assert str(other) in dialogs[0][2]
+
+
+def test_browsing_an_mmproj_does_not_add_it_as_a_model(win, tmp_path, monkeypatch):
+    mmproj = tmp_path / "Qwen3-VL-8B.mmproj-f16.gguf"
+    mmproj.write_bytes(b"x")
+    monkeypatch.setattr(
+        QFileDialog, "getOpenFileName",
+        staticmethod(lambda *a, **k: (str(mmproj), "")),
+    )
+    warned = []
+    monkeypatch.setattr(
+        QMessageBox, "warning", staticmethod(lambda *a, **k: warned.append(a[1])),
+    )
+    added = []
+    monkeypatch.setattr("gui.config.add_custom_model", lambda path: added.append(path))
+
+    win._browse_for_model()
+
+    assert warned == ["Vision Encoder Selected"]
+    assert added == []
+
+
+def test_unreadable_sidecar_drops_the_cached_caption(win, images, monkeypatch):
+    key = str(images[0])
+    win._captions[key] = "stale text the file no longer confirms"
+    win._caption_mtimes[key] = 1.0
+    notes = []
+    win._notify = lambda message, category="info": notes.append(category)
+    _unreadable(monkeypatch, images[0])
+
+    assert win._load_caption(images[0]) == ""
+    assert key not in win._captions
+    assert key not in win._caption_mtimes
+    assert notes == ["error"]
+
+
+def test_a_failed_caption_keeps_another_images_unsaved_edit(win, images):
+    win._on_image_selected(images[1])
+    _type(win, "keep this edit")
+    win._is_generating = True
+    win._caption_worker = _FakeWorker(images[0])
+    win._stream_buffer = "fragment from A"
+    win._batch_active = True
+    win._batch_queue = [images[1]]
+    win._file_browser.set_item_status(images[1], "queued")
+
+    win._on_caption_error("RuntimeError: decode failed")
+
+    assert win._caption_panel.get_caption() == "keep this edit"
+    assert win._caption_panel.is_dirty()
+    assert win._is_generating is False
+    assert win._batch_active is False
+    assert win._batch_queue == []
+    assert win._file_browser.get_item_status(images[1]) == "idle"
+    assert win._queue_label.text() == "Batch stopped (error)"

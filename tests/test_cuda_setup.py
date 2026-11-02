@@ -24,6 +24,7 @@ from engine.cuda_setup import (
     installed_wheel_is_cuda_build,
     parse_cuda_version,
     recommended_wheel_tag,
+    setup_cuda_dll_path,
     wheel_mismatch_message,
 )
 
@@ -426,6 +427,76 @@ def test_installed_wheel_cuda_tag_recovered_from_direct_url(monkeypatch):
     monkeypatch.setattr(importlib.metadata, "version", lambda name: "0.3.40")
     monkeypatch.setattr(importlib.metadata, "distribution", lambda name: FakeDist())
     assert installed_wheel_cuda_tag() == "cu131"
+
+
+def test_setup_preloads_the_newer_toolkit_including_bin_x64(tmp_path, monkeypatch):
+    """CUDA 13 keeps cudart in bin\\x64, and an older CUDA_PATH must not win.
+
+    Preload used to glob only the first bin directory, so a cu130 install
+    loaded nothing. The same DLL name from CUDA_PATH (often the older
+    toolkit) must not be the one that stays loaded.
+    """
+    monkeypatch.setattr(sys, "platform", "win32")
+    old = _make_toolkit(tmp_path, "v12.4")
+    x64 = tmp_path / "v13.0" / "bin" / "x64"
+    x64.mkdir(parents=True)
+    (x64 / "cudart64_12.dll").write_bytes(b"new")
+    (x64 / "cublas64_13.dll").write_bytes(b"x")
+    monkeypatch.setenv("CUDA_PATH", str(old))
+    monkeypatch.setattr(cuda_setup, "_TOOLKIT_ROOT", tmp_path)
+
+    added = []
+    loaded = []
+
+    def add_dll_directory(path):
+        added.append(Path(path))
+
+    def cdll(path, **kwargs):
+        loaded.append(Path(path))
+        return object()
+
+    monkeypatch.setattr(
+        cuda_setup.os, "add_dll_directory", add_dll_directory, raising=False,
+    )
+    monkeypatch.setattr("ctypes.CDLL", cdll)
+
+    assert setup_cuda_dll_path() == (old / "bin").resolve()
+    assert x64.resolve() in added
+    cudarts = [p for p in loaded if p.name.lower() == "cudart64_12.dll"]
+    assert cudarts == [x64.resolve() / "cudart64_12.dll"]
+    assert (x64.resolve() / "cublas64_13.dll") in loaded
+
+
+def test_setup_keeps_going_when_a_dll_registration_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    root = _make_toolkit(tmp_path, "v12.4")
+    (root / "bin" / "cublas64_12.dll").write_bytes(b"x")
+    monkeypatch.delenv("CUDA_PATH", raising=False)
+    monkeypatch.setattr(cuda_setup, "_TOOLKIT_ROOT", tmp_path)
+
+    calls = {"add": 0}
+    loaded = []
+
+    def add_dll_directory(path):
+        calls["add"] += 1
+        if calls["add"] == 1:
+            raise OSError("access denied")
+
+    def cdll(path, **kwargs):
+        name = Path(path).name.lower()
+        if name.startswith("cudart"):
+            raise OSError("bad dll")
+        loaded.append(name)
+        return object()
+
+    monkeypatch.setattr(
+        cuda_setup.os, "add_dll_directory", add_dll_directory, raising=False,
+    )
+    monkeypatch.setattr("ctypes.CDLL", cdll)
+
+    assert setup_cuda_dll_path() == (root / "bin").resolve()
+    assert calls["add"] >= 1
+    assert loaded == ["cublas64_12.dll"]
 
 
 def test_installed_wheel_cuda_tag_none_without_direct_url(monkeypatch):

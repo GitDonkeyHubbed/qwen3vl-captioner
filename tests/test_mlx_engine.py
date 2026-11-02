@@ -5,12 +5,15 @@ An MLX model is a directory holding ``config.json`` plus at least one
 """
 
 import sys
+import types
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from engine.mlx_engine import (
     MLX_SUPPORTED,
+    MlxVlmEngine,
     _load_make_sampler,
     _stream_with_sampling,
     is_mlx_model_dir,
@@ -254,3 +257,143 @@ def test_stream_with_sampling_propagates_make_sampler_error():
             make_sampler=fake_make_sampler,
         )
     assert legacy_called["hit"] is False
+
+
+class _Chunk:
+    def __init__(self, text):
+        self.text = text
+
+
+class _BareChunk:
+    """No ``text`` attribute: the engine must fall back to ``str(chunk)``."""
+
+    def __str__(self):
+        return " tail"
+
+
+def _jpeg(path):
+    Image.new("RGB", (8, 4), "red").save(path, format="JPEG")
+
+
+def _loaded_engine():
+    engine = MlxVlmEngine()
+    engine.model = object()
+    engine.processor = object()
+    engine.config = {"id": "test"}
+    engine._is_loaded = True
+    return engine
+
+
+def _install_mlx(monkeypatch, stream_generate, apply_chat_template):
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    prompt_utils = types.ModuleType("mlx_vlm.prompt_utils")
+    prompt_utils.apply_chat_template = apply_chat_template
+    mlx_vlm.stream_generate = stream_generate
+    mlx_vlm.prompt_utils = prompt_utils
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.prompt_utils", prompt_utils)
+
+    def make_sampler(temp, top_p):
+        stream_generate.sampler_args = (temp, top_p)
+        return ("sampler", temp, top_p)
+
+    monkeypatch.setattr(
+        "engine.mlx_engine._load_make_sampler", lambda: make_sampler,
+    )
+
+
+def test_mlx_caption_gates_sampling_and_omits_an_empty_system_turn(tmp_path, monkeypatch):
+    """The MLX path must match the GGUF sampling gate and system-turn rule.
+
+    temperature 0 forces top_p to 1.0, a blank system prompt is not sent, and
+    the model sees an EXIF-corrected temp JPEG rather than the source file.
+    """
+    source = tmp_path / "photo.jpg"
+    _jpeg(source)
+    seen = {}
+    tokens = []
+
+    def apply_chat_template(processor, config, messages, num_images):
+        seen["messages"] = messages
+        seen["num_images"] = num_images
+        return "PROMPT"
+
+    def stream_generate(*args, **kwargs):
+        seen["kwargs"] = kwargs
+        seen["image"] = kwargs["image"][0]
+        seen["existed"] = Path(seen["image"]).is_file()
+        yield _Chunk("Caption: a cat")
+        yield _Chunk("")
+        yield _BareChunk()
+
+    _install_mlx(monkeypatch, stream_generate, apply_chat_template)
+    engine = _loaded_engine()
+
+    result = engine.caption_image(
+        source, "describe", system_prompt="", temperature=0, top_p=0.2,
+        max_tokens=17, prefix=" pre ", suffix=" suf ",
+        stream_callback=tokens.append,
+    )
+
+    assert seen["messages"] == [{"role": "user", "content": "describe"}]
+    assert seen["num_images"] == 1
+    assert stream_generate.sampler_args == (0.0, 1.0)
+    assert seen["kwargs"]["max_tokens"] == 17
+    assert "temperature" not in seen["kwargs"]
+    assert seen["image"] != str(source)
+    assert seen["existed"] is True
+    assert not Path(seen["image"]).exists()
+    assert tokens == ["Caption: a cat", " tail"]
+    assert result == "pre a cat tail suf"
+
+    result = engine.caption_image(
+        source, "describe", temperature=0.5, top_p=0.4, max_tokens=17,
+    )
+    assert seen["messages"][0]["role"] == "system"
+    assert seen["messages"][0]["content"]
+    assert seen["messages"][1] == {"role": "user", "content": "describe"}
+    assert stream_generate.sampler_args == (0.5, 0.4)
+    assert result == "a cat tail"
+
+
+def test_mlx_caption_stops_before_later_tokens(tmp_path, monkeypatch):
+    source = tmp_path / "photo.jpg"
+    _jpeg(source)
+    tokens = []
+    state = {"n": 0}
+    prepared = {}
+
+    def apply_chat_template(processor, config, messages, num_images):
+        return "PROMPT"
+
+    def stream_generate(*args, **kwargs):
+        prepared["image"] = kwargs["image"][0]
+        yield _Chunk("one")
+        yield _Chunk("TWO-SHOULD-STOP")
+
+    def cancel_check():
+        state["n"] += 1
+        return state["n"] > 1
+
+    _install_mlx(monkeypatch, stream_generate, apply_chat_template)
+    result = _loaded_engine().caption_image(
+        source, "describe", cancel_check=cancel_check,
+        stream_callback=tokens.append,
+    )
+
+    assert result == "one"
+    assert tokens == ["one"]
+    assert prepared["image"] != str(source)
+    assert not Path(prepared["image"]).exists()
+
+
+def test_mlx_caption_refuses_a_missing_model_or_image(tmp_path):
+    missing = tmp_path / "nope.jpg"
+    engine = MlxVlmEngine()
+    with pytest.raises(RuntimeError, match="Model not loaded"):
+        engine.caption_image(missing, "describe")
+
+    engine._is_loaded = True
+    engine.model = object()
+    with pytest.raises(FileNotFoundError, match="Image not found"):
+        engine.caption_image(missing, "describe")
