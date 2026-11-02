@@ -118,8 +118,12 @@ def test_krea2_honours_options_and_names_the_subject_with_its_class():
 def test_krea2_blank_name_does_not_become_a_trigger_word():
     # get_prompt falls back to "the subject" when Refer-as is on but the name
     # field is blank; that must not be turned into "<name>, <class>".
+    # Dropping the fallback branch leaves this green if we only forbid the
+    # class sentence, so the plain "the subject" wording has to be present.
     prompt = _build("krea2", "Long", {}, "the subject")
     assert "followed by what it is" not in prompt
+    assert "Refer to the subject as the subject." in prompt
+    assert "Refer to the subject" not in _build_prompt_krea2("Long", "", {}, "")
 
 
 # ── MOSS-Image ──────────────────────────────────────────────────────────
@@ -332,4 +336,298 @@ def test_new_presets_lock_the_prompt_and_leave_user_affixes_alone(qapp, preset_i
     assert panel.get_active_preset() is None
     assert panel.get_prefix() == "photo of"
     assert panel.get_suffix() == "by me"
+    panel.deleteLater()
+
+
+# Phrases that appear only in an option branch. The base prompts already say
+# "lighting" and "composition", so those words alone would not catch a deleted
+# branch or a sentence that leaked into every caption.
+_PRESET_OPTION_SENTENCES = [
+    ("krea2", _build_prompt_krea2, "includeLighting", "precise lighting details"),
+    ("krea2", _build_prompt_krea2, "includeCameraAngle", "exact camera angle"),
+    ("krea2", _build_prompt_krea2, "includeTechnicalDetails", "technical camera parameters"),
+    ("krea2", _build_prompt_krea2, "includeComposition", "composition style"),
+    ("krea2", _build_prompt_krea2, "includeDOF", "focal depth"),
+    ("krea2", _build_prompt_krea2, "includeLightSource", "light sources"),
+    ("krea2", _build_prompt_krea2, "keepPG", "Keep the description SFW."),
+    ("krea2", _build_prompt_krea2, "includeUncensored", "Do not use euphemisms."),
+    ("krea2", _build_prompt_krea2, "excludeStaticAttributes", "Do not describe unchangeable physical attributes."),
+    ("krea2", _build_prompt_krea2, "excludeText", "Ignore text in the image."),
+    ("krea2", _build_prompt_krea2, "excludeResolution", "Ignore resolution."),
+    ("krea2", _build_prompt_krea2, "includeWatermark", "Note if a watermark is present."),
+    ("krea2", _build_prompt_krea2, "includeArtifacts", "Note any image artifacts."),
+    ("krea2", _build_prompt_krea2, "includeSafety", "State the NSFW/SFW rating."),
+    ("krea2", _build_prompt_krea2, "noAmbiguity", "Use precise, clinical language."),
+    ("moss", _build_prompt_moss, "includeLighting", "precise lighting details"),
+    ("moss", _build_prompt_moss, "includeCameraAngle", "exact camera angle"),
+    ("moss", _build_prompt_moss, "includeComposition", "composition style"),
+    ("moss", _build_prompt_moss, "includeDOF", "focal depth"),
+    ("moss", _build_prompt_moss, "includeLightSource", "light sources"),
+    ("moss", _build_prompt_moss, "keepPG", "Keep the description SFW."),
+    ("moss", _build_prompt_moss, "includeUncensored", "Do not use euphemisms."),
+    ("moss", _build_prompt_moss, "excludeStaticAttributes", "Do not describe unchangeable physical attributes."),
+    ("moss", _build_prompt_moss, "excludeText", "Ignore text in the image."),
+    ("moss", _build_prompt_moss, "excludeResolution", "Ignore resolution."),
+    ("moss", _build_prompt_moss, "includeArtifacts", "Note any image artifacts."),
+    ("moss", _build_prompt_moss, "noAmbiguity", "Use precise, clinical language."),
+]
+
+
+@pytest.mark.parametrize(
+    "builder,key,phrase",
+    [(builder, key, phrase) for _, builder, key, phrase in _PRESET_OPTION_SENTENCES],
+    ids=[f"{preset}-{key}" for preset, _, key, _ in _PRESET_OPTION_SENTENCES],
+)
+def test_new_preset_option_is_opt_in(builder, key, phrase):
+    off = builder("Medium", "", {}, "")
+    on = builder("Medium", "", {key: True}, "")
+    assert phrase not in off
+    assert phrase in on
+
+
+def test_krea2_ignores_a_leaked_aesthetic_quality_flag():
+    # The other Krea tests go through _build(), which strips options the preset
+    # does not support. A new includeAestheticQuality branch would stay green.
+    prompt = _build_prompt_krea2(
+        "Long", "", {"includeAestheticQuality": True, "includeLighting": True}, ""
+    )
+    assert "image quality" not in prompt
+    assert "precise lighting details" in prompt
+
+
+def test_moss_refer_as_does_not_use_krea_trigger_word_wording():
+    named = _build_prompt_moss("Medium", "", {}, "Alice")
+    assert "Refer to the subject as Alice." in named
+    assert "followed by what it is" not in named
+    # Krea 2 special-cases the blank-name fallback. MOSS must not: "the subject"
+    # is still the name, and an empty name adds no refer-as sentence at all.
+    fallback = _build_prompt_moss("Medium", "", {}, "the subject")
+    assert "Refer to the subject as the subject." in fallback
+    assert "Refer to the subject" not in _build_prompt_moss("Medium", "", {}, "")
+
+
+def test_krea2_refer_as_follows_the_name_field(qapp):
+    panel = SettingsPanel()
+    panel._apply_preset(_preset("krea2"))
+    panel._extra_checkboxes["referAsName"].setChecked(True)
+
+    assert "Refer to the subject as the subject." in panel.prompt_text.toPlainText()
+    assert panel.prompt_text.toPlainText() == panel.get_prompt()
+
+    panel.name_input.setText("   ")
+    assert "followed by what it is" not in panel.get_prompt()
+    assert panel.prompt_text.toPlainText() == panel.get_prompt()
+
+    panel.name_input.setText("Alice")
+    assert "followed by what it is" in panel.prompt_text.toPlainText()
+    assert panel.prompt_text.toPlainText() == panel.get_prompt()
+
+    panel._extra_checkboxes["referAsName"].setChecked(False)
+    assert "Alice" not in panel.get_prompt()
+    assert "followed by what it is" not in panel.get_prompt()
+    assert panel.prompt_text.toPlainText() == panel.get_prompt()
+    panel.deleteLater()
+
+
+def test_custom_edit_is_sent_verbatim_and_then_as_the_generic_base(qapp):
+    panel = SettingsPanel()
+    panel._extra_checkboxes["includeWatermark"].setChecked(True)
+    panel._apply_preset(_preset("moss"))
+    panel._toggle_custom_edit()
+    panel.prompt_text.setPlainText("  My own MOSS prompt.  ")
+
+    # While Edit is on, the caption is the box (stripped), not the builder —
+    # even though watermark was on before the preset cleared it.
+    assert panel.get_prompt() == "My own MOSS prompt."
+    assert "watermark" not in panel.get_prompt().lower()
+
+    panel._apply_preset(_preset("moss"))  # toggles the preset off
+    assert panel.get_active_preset() is None
+    sent = panel.get_prompt()
+    assert sent.startswith("My own MOSS prompt.")
+    # Generic mode appends the restored watermark option. The MOSS builder,
+    # which forbids watermarks, must not be the caption anymore.
+    assert "Never mention watermarks." not in sent
+    assert "whether there is a watermark or not" in sent
+    panel.deleteLater()
+
+
+def test_reverted_custom_edit_still_restores_the_users_prompt(qapp):
+    # Equality with the last preview decides "untouched", not the fact that
+    # Edit was opened or that the box changed along the way.
+    panel = SettingsPanel()
+    panel.prompt_text.setPlainText("Describe this image.")
+    panel._apply_preset(_preset("moss"))
+    preview = panel.prompt_text.toPlainText()
+    panel._toggle_custom_edit()
+    panel.prompt_text.setPlainText("A temporary rewrite.")
+    panel.prompt_text.setPlainText(preview)
+    panel._apply_preset(_preset("moss"))
+    assert panel.prompt_text.toPlainText() == "Describe this image."
+    panel.deleteLater()
+
+
+def test_length_change_during_custom_edit_keeps_the_rewrite(qapp):
+    # Refreshing the preview while Edit is on would store the rewrite as the
+    # "last preset preview", and deselect would then treat it as untouched
+    # and throw it away.
+    panel = SettingsPanel()
+    panel.prompt_text.setPlainText("Describe this image.")
+    panel._apply_preset(_preset("moss"))
+    preview = panel.prompt_text.toPlainText()
+    panel._toggle_custom_edit()
+    panel.caption_length_combo.setCurrentText("Long")
+    assert panel.prompt_text.toPlainText() == preview
+    assert panel.get_prompt() == preview
+
+    panel.prompt_text.setPlainText("Keep this rewrite.")
+    panel.caption_length_combo.setCurrentText("Descriptive (Longest)")
+    assert panel.prompt_text.toPlainText() == "Keep this rewrite."
+    assert "exhaustive" not in panel.get_prompt()
+    panel._apply_preset(_preset("moss"))
+    assert panel.prompt_text.toPlainText() == "Keep this rewrite."
+    panel.deleteLater()
+
+
+def test_reset_rebuilds_the_preset_at_the_length_chosen_while_editing(qapp):
+    panel = SettingsPanel()
+    panel.prompt_text.setPlainText("Describe this image.")
+    panel._apply_preset(_preset("krea2"))
+    panel._toggle_custom_edit()
+    panel.prompt_text.setPlainText("My rewrite.")
+    panel.caption_length_combo.setCurrentText("Descriptive (Longest)")
+    assert panel.get_prompt() == "My rewrite."
+
+    panel._toggle_custom_edit()  # Reset
+    rebuilt = panel.get_prompt()
+    assert "350 words" in rebuilt
+    assert "My rewrite." not in rebuilt
+    assert panel.prompt_text.toPlainText() == rebuilt
+
+    panel._apply_preset(_preset("krea2"))
+    assert panel.prompt_text.toPlainText() == "Describe this image."
+    panel.deleteLater()
+
+
+def test_switching_presets_discards_an_unfinished_custom_edit(qapp):
+    # The pre-preset prompt and affixes are stashed only on the way in.
+    # Switching must not replace that stash with the outgoing preset, and
+    # must not keep a half-written custom edit as the new preset's caption.
+    panel = SettingsPanel()
+    panel.prompt_text.setPlainText("Describe this image.")
+    panel.prefix_input.setText("pre")
+    panel.suffix_input.setText("suf")
+    panel._apply_preset(_preset("moss"))
+    panel._toggle_custom_edit()
+    panel.prompt_text.setPlainText("Half-written MOSS prompt.")
+
+    panel._apply_preset(_preset("krea2"))
+    assert panel.get_active_preset() == "krea2"
+    assert panel.prompt_text.isReadOnly() is True
+    assert "Krea 2" in panel.get_prompt()
+    assert "Half-written" not in panel.get_prompt()
+    assert panel.prompt_text.toPlainText() == panel.get_prompt()
+
+    panel._apply_preset(_preset("krea2"))
+    assert panel.get_active_preset() is None
+    assert panel.prompt_text.toPlainText() == "Describe this image."
+    assert panel.get_prefix() == "pre"
+    assert panel.get_suffix() == "suf"
+    assert panel.get_prompt().startswith("Describe this image.")
+    panel.deleteLater()
+
+
+def test_unchecking_a_supported_option_stays_off_and_updates_the_preview(qapp):
+    panel = SettingsPanel()
+    lighting = panel._extra_checkboxes["includeLighting"]
+    lighting.setChecked(True)
+    panel._apply_preset(_preset("krea2"))
+    assert "precise lighting details" in panel.get_prompt()
+
+    lighting.setChecked(False)
+    assert "precise lighting details" not in panel.prompt_text.toPlainText()
+    assert panel.prompt_text.toPlainText() == panel.get_prompt()
+    panel._toggle_custom_edit()
+    assert "precise lighting details" not in panel.get_prompt()
+    panel._toggle_custom_edit()
+
+    # Both presets support Lighting, so a re-check here is the stash treating
+    # a hand-uncheck as something the preset cleared.
+    panel._apply_preset(_preset("moss"))
+    assert lighting.isChecked() is False
+    assert "precise lighting details" not in panel.get_prompt()
+    panel._apply_preset(_preset("moss"))
+    assert lighting.isChecked() is False
+    panel.deleteLater()
+
+
+def test_custom_edit_mode_survives_a_preset_switch(qapp):
+    # The mode is stashed with the prompt, and only on the way into preset
+    # mode. A later preset must not overwrite that with the off switch that
+    # applying a preset does.
+    panel = SettingsPanel()
+    panel._toggle_custom_edit()
+    panel.prompt_text.setPlainText("Return only the dominant color.")
+    panel._extra_checkboxes["includeWatermark"].setChecked(True)
+
+    panel._apply_preset(_preset("moss"))
+    panel._apply_preset(_preset("krea2"))
+    panel._apply_preset(_preset("krea2"))
+
+    assert panel._custom_edit_mode is True
+    assert panel.custom_edit_btn.text() == "↻ Reset"
+    assert panel.get_prompt() == "Return only the dominant color."
+    assert "watermark" not in panel.get_prompt().lower()
+    panel.deleteLater()
+
+
+def test_custom_edit_left_off_is_not_restored(qapp):
+    panel = SettingsPanel()
+    panel._toggle_custom_edit()
+    panel._toggle_custom_edit()
+    panel.prompt_text.setPlainText("Describe this image.")
+
+    panel._apply_preset(_preset("moss"))
+    panel._apply_preset(_preset("moss"))
+    assert panel._custom_edit_mode is False
+    assert panel.custom_edit_btn.text() == "✏ Edit"
+    sent = panel.get_prompt()
+    assert sent.startswith("Describe this image.")
+    assert sent != "Describe this image."
+    panel.deleteLater()
+
+
+def test_rewriting_the_preset_prompt_does_not_restore_custom_edit(qapp):
+    # Mode comes back only together with the pre-preset prompt. A rewrite of
+    # the preset text is kept as the generic base, length and options included.
+    panel = SettingsPanel()
+    panel._toggle_custom_edit()
+    panel.prompt_text.setPlainText("Return only the dominant color.")
+    panel._apply_preset(_preset("moss"))
+    panel._toggle_custom_edit()
+    panel.prompt_text.setPlainText("A different prompt.")
+    panel._apply_preset(_preset("moss"))
+
+    assert panel._custom_edit_mode is False
+    assert panel.prompt_text.toPlainText() == "A different prompt."
+    sent = panel.get_prompt()
+    assert sent.startswith("A different prompt.")
+    assert sent != "A different prompt."
+    panel.deleteLater()
+
+
+def test_caption_length_survives_a_switch_between_the_new_presets(qapp):
+    panel = SettingsPanel()
+    panel._apply_preset(_preset("moss"))
+    panel.caption_length_combo.setCurrentText("Descriptive (Longest)")
+    assert "exhaustive" in panel.get_prompt()
+    assert "position and layout" in panel.get_prompt()
+
+    panel._apply_preset(_preset("krea2"))
+    assert panel.get_caption_length() == "Descriptive (Longest)"
+    prompt = panel.get_prompt()
+    assert "350 words" in prompt
+    assert "exhaustive" not in prompt
+    assert "position and layout" not in prompt
+    assert panel.prompt_text.toPlainText() == prompt
     panel.deleteLater()
