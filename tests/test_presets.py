@@ -139,6 +139,66 @@ def test_krea2_blank_name_does_not_become_a_trigger_word():
     assert "followed by what it is" not in prompt
 
 
+def test_krea2_length_rules_stay_on_their_own_length():
+    # The 40-word line, the 30-word sentence cap, and the 300-word cap were
+    # tuned separately. Copying any one of them onto the other lengths, or
+    # using the short no-text line for every length once text is excluded,
+    # makes Long and Descriptive the same caption.
+    plain = {key: _build("krea2", key, {}) for key in CAPTION_LENGTHS}
+    excluded = {
+        key: _build("krea2", key, {"excludeText": True}) for key in CAPTION_LENGTHS
+    }
+    assert len(set(excluded.values())) == len(CAPTION_LENGTHS)
+
+    assert "under 40 words" not in plain["Medium"]
+    assert "under 40 words" not in plain["Long"]
+    assert "under 40 words" not in plain["Descriptive (Longest)"]
+    assert "3-5 sentences" not in plain["Short"]
+    assert "300 words" not in plain["Short"]
+    assert "300 words" not in plain["Medium"]
+    assert "groups of similar" not in plain["Short"]
+    assert "groups of similar" not in plain["Medium"]
+    assert "groups of similar" not in plain["Long"]
+    assert "3-5 sentences" not in plain["Descriptive (Longest)"]
+
+    short_off = excluded["Short"]
+    assert "one or two short sentences, under 40 words:" in short_off
+    assert "3-5 sentences" not in short_off
+    assert "long, detailed paragraph" not in short_off
+    assert "300 words" not in short_off
+    assert CAPTION_LENGTHS["Short"] not in short_off
+
+    medium_off = excluded["Medium"]
+    assert "Write about 3-5 sentences." in medium_off
+    assert "each under about 30 words" in medium_off
+    assert "under 40 words" not in medium_off
+    assert CAPTION_LENGTHS["Medium"] not in medium_off
+
+    long_off = excluded["Long"]
+    assert "Write a long, detailed paragraph." in long_off
+    assert "Write a single paragraph with no line breaks" in long_off
+    assert "each under about 30 words" not in long_off
+    assert "under 40 words" not in long_off
+    assert "300 words" not in long_off
+    assert CAPTION_LENGTHS["Long"] not in long_off
+
+    descriptive_off = excluded["Descriptive (Longest)"]
+    assert "never exceed 300 words" in descriptive_off
+    assert "groups of similar people or objects" in descriptive_off
+    assert "under 40 words" not in descriptive_off
+    assert "each under about 30 words" not in descriptive_off
+    assert CAPTION_LENGTHS["Descriptive (Longest)"] not in descriptive_off
+
+    # A caller-supplied length sentence must not replace the no-text Short line.
+    leaked = "LEAKED SHARED LENGTH SENTENCE"
+    leaked_short = _build_prompt_krea2("Short", leaked, {"excludeText": True}, "")
+    assert leaked not in leaked_short
+    assert "one or two short sentences, under 40 words:" in leaked_short
+    leaked_long = _build_prompt_krea2("Long", leaked, {"excludeText": True}, "")
+    assert leaked not in leaked_long
+    assert "under 40 words" not in leaked_long
+
+
 # ── MOSS-Image ──────────────────────────────────────────────────────────
 
 def test_moss_follows_the_openmoss_caption_rules():
@@ -204,6 +264,35 @@ def test_moss_drops_the_transcription_rule_when_text_is_excluded():
     prompt = _build("moss", "Medium", {"excludeText": True})
     assert "Ignore text in the image." in prompt
     assert "double quotes" not in prompt
+
+
+def test_moss_speculation_ban_blocks_the_shared_length_sentence():
+    # The ban is the only place "mood" may appear. Appending CAPTION_LENGTHS
+    # would add the shared longest sentence's mood and technical details on
+    # top of it, which the guide does not allow. Dropping the ban leaves no
+    # "mood" at all. Excluding text must not drop the ban or the length line
+    # with the transcription rule.
+    leaked = "LEAKED SHARED LENGTH SENTENCE"
+    for length_key, shared in CAPTION_LENGTHS.items():
+        prompt = _build("moss", length_key, {})
+        assert prompt.count("mood") == 1
+        assert "no mood or evaluative words" in prompt
+        assert shared not in prompt
+        assert "technical details" not in prompt
+        assert leaked not in _build_prompt_moss(length_key, leaked, {}, "")
+
+    detailed = _build("moss", "Descriptive (Longest)", {})
+    assert "position and layout" in detailed
+    assert "exhaustive paragraph" in detailed
+
+    excluded = _build("moss", "Descriptive (Longest)", {"excludeText": True})
+    assert "Do not speculate or interpret" in excluded
+    assert "no mood or evaluative words" in excluded
+    assert "position and layout" not in excluded
+    assert "double quotes" not in excluded
+    assert "Ignore text in the image." in excluded
+    assert "exhaustive paragraph" in excluded
+    assert CAPTION_LENGTHS["Descriptive (Longest)"] not in excluded
 
 
 # ── Panel behaviour ─────────────────────────────────────────────────────
@@ -336,6 +425,122 @@ def test_custom_edit_with_changes_keeps_the_users_new_prompt(qapp):
     # Still in custom edit, so the edited prompt goes out exactly as typed.
     assert panel._custom_edit_mode is True
     assert panel.get_prompt() == "My own MOSS prompt."
+    panel.deleteLater()
+
+
+def test_krea2_panel_length_and_exclude_text_reach_the_prompt(qapp):
+    # The builder tests pass the length and the checkbox in directly. This
+    # is the path the caption button uses: the combo and the checkbox.
+    panel = SettingsPanel()
+    panel._apply_preset(_preset("krea2"))
+
+    panel.caption_length_combo.setCurrentText("Descriptive (Longest)")
+    shown = panel.prompt_text.toPlainText()
+    assert shown == panel.get_prompt()
+    assert "never exceed 300 words" in shown
+    assert "groups of similar people or objects" in shown
+    assert "under 40 words" not in shown
+    assert "each under about 30 words" not in shown
+    assert CAPTION_LENGTHS["Descriptive (Longest)"] not in shown
+
+    panel.caption_length_combo.setCurrentText("Short")
+    panel._extra_checkboxes["excludeText"].setChecked(True)
+    shown = panel.prompt_text.toPlainText()
+    assert shown == panel.get_prompt()
+    assert "Ignore text in the image." in shown
+    assert "one or two short sentences, under 40 words:" in shown
+    assert "not counting quoted text" not in shown
+    assert "visible text" not in shown
+    assert "3-5 sentences" not in shown
+
+    panel._extra_checkboxes["excludeText"].setChecked(False)
+    shown = panel.prompt_text.toPlainText()
+    assert shown == panel.get_prompt()
+    assert "under 40 words not counting quoted text" in shown
+    assert "and any visible text" in shown
+    assert "Ignore text in the image." not in shown
+    panel.deleteLater()
+
+
+def test_reverting_a_custom_edit_restores_the_generic_prompt(qapp):
+    # Typing and then putting the preset prompt back is not an edit. Custom
+    # edit must turn off, or the length and option sentences never append
+    # and a later length change does nothing.
+    panel = SettingsPanel()
+    panel.prompt_text.setPlainText("Describe this image.")
+    panel.caption_length_combo.setCurrentText("Short")
+    panel._extra_checkboxes["includeLighting"].setChecked(True)
+
+    panel._apply_preset(_preset("moss"))
+    panel._toggle_custom_edit()
+    preview = panel.prompt_text.toPlainText()
+    panel.prompt_text.setPlainText("nope")
+    panel.prompt_text.setPlainText(preview)
+    panel._apply_preset(_preset("moss"))  # toggles the preset off
+
+    assert panel.prompt_text.toPlainText() == "Describe this image."
+    assert panel._custom_edit_mode is False
+    assert panel.custom_edit_btn.text() == "✏ Edit"
+    sent = panel.get_prompt()
+    assert sent.startswith("Describe this image.")
+    assert "Keep the description brief, around 1-2 sentences." in sent
+    assert "Include information about lighting." in sent
+    assert "Never mention watermarks" not in sent
+    assert "precise lighting details" not in sent
+    panel.deleteLater()
+
+
+def test_trailing_space_keeps_custom_edit_and_strips_on_send(qapp):
+    # The edit check is exact. Stripping before the compare would throw away
+    # this prompt and append the generic length sentence to the old one.
+    # get_prompt still strips, so the caption has no trailing space.
+    panel = SettingsPanel()
+    panel.prompt_text.setPlainText("Describe this image.")
+    panel._extra_checkboxes["includeLighting"].setChecked(True)
+
+    panel._apply_preset(_preset("moss"))
+    panel._toggle_custom_edit()
+    preview = panel.prompt_text.toPlainText()
+    panel.prompt_text.setPlainText(preview + " ")
+    assert panel.prompt_text.toPlainText() == preview + " "
+    panel._apply_preset(_preset("moss"))  # toggles the preset off
+
+    assert panel.prompt_text.toPlainText() == preview + " "
+    assert panel._custom_edit_mode is True
+    assert panel.custom_edit_btn.text() == "↻ Reset"
+    assert panel.prompt_text.isReadOnly() is False
+    assert panel.get_prompt() == preview
+    assert "Describe this image." not in panel.get_prompt()
+    assert "Include information about lighting." not in panel.get_prompt()
+    panel.deleteLater()
+
+
+def test_in_preset_edit_does_not_become_the_stashed_custom_prompt(qapp):
+    # Switching presets drops the in-progress edit. It must not be saved as
+    # the prompt from before any preset, and it must not flip the stashed
+    # custom-edit flag on, or deselect would send the edit verbatim.
+    panel = SettingsPanel()
+    panel.prompt_text.setPlainText("Describe this image.")
+
+    panel._apply_preset(_preset("moss"))
+    panel._toggle_custom_edit()
+    panel.prompt_text.setPlainText("temporary edit")
+    panel._apply_preset(_preset("krea2"))
+
+    assert panel._custom_edit_mode is False
+    assert panel.prompt_text.isReadOnly() is True
+    assert "temporary edit" not in panel.get_prompt()
+    assert "each under about 30 words" in panel.get_prompt()
+
+    panel._apply_preset(_preset("krea2"))  # toggles the preset off
+    assert panel.prompt_text.toPlainText() == "Describe this image."
+    assert panel._custom_edit_mode is False
+    assert panel.custom_edit_btn.text() == "✏ Edit"
+    sent = panel.get_prompt()
+    assert sent.startswith("Describe this image.")
+    assert "temporary edit" not in sent
+    assert "Never mention watermarks" not in sent
+    assert "Provide a moderately detailed description in 2-4 sentences." in sent
     panel.deleteLater()
 
 
