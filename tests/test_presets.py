@@ -73,21 +73,38 @@ def test_krea2_asks_for_one_prose_paragraph_with_quoted_text():
     assert "NOT tags" in prompt
     assert "inside double quotes" in prompt
     assert "if there is no text, do not mention text at all" in prompt
-    assert "single paragraph with no line breaks" in prompt
+    assert "Write a single paragraph" in prompt
+    assert "with no line breaks, lists, or Markdown" in prompt
 
 
 def test_krea2_drops_the_quoting_rule_when_text_is_excluded():
-    prompt = _build("krea2", "Medium", {"excludeText": True})
-    assert "Ignore text in the image." in prompt
-    assert "double quotes" not in prompt
+    for length_key in CAPTION_LENGTHS:
+        prompt = _build("krea2", length_key, {"excludeText": True})
+        assert "Ignore text in the image." in prompt
+        assert "double quotes" not in prompt
+        # Short normally asks for visible text; it must not contradict
+        # "Ignore text".
+        assert "visible text" not in prompt
+        assert "quoted text" not in prompt
+    assert "one or two short sentences, under 40 words:" in _build(
+        "krea2", "Short", {"excludeText": True}
+    )
 
 
 def test_krea2_caption_length_changes_the_prompt():
     prompts = {key: _build("krea2", key, {}) for key in CAPTION_LENGTHS}
     assert len(set(prompts.values())) == len(CAPTION_LENGTHS)
-    assert "one or two sentences" in prompts["Short"]
-    assert "350 words" in prompts["Descriptive (Longest)"]
-    assert "350 words" not in prompts["Long"]
+    assert "under 40 words not counting quoted text" in prompts["Short"]
+    assert "and any visible text" in prompts["Short"]
+    assert "never exceed 300 words" in prompts["Descriptive (Longest)"]
+    assert "groups of similar people or objects" in prompts["Descriptive (Longest)"]
+    assert "300 words" not in prompts["Long"]
+    # Medium alone caps sentence length: the model wrote one run-on sentence
+    # without it, and looped on short sentences when Long had the same cap.
+    assert "each under about 30 words" in prompts["Medium"]
+    for key in ("Short", "Long", "Descriptive (Longest)"):
+        assert "each under about 30 words" not in prompts[key]
+        assert "Write a single paragraph with no line breaks" in prompts[key]
 
 
 def test_krea2_unknown_length_key_falls_back_to_medium():
@@ -134,6 +151,10 @@ def test_moss_follows_the_openmoss_caption_rules():
     assert "position and layout" in prompt
     assert "do not mention text at all" in prompt
     assert "no line breaks" in prompt
+    # Without this the model added guesses and mood ("cozy", "suggesting
+    # daytime play") that the guide's "only what is visible" rules out.
+    for length_key in CAPTION_LENGTHS:
+        assert "Do not speculate or interpret" in _build("moss", length_key, {})
 
 
 def test_moss_short_and_medium_still_keep_text_in_its_original_language():

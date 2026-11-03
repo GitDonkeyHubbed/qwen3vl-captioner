@@ -15,11 +15,19 @@ git tags (`V1.x.x`).
   trained on. No quality or score words, so the Aesthetic quality option is
   disabled for this preset, and no prefix or suffix. Refer as {name} keeps
   the subject's class ("Alice, a woman"), as Krea's LoRA guidance asks.
-  Descriptive (Longest) asks the model to stay under about 350 words, to
-  fit the 512-token default of Krea 2's text encoder; at the default Max
-  Tokens of 256 the caption stops sooner, so raise it for that length.
+  Each length was tuned on real captions:
+  - Short: under 40 words not counting quoted text, with visible text named
+    as part of the brief (without that it dropped sign and menu text).
+  - Medium: short sentences of under about 30 words each (without that the
+    model wrote one run-on sentence of 100-170 words).
+  - Descriptive (Longest): at most 300 words, with similar people or
+    objects described as a group, to fit the 512-token default of Krea 2's
+    text encoder (a softer "about 350 words" ran to 600).
+  At the default Max Tokens of 256, Long and Descriptive stop early, so
+  raise it for those lengths.
 - **MOSS-Image.** Follows OpenMOSS's captioning guide: English prose
-  describing only what is visible, visible text other than watermarks copied
+  describing only what is visible, with no guesses about time, place or
+  purpose and no mood words, visible text other than watermarks copied
   exactly (not translated or romanized), and watermarks never mentioned.
   The Watermark, Camera / tech details, Aesthetic quality and SFW / NSFW
   rating options are disabled for this preset, since the guide allows only

@@ -357,12 +357,18 @@ def _build_prompt_qwen(length_key: str, length_instr: str, extra_opts: Dict[str,
 # shared longest sentence asks for mood and technical details, which this
 # preset tells the model to leave out.
 _KREA2_LENGTHS = {
-    "Short": "Keep it to one or two sentences: the medium, the main subject, and what it is doing.",
+    # Naming the text here keeps it: told only the medium, subject and action,
+    # the model dropped signs and labels to stay short.
+    "Short": "Keep it to one or two short sentences, under 40 words not counting quoted text: the medium, the main subject, what it is doing, and any visible text.",
     "Medium": "Write about 3-5 sentences.",
     "Long": "Write a long, detailed paragraph.",
     # Krea 2's text encoder reads 512 tokens by default; trainers truncate the rest.
-    "Descriptive (Longest)": "Describe every visible element in detail (subjects, materials, textures, counts, positions, colors, lighting, and framing), staying under about 350 words.",
+    # A soft "about 350 words" ran to 600 in testing; a hard cap plus grouping
+    # similar subjects kept it under 300.
+    "Descriptive (Longest)": "Describe every visible element in detail (subjects, materials, textures, counts, positions, colors, lighting, and framing), but never exceed 300 words: describe groups of similar people or objects together instead of one by one.",
 }
+
+_KREA2_SHORT_WITHOUT_TEXT = "Keep it to one or two short sentences, under 40 words: the medium, the main subject, and what it is doing."
 
 
 def _build_prompt_krea2(length_key: str, length_instr: str, extra_opts: Dict[str, bool], name_value: str) -> str:
@@ -419,9 +425,19 @@ def _build_prompt_krea2(length_key: str, length_instr: str, extra_opts: Dict[str
         parts.append(f"Refer to the subject as {name_value}, followed by what it is (for example a woman, a dog, or a car).")
     elif name_value:
         parts.append(f"Refer to the subject as {name_value}.")
-    # Most trainers read only the first line of a caption file.
-    parts.append("Write a single paragraph with no line breaks, lists, or Markdown.")
-    parts.append(_KREA2_LENGTHS.get(length_key, _KREA2_LENGTHS["Medium"]))
+    if length_key not in _KREA2_LENGTHS:
+        length_key = "Medium"
+    # Most trainers read only the first line of a caption file. At Medium the
+    # model otherwise wrote one 100-170 word run-on sentence; capping sentence
+    # length fixed that, but at Long the same cap sent it into a repeat loop.
+    if length_key == "Medium":
+        parts.append("Write a single paragraph of short, complete sentences, each under about 30 words, with no line breaks, lists, or Markdown.")
+    else:
+        parts.append("Write a single paragraph with no line breaks, lists, or Markdown.")
+    if length_key == "Short" and active.get("excludeText"):
+        parts.append(_KREA2_SHORT_WITHOUT_TEXT)  # "Ignore text" wins
+    else:
+        parts.append(_KREA2_LENGTHS[length_key])
     return " ".join(parts)
 
 
@@ -441,6 +457,7 @@ def _build_prompt_moss(length_key: str, length_instr: str, extra_opts: Dict[str,
     parts = [
         "Write an accurate English caption of this image for MOSS-Image training.",
         "Describe only what is visible: the composition, key subjects, their actions, the setting, colors, lighting, and artistic style or medium.",
+        "Do not speculate or interpret: no guesses about time, place, or purpose, and no mood or evaluative words.",
         "Use plain descriptive prose — no tags, JSON, or Markdown.",
         "Never mention watermarks.",
     ]
