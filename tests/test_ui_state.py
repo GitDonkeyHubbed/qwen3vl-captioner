@@ -8,6 +8,7 @@ import os
 import stat
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
@@ -16,6 +17,7 @@ pytest.importorskip("PyQt6")
 from PyQt6.QtCore import QUrl  # noqa: E402
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
+from gui.caption_panel import CaptionPanel  # noqa: E402
 from gui.file_browser import (  # noqa: E402
     FileBrowserPanel,
     _stem_key,
@@ -24,9 +26,15 @@ from gui.file_browser import (  # noqa: E402
 )
 from gui.settings_panel import (  # noqa: E402
     CAPTION_LENGTHS,
+    EXTRA_OPTIONS,
     SettingsPanel,
+    _build_prompt_chroma,
+    _build_prompt_flux1,
+    _build_prompt_flux2,
     _build_prompt_pony,
+    _build_prompt_qwen,
     _build_prompt_sd,
+    _build_prompt_zimage,
 )
 
 
@@ -367,3 +375,142 @@ def test_parallel_download_overwrites_the_preallocated_last_byte(tmp_path, monke
     assert target.read_bytes() == payload
     assert not part.exists()
     assert not (tmp_path / "m.gguf.part.parallel").exists()
+
+
+# ── Caption box bookkeeping ─────────────────────────────────────────────
+
+def test_nested_programmatic_writes_stay_clean(qapp):
+    """A depth counter, not a bool: the inner write must not turn tracking off.
+
+    set_caption inside another programmatic write used to clear the flag, so
+    the rest of that write was treated as a hand-edit — or, once the flag
+    stuck off, a later hand-edit was never marked dirty and the next click
+    threw it away.
+    """
+    panel = CaptionPanel()
+    try:
+        with panel._writing_programmatically():
+            with panel._writing_programmatically():
+                panel.caption_text.setPlainText("inner")
+            assert panel._programmatic == 1
+            panel.caption_text.setPlainText("outer")
+            assert panel.is_dirty() is False
+        assert panel.is_dirty() is False
+        cursor = panel.caption_text.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        panel.caption_text.setTextCursor(cursor)
+        panel.caption_text.insertPlainText("!")
+        assert panel.is_dirty() is True
+        assert panel.get_caption() == "outer!"
+    finally:
+        panel.deleteLater()
+
+
+def test_counts_keep_spaces_and_do_not_invent_words(qapp):
+    """The counter is the raw box, not the stripped caption get_caption returns."""
+    panel = CaptionPanel()
+    try:
+        panel.caption_text.setPlainText(" a ")
+        assert panel.count_label.text() == "3 characters \u2022 1 words"
+        panel.caption_text.setPlainText("   ")
+        assert panel.count_label.text() == "3 characters \u2022 0 words"
+    finally:
+        panel.deleteLater()
+
+
+def test_copy_ignores_a_blank_caption(qapp, monkeypatch):
+    """Whitespace is not a caption: Copy must not clobber the clipboard."""
+    monkeypatch.setattr(
+        "gui.caption_panel.QTimer.singleShot", lambda *_a, **_k: None,
+    )
+    panel = CaptionPanel()
+    try:
+        clip = QApplication.clipboard()
+        clip.setText("keep-me")
+        panel.set_caption("   ")
+        panel._copy_caption()
+        assert clip.text() == "keep-me"
+        assert panel.feedback_label.text() == ""
+
+        panel.set_caption("a cat")
+        panel._copy_caption()
+        assert clip.text() == "a cat"
+        assert panel.feedback_label.text() == "\u2713 Copied!"
+    finally:
+        panel.deleteLater()
+
+
+# ── Prompt builders keep their own refer-as sentence ───────────────────
+
+@pytest.mark.parametrize(
+    "builder, sentence",
+    [
+        (_build_prompt_sd, "Refer to any person/character as Ada."),
+        (_build_prompt_pony, "Refer to any person/character as Ada."),
+        (_build_prompt_flux1, "Refer to the subject as Ada."),
+        (_build_prompt_flux2, "Refer to the subject as Ada."),
+        (_build_prompt_zimage, "Refer to the subject as Ada."),
+        (_build_prompt_chroma, "Refer to the subject as Ada."),
+        (_build_prompt_qwen, "Refer to the person/character as Ada."),
+    ],
+)
+def test_refer_sentence_belongs_to_that_builder(builder, sentence):
+    """Copying one preset's refer line into another changes the training text."""
+    named = builder("Medium", CAPTION_LENGTHS["Medium"], {"referAsName": True}, "Ada")
+    assert sentence in named
+    assert "watermark" not in named.lower()
+
+    blank = builder("Medium", CAPTION_LENGTHS["Medium"], {"referAsName": True}, "")
+    assert "Refer to" not in blank
+    assert "Ada" not in blank
+
+
+def test_qwen_uncensored_keeps_its_anatomy_sentence():
+    """The shared option line is not a substitute for Qwen's own sentence."""
+    full = next(
+        text for key, _short, text in EXTRA_OPTIONS if key == "includeUncensored"
+    )
+    on = _build_prompt_qwen("Medium", "", {"includeUncensored": True}, "")
+    off = _build_prompt_qwen("Medium", "", {}, "")
+    assert full in on
+    assert "anatomically correct terms" in on
+    assert full not in off
+    assert "anatomically correct terms" not in off
+
+
+# ── Model dropdown lookup ───────────────────────────────────────────────
+
+def test_model_lookup_strips_only_the_exact_downloaded_prefix(qapp):
+    """removeprefix, not lstrip: lstrip would eat a second check or a bare one."""
+    panel = SettingsPanel()
+    try:
+        panel.model_combo.clear()
+        panel.model_combo.addItem("\u2713 \u2713 kept")
+        assert panel.get_selected_model() == ("registry", "\u2713 kept")
+
+        panel.model_combo.clear()
+        panel.model_combo.addItem("\u2713Qwen")
+        assert panel.get_selected_model() == ("registry", "\u2713Qwen")
+    finally:
+        panel.deleteLater()
+
+
+def test_select_local_model_matches_the_stored_path(qapp, tmp_path):
+    """The entry is the path string populate stored, not a resolved alias."""
+    panel = SettingsPanel()
+    try:
+        chosen = tmp_path / "custom.gguf"
+        chosen.write_bytes(b"")
+        panel.populate_models([chosen], set())
+
+        assert panel.get_selected_model()[0] == "registry"
+        assert panel.select_local_model(tmp_path / "missing.gguf") is False
+        assert panel.get_selected_model()[0] == "registry"
+
+        assert panel.select_local_model(chosen) is True
+        assert panel.get_selected_model() == ("local", str(chosen))
+        # A different spelling of another file must not move the selection.
+        assert panel.select_local_model(Path("custom.gguf")) is False
+        assert panel.get_selected_model() == ("local", str(chosen))
+    finally:
+        panel.deleteLater()
